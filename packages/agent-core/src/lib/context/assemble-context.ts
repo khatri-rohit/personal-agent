@@ -5,6 +5,7 @@ import type {
 import type {
   ContextBudget,
   ContextReport,
+  HarnessFlags,
   LedgerEnvelope,
   MemoryFiles,
   ModeName,
@@ -15,7 +16,9 @@ import type {
 } from '@agent/agent-models';
 import {
   CHARS_PER_TOKEN,
+  compactionMarks,
   DEFAULT_CONTEXT_BUDGET,
+  DEFAULT_HARNESS_FLAGS,
   envelopeToChatMessage,
   formatThreadPlanForPrompt,
   imageAttachments,
@@ -33,7 +36,13 @@ import {
 import type { ToolRegistry } from '../tools/types';
 import { stubWebSourceCard } from '../tools/web/source';
 import { hostListedWebUrls } from '../tools/web/trust';
+import { liveResultCapChars } from '../tools/workspace/tools';
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
+import { HARNESS_CONTEXT_CLOSE, HARNESS_CONTEXT_OPEN } from './message-origin';
+import { outcomeCard, toolCallIndex, type ToolCallInfo } from './outcome-card';
+import { MIN_EVICT_CHARS } from './residency';
+import { traitsResolver } from '../tools/traits';
+import { buildEvidenceLog, buildSituationCard } from './situation';
 
 export type MentionedThreadContext = {
   threadId: string;
@@ -66,6 +75,14 @@ export type AssembleContextInput = {
   skillNames?: string[];
   /** Prior run summary for resume; incomplete/cancelled inject a system note. */
   lastRun?: ThreadLastRun | null;
+  /** Harness switches for this run. Defaults to DEFAULT_HARNESS_FLAGS. */
+  flags?: HarnessFlags;
+  /**
+   * The task record earlier runs of this thread left (findings, open
+   * questions), rendered by the host with prepareCarriedRecord. Goes in the
+   * stable prefix after the conversation summary.
+   */
+  carriedRecord?: string | null;
 };
 
 /** Prompt-only fill for ledger orphans (pre-I1 / crash). Does not rewrite disk. */
@@ -250,7 +267,9 @@ const PREFIX_LAYER_IDS = new Set([
   'plan',
   'mentions',
   'brief',
+  'record',
   'last_run',
+  'situation',
 ]);
 
 /**
@@ -277,13 +296,11 @@ export function refreshContextReport(
     { id: 'conversation', label: 'Conversation', tokens: conversation },
     { id: 'skills_loaded', label: 'Loaded skills', tokens: skillsLoaded },
   ];
-  const inputBudget =
-    report.budget.windowTokens - report.budget.outputReserveTokens;
   return {
     ...report,
     layers,
     occupiedTokens: occupied,
-    needsCompaction: occupied > inputBudget * report.budget.compactAtRatio,
+    needsCompaction: occupied > compactionMarks(report.budget).at,
   };
 }
 
@@ -293,7 +310,11 @@ function userSeqs(envelopes: LedgerEnvelope[]): number[] {
     .map((envelope) => envelope.seq);
 }
 
-function stubToolContent(envelope: LedgerEnvelope): string {
+function stubToolContent(
+  envelope: LedgerEnvelope,
+  info: ToolCallInfo | undefined,
+  outcomeCards: boolean,
+): string {
   if (envelope.record.role !== 'tool') return '';
   const card = stubWebSourceCard(
     envelope.record.content,
@@ -305,6 +326,15 @@ function stubToolContent(envelope: LedgerEnvelope): string {
     listed.length > 0
       ? `\n${listed.map((url) => `URL: ${url}`).join('\n')}`
       : '';
+  if (outcomeCards) {
+    return outcomeCard({
+      toolCallId: envelope.record.tool_call_id,
+      info,
+      content: envelope.record.content,
+      ...(envelope.contentBlob ? { blobSha: envelope.contentBlob } : {}),
+      tail: urlTail,
+    });
+  }
   if (envelope.contentBlob) {
     return `(stub) tool ${envelope.record.tool_call_id} full result in blob sha256:${envelope.contentBlob}${urlTail}`;
   }
@@ -374,8 +404,10 @@ export function stubLiveToolResults(
    * a sha). Omitted at assemble time, where every message is from the ledger.
    */
   liveFrom: number = messages.length,
+  flags: HarnessFlags = DEFAULT_HARNESS_FLAGS,
 ): number {
   const maxToolChars = budget.toolResultMaxTokens * CHARS_PER_TOKEN;
+  let callInfo: Map<string, ToolCallInfo> | null = null;
   const userIndexes: number[] = [];
   for (let i = 0; i < Math.min(liveFrom, messages.length); i++) {
     if (messages[i]?.role === 'user') userIndexes.push(i);
@@ -411,22 +443,38 @@ export function stubLiveToolResults(
     // Already a stub or a residency card (which carries the sha to recall).
     if (/^\((stub|evicted|skill card|unchanged)/.test(content)) continue;
     const old = i < keepToolsFrom;
-    const overCap = content.length > maxToolChars;
+    // A tool that sizes its own window (read_file, grep) keeps that window in
+    // the live prompt; only results past it are cut here.
+    let cap = maxToolChars;
+    if (!old && content.length > maxToolChars) {
+      callInfo ??= toolCallIndex(messages);
+      cap = liveResultCapChars(callInfo.get(message.tool_call_id)?.name, maxToolChars);
+    }
+    const overCap = content.length > cap;
     if (!old && !overCap) continue;
     if (old) {
       const card = stubWebSourceCard(content, message.tool_call_id);
+      let stub = card;
+      if (!stub && flags.outcomeCards) {
+        callInfo ??= toolCallIndex(messages);
+        stub = outcomeCard({
+          toolCallId: message.tool_call_id,
+          info: callInfo.get(message.tool_call_id),
+          content,
+        });
+      }
       messages[i] = {
         role: 'tool',
         tool_call_id: message.tool_call_id,
         content:
-          card ??
+          stub ??
           `(stub) tool ${message.tool_call_id} omitted (${content.length} chars)`,
       };
     } else {
       messages[i] = {
         role: 'tool',
         tool_call_id: message.tool_call_id,
-        content: capRecentToolContent(content, maxToolChars),
+        content: capRecentToolContent(content, cap),
       };
     }
     stubbed++;
@@ -436,14 +484,14 @@ export function stubLiveToolResults(
 
 function toParam(
   envelope: LedgerEnvelope,
-  stubTool: boolean,
+  stubContent: string | null,
   stubImages: boolean,
 ): ChatCompletionMessageParam | null {
-  if (stubTool && envelope.record.role === 'tool') {
+  if (stubContent !== null && envelope.record.role === 'tool') {
     return {
       role: 'tool',
       tool_call_id: envelope.record.tool_call_id,
-      content: stubToolContent(envelope),
+      content: stubContent,
     };
   }
   if (stubImages && envelope.record.role === 'user') {
@@ -475,6 +523,68 @@ function toParam(
   };
 }
 
+// Who wrote a user-role message, and the user's own words of one, live in
+// message-origin.ts; re-exported for the callers that already import it here.
+export { currentUserRequest } from './message-origin';
+
+/**
+ * Put per-send context at the top of the current user message. Assembly-time
+ * only: the ledger keeps the user's words as sent, so an edit, retry or a
+ * later turn never carries an old card. Null when the turn does not start
+ * with a user message (the caller keeps system-message placement).
+ */
+function withHarnessContext(
+  turn: ChatCompletionMessageParam[],
+  blocks: string[],
+): ChatCompletionMessageParam[] | null {
+  if (blocks.length === 0) return turn;
+  const first = turn[0];
+  if (!first || first.role !== 'user') return null;
+  const header = [HARNESS_CONTEXT_OPEN, ...blocks, HARNESS_CONTEXT_CLOSE].join('\n\n');
+  const content: ChatCompletionMessageParam['content'] =
+    typeof first.content === 'string'
+      ? `${header}\n\n${first.content}`
+      : [{ type: 'text', text: header }, ...first.content];
+  return [{ role: 'user', content } as ChatCompletionMessageParam, ...turn.slice(1)];
+}
+
+/** A string argument value kept in full in an earlier turn's call; longer ones are cut. */
+const EARLIER_ARG_VALUE_MAX_CHARS = 300;
+
+/**
+ * Earlier turns' tool calls with long string argument values cut, for the
+ * calls `trim` picks. The arguments stay valid JSON with the same keys, so
+ * the call still reads as what it was; a value that is not a string, or a
+ * call that does not parse, is left as it is.
+ */
+function trimEarlierCallArguments(
+  calls: ChatCompletionMessageToolCall[],
+  trim: (call: { id: string; name: string }) => boolean,
+): ChatCompletionMessageToolCall[] {
+  return calls.map((call) => {
+    if (call.type !== 'function' || call.function.arguments.length <= EARLIER_ARG_VALUE_MAX_CHARS) return call;
+    if (!trim({ id: call.id, name: call.function.name })) return call;
+    let args: unknown;
+    try {
+      args = JSON.parse(call.function.arguments);
+    } catch {
+      return call;
+    }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return call;
+    let cut = false;
+    const shortened: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+      if (typeof value === 'string' && value.length > EARLIER_ARG_VALUE_MAX_CHARS) {
+        shortened[key] = `${value.slice(0, EARLIER_ARG_VALUE_MAX_CHARS)}… (${value.length.toLocaleString('en-US')} chars, cut in this earlier turn; the workspace or the result holds the rest)`;
+        cut = true;
+      } else {
+        shortened[key] = value;
+      }
+    }
+    return cut ? { ...call, function: { ...call.function, arguments: JSON.stringify(shortened) } } : call;
+  });
+}
+
 function layerTokens(
   messages: ChatCompletionMessageParam[],
   tools: ToolRegistry['definitions'] = [],
@@ -501,10 +611,12 @@ export function assembleContext(
   input: AssembleContextInput,
   budget: ContextBudget = DEFAULT_CONTEXT_BUDGET,
 ): AssembleContextResult {
+  const flags = input.flags ?? DEFAULT_HARNESS_FLAGS;
   const systemText = buildSystemPrompt(
     input.tools,
     input.mode,
     input.posture ?? 'agent',
+    { compactHome: flags.compactHomePrompt, stateCard: flags.stateCard },
   );
   const systemMessage: ChatCompletionMessageParam = {
     role: 'system',
@@ -546,8 +658,15 @@ export function assembleContext(
     briefParts.push(`# Thread brief\n${input.snapshot.brief}`);
   }
   if (input.snapshot?.summary) {
-    briefParts.push(`# Earlier turns (compacted)\n${input.snapshot.summary}`);
+    // The summary is lossy; the full folded turns are one recall away.
+    const restore = input.snapshot.transcriptSha
+      ? `\n(Full text of these turns, tool results included: recall sha256:${input.snapshot.transcriptSha})`
+      : '';
+    briefParts.push(`# Earlier turns (compacted)\n${input.snapshot.summary}${restore}`);
   }
+  // Conversation summary, then the task record (v2 target prompt order).
+  const recordText = input.carriedRecord?.trim() ?? '';
+  if (recordText) briefParts.push(recordText);
   const briefMessage: ChatCompletionMessageParam | null = briefParts.length
     ? { role: 'system', content: briefParts.join('\n\n') }
     : null;
@@ -603,6 +722,15 @@ export function assembleContext(
 
   const lastUserSeq = users.at(-1);
   const maxToolChars = budget.toolResultMaxTokens * CHARS_PER_TOKEN;
+  const outcomeCards = flags.outcomeCards;
+  const situationText = flags.situationCard
+    ? [
+        buildSituationCard({ envelopes: input.envelopes, lastUserSeq }),
+        buildEvidenceLog(input.envelopes),
+      ]
+        .filter(Boolean)
+        .join('\n\n')
+    : '';
 
   let stubbedToolResults = 0;
   const tailMessages: ChatCompletionMessageParam[] = [];
@@ -610,10 +738,17 @@ export function assembleContext(
 
   // Old load_skill rows become skill cards (core rules), not bare stubs.
   const skillCallNames = new Map<string, string>();
+  // Name + args per call, for the outcome cards of old tool rows.
+  const callInfo = new Map<string, ToolCallInfo>();
   for (const envelope of live) {
     if (envelope.record.role !== 'assistant') continue;
     for (const call of envelope.record.tool_calls ?? []) {
-      if (call.type !== 'function' || call.function.name !== 'load_skill') continue;
+      if (call.type !== 'function') continue;
+      callInfo.set(call.id, {
+        name: call.function.name,
+        args: call.function.arguments,
+      });
+      if (call.function.name !== 'load_skill') continue;
       try {
         const args = JSON.parse(call.function.arguments) as { skill_name?: unknown };
         if (typeof args.skill_name === 'string') skillCallNames.set(call.id, args.skill_name);
@@ -623,10 +758,50 @@ export function assembleContext(
     }
   }
 
+  // Carry-over: every tool result here was made before this run starts (an
+  // earlier turn inside the turn window, or an earlier run of the current
+  // turn that is being resumed). They stay in full newest-first up to
+  // `carryOverToolTokens`; once one does not fit, it and everything older
+  // get the card old results get. Without this a "continue" turn re-sends
+  // the whole previous run's results on every call.
+  const overCarryOver = new Set<number>();
+  let carryOverLeft = budget.carryOverToolTokens * CHARS_PER_TOKEN;
+  for (let i = live.length - 1; i >= 0; i--) {
+    const envelope = live[i]!;
+    if (envelope.record.role !== 'tool') continue;
+    if (envelope.seq < keepToolsFrom) break;
+    // Skill rows of earlier turns already go out as skill cards.
+    if (skillCallNames.has(envelope.record.tool_call_id)) continue;
+    const size = Math.min(envelope.record.content.length, maxToolChars);
+    // A card would not be smaller than a result this short.
+    if (size < MIN_EVICT_CHARS) continue;
+    if (size <= carryOverLeft) carryOverLeft -= size;
+    else {
+      carryOverLeft = 0;
+      overCarryOver.add(envelope.seq);
+    }
+  }
+
+  // Arguments of earlier turns' calls are re-sent on every call too. Where
+  // what they carry is held elsewhere, long values are cut: a call whose
+  // result is now a card (the card names the call), or a call that changed
+  // the workspace (the file holds the change: an edit's oldText/newText).
+  // Measured on a live migration thread: arguments at a run's start fell
+  // from ~27k to ~21k tokens. Prompt-only: the ledger keeps them.
+  const traitsOf = traitsResolver((name) => input.tools.byName.get(name)?.traits);
+  const cardedCalls = new Set<string>();
+  for (const envelope of live) {
+    if (envelope.record.role !== 'tool') continue;
+    if (envelope.seq < keepToolsFrom || overCarryOver.has(envelope.seq)) cardedCalls.add(envelope.record.tool_call_id);
+  }
+  const trimCall = (call: { id: string; name: string }) =>
+    cardedCalls.has(call.id) || traitsOf(call.name)?.effect === 'change';
+
   for (const envelope of live) {
     const inTurn = lastUserSeq !== undefined && envelope.seq >= lastUserSeq;
     const oldTool =
-      envelope.record.role === 'tool' && envelope.seq < keepToolsFrom;
+      envelope.record.role === 'tool' &&
+      (envelope.seq < keepToolsFrom || overCarryOver.has(envelope.seq));
     const overCap =
       envelope.record.role === 'tool' &&
       envelope.record.content.length > maxToolChars;
@@ -647,7 +822,17 @@ export function assembleContext(
             tool_call_id: envelope.record.tool_call_id,
             content: skillCard(skillName),
           }
-        : toParam(envelope, stubTool, stubImages);
+        : toParam(
+            envelope,
+            stubTool && envelope.record.role === 'tool'
+              ? stubToolContent(
+                  envelope,
+                  callInfo.get(envelope.record.tool_call_id),
+                  outcomeCards,
+                )
+              : null,
+            stubImages,
+          );
     if (
       message?.role === 'tool' &&
       overCap &&
@@ -661,6 +846,9 @@ export function assembleContext(
       };
     }
     if (!message) continue;
+    if (!inTurn && message.role === 'assistant' && message.tool_calls?.length) {
+      message = { ...message, tool_calls: trimEarlierCallArguments(message.tool_calls, trimCall) };
+    }
     if (inTurn) turnMessages.push(message);
     else tailMessages.push(message);
   }
@@ -668,19 +856,51 @@ export function assembleContext(
   // Stable layers first, then history, then layers that change between sends
   // (skill picks, plan edits, mentions, last-run note). A plan edit then
   // invalidates only the tail of the prompt, not the whole history prefix.
-  const messages: ChatCompletionMessageParam[] = fillOrphanToolResults([
-    systemMessage,
-    ...(skillsMessage ? [skillsMessage] : []),
-    memoryMessage,
-    ...(rulesMessage ? [rulesMessage] : []),
-    ...(briefMessage ? [briefMessage] : []),
-    ...tailMessages,
-    ...(bodiesMessage ? [bodiesMessage] : []),
-    ...(planMessage ? [planMessage] : []),
-    ...(mentionsMessage ? [mentionsMessage] : []),
-    ...(lastRunMessage ? [lastRunMessage] : []),
-    ...turnMessages,
-  ]);
+  const perSendTexts = [
+    bodiesText,
+    planText,
+    mentionsMessage ? String(mentionsMessage.content) : '',
+    lastRunText ?? '',
+    situationText,
+  ].filter((text) => text.length > 0);
+  const tieredTurn = flags.promptTiers
+    ? withHarnessContext(turnMessages, perSendTexts)
+    : null;
+  const messages: ChatCompletionMessageParam[] = fillOrphanToolResults(
+    tieredTurn
+      ? [
+          // One leading system message: identity, tools, skills index,
+          // memory, rules, brief. Per-send context rides in the user turn.
+          {
+            role: 'system',
+            content: [
+              systemText,
+              skillsText,
+              memoryText,
+              rulesText,
+              briefMessage ? String(briefMessage.content) : '',
+            ]
+              .filter((text) => text.length > 0)
+              .join('\n\n'),
+          },
+          ...tailMessages,
+          ...tieredTurn,
+        ]
+      : [
+          systemMessage,
+          ...(skillsMessage ? [skillsMessage] : []),
+          memoryMessage,
+          ...(rulesMessage ? [rulesMessage] : []),
+          ...(briefMessage ? [briefMessage] : []),
+          ...tailMessages,
+          ...(bodiesMessage ? [bodiesMessage] : []),
+          ...(planMessage ? [planMessage] : []),
+          ...(mentionsMessage ? [mentionsMessage] : []),
+          ...(lastRunMessage ? [lastRunMessage] : []),
+          ...(situationText ? [{ role: 'system' as const, content: situationText }] : []),
+          ...turnMessages,
+        ],
+  );
 
   // Use the assembled messages, not raw ledger content: the prompt may hold
   // stubbed or capped versions of load_skill results, and conversationTokens
@@ -741,8 +961,18 @@ export function assembleContext(
       id: 'brief',
       label: 'Thread brief',
       tokens: briefMessage
-        ? charsToTokens(String(briefMessage.content).length) + 4
+        ? charsToTokens(String(briefMessage.content).length - (recordText ? recordText.length + 2 : 0)) + 4
         : 0,
+    },
+    {
+      id: 'record',
+      label: 'Task record (earlier runs)',
+      tokens: recordText ? charsToTokens(recordText.length) : 0,
+    },
+    {
+      id: 'situation',
+      label: 'Situation and evidence',
+      tokens: situationText ? charsToTokens(situationText.length) + 4 : 0,
     },
     {
       id: 'last_run',
@@ -762,8 +992,7 @@ export function assembleContext(
   ];
 
   const occupiedTokens = layers.reduce((sum, layer) => sum + layer.tokens, 0);
-  const inputBudget = budget.windowTokens - budget.outputReserveTokens;
-  const needsCompaction = occupiedTokens > inputBudget * budget.compactAtRatio;
+  const needsCompaction = occupiedTokens > compactionMarks(budget).at;
 
   const report: ContextReport = {
     budget,

@@ -1,13 +1,9 @@
-import { limitMessage } from '@agent/agent-models';
+import { GUARD_LIMITS, limitMessage } from '@agent/agent-models';
 
-/** Invented tool names in one run before hard halt (I1 + I6). */
-const MAX_UNKNOWN_TOOL_STREAK = 2;
-/** Distinct read_file admits per path per run (stops offset paging storms). */
-const MAX_READ_FILE_PER_PATH = 30;
-/** run_terminal admits per run (stops shell flood; migrations run 40+ builds). */
-const MAX_TERMINAL_CALLS = 60;
-/** Identical mutate call+result before stuck halt. */
-const MAX_IDENTICAL_OUTCOMES = 3;
+const MAX_UNKNOWN_TOOL_STREAK = GUARD_LIMITS.unknownToolStreak;
+const MAX_READ_FILE_PER_PATH = GUARD_LIMITS.readsPerPath;
+const MAX_TERMINAL_CALLS = GUARD_LIMITS.terminalCalls;
+const MAX_IDENTICAL_OUTCOMES = GUARD_LIMITS.identicalOutcomes;
 
 /**
  * Per-run memory of what the model already tried, so a run that is going in
@@ -21,6 +17,8 @@ export class RepetitionGuard {
   private readonly readsByPath = new Map<string, number>();
   private terminalCalls = 0;
   private readonly callCounts = new Map<string, number>();
+  /** Call keys of tools whose result depends on the workspace (their traits say so). */
+  private readonly workspaceReadKeys = new Set<string>();
   private readonly outcomeCounts = new Map<string, number>();
   /** Exec outcome keys, so a successful edit can clear them (an edit between identical builds is progress). */
   private readonly execOutcomeKeys = new Set<string>();
@@ -55,19 +53,24 @@ export class RepetitionGuard {
     );
   }
 
-  /** Count one attempt of this exact call; returns how many times it has been made. */
-  countCall(callKey: string): number {
+  /**
+   * Count one attempt of this exact call; returns how many times it has been
+   * made. `workspaceRead`: the tool's result depends on the workspace, so a
+   * successful change makes the call fresh again.
+   */
+  countCall(callKey: string, workspaceRead = false): number {
     const count = (this.callCounts.get(callKey) ?? 0) + 1;
     this.callCounts.set(callKey, count);
+    if (workspaceRead) this.workspaceReadKeys.add(callKey);
     return count;
   }
 
   /** A call passed admission and will run. */
-  admitted(toolName: string, readPath: string | null): void {
+  admitted(command: boolean, readPath: string | null): void {
     if (readPath !== null) {
       this.readsByPath.set(readPath, (this.readsByPath.get(readPath) ?? 0) + 1);
     }
-    if (toolName === 'run_terminal') this.terminalCalls += 1;
+    if (command) this.terminalCalls += 1;
   }
 
   /** A retired skill body may be loaded again: that is not a repeat. */
@@ -91,9 +94,15 @@ export class RepetitionGuard {
     };
   }
 
-  /** A successful edit makes earlier build/test exits stale: start counting fresh. */
+  /**
+   * A successful edit makes earlier build/test exits stale, and earlier
+   * workspace reads and searches may now return something else: start
+   * counting both fresh, so a re-read after an edit is never a "repeat".
+   */
   editSucceeded(): void {
     for (const key of this.execOutcomeKeys) this.outcomeCounts.delete(key);
     this.execOutcomeKeys.clear();
+    for (const key of this.workspaceReadKeys) this.callCounts.delete(key);
+    this.workspaceReadKeys.clear();
   }
 }

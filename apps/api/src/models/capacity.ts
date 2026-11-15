@@ -306,6 +306,16 @@ export function createCapacityGate(): CapacityGate {
   };
 }
 
+/**
+ * Why the account is paused (usage limit reached, with its reset time), or
+ * null when it is not paused or capacity is off. Reads the cache only.
+ */
+export function capacityPauseReason(): string | null {
+  if (!capacityEnabled()) return null;
+  const advice = capacityAdvice(cachedBalance());
+  return advice.state === 'pause' ? (advice.reason ?? 'usage limit reached') : null;
+}
+
 /** Current governor state from the cache (no network wait). Open when capacity is off. */
 export function capacityState(): CapacityState {
   return capacityEnabled() ? capacityAdvice(cachedBalance()).state : 'open';

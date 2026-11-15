@@ -1,6 +1,7 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
-import type { EffortSignals } from './effort';
+import { userTextOf } from '../context/message-origin';
+import type { EffortSignals } from '../policy';
 
 const TASK_MAX = 600;
 const STEP_MAX = 300;
@@ -33,10 +34,13 @@ export function buildEffortState(input: {
 }): string {
   const { messages, runStart, signals } = input;
 
+  // The task is what the user asked, in their own words: not the harness
+  // context in front of their message (the plan, the last-run note).
   let task = '';
   for (let i = Math.min(runStart, messages.length) - 1; i >= 0; i--) {
-    if (messages[i]?.role === 'user') {
-      task = textOf(messages[i]);
+    const text = userTextOf(messages[i]);
+    if (text !== null) {
+      task = text;
       break;
     }
   }
@@ -58,7 +62,7 @@ export function buildEffortState(input: {
     `Iteration: ${signals.iteration}${input.maxIterations ? ` of up to ${input.maxIterations}` : ''}. Mode: ${input.mode}.`,
     `Last assistant step: ${clip(textOf(lastAssistant), STEP_MAX) || '(tool calls only)'}`,
     `Last tools: ${toolNames.length ? toolNames.join(', ') : 'none'}`,
-    `Signals: ${signals.toolError ? 'a tool failed' : 'no tool errors'}; ${signals.wrote ? 'files edited or commands run' : 'no edits or commands'}; ${signals.steering ? 'new instruction to act on' : 'no new instruction'}.`,
+    `Signals: ${signals.toolError ? 'a tool failed' : 'no tool errors'}; ${signals.wrote ? 'files edited or commands run' : 'no edits or commands'}; ${signals.steering ? 'new instruction to act on' : 'no new instruction'}; ${signals.idleSteps === 0 ? 'new evidence last step' : `${signals.idleSteps} step(s) since the last evidence (edit, passing check or recorded finding)`}.`,
   ];
   return lines.join('\n');
 }

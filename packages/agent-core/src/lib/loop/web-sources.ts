@@ -2,6 +2,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 
 import type { LedgerEnvelope, WebTrust } from '@agent/agent-models';
 
+import { userTextOf } from '../context/message-origin';
 import { sha256Text } from '../tools/web/source';
 import { extractHttpUrls, hostListedWebUrls } from '../tools/web/trust';
 import { canonicalizeWebFetchUrl, looksLikeHttpUrl } from '../tools/web/url';
@@ -98,10 +99,17 @@ export class WebSourceStore {
         }
         continue;
       }
+      // Only what the user wrote: not a harness-written user-role message
+      // (a note, the task record), and not the harness context in front of
+      // the user's own message (the plan, loaded skills, the last-run note),
+      // which holds text the model or a fetched page may have supplied.
+      const userText = userTextOf(message);
+      if (userText !== null) {
+        this.noteTrustedUrls(extractHttpUrls(userText));
+        continue;
+      }
       if (typeof message.content !== 'string') continue;
-      if (message.role === 'user') {
-        this.noteTrustedUrls(extractHttpUrls(message.content));
-      } else if (
+      if (
         !trust &&
         message.role === 'tool' &&
         webCalls.has(message.tool_call_id)

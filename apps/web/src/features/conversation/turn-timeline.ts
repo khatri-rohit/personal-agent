@@ -1,4 +1,8 @@
-import type { Message, PendingToolCall } from '@agent/agent-models';
+import {
+  parseSubagentHeader,
+  type Message,
+  type PendingToolCall,
+} from '@agent/agent-models';
 
 import {
   toolStatusOf,
@@ -24,7 +28,7 @@ export type TimelineStep =
   | { type: 'tools'; key: string; rows: ToolCallRow[] }
   | { type: 'compaction'; notice: CompactionNotice }
   | { type: 'subagent'; activity: SubagentActivity }
-  | { type: 'stream'; content: string };
+  | { type: 'stream'; messageId: string; content: string };
 
 function previewToArgs(value: unknown): string | undefined {
   if (value == null) return undefined;
@@ -179,18 +183,32 @@ export function buildTurnTimeline(input: {
   // order events actually arrived.
   type PendingItem =
     | { kind: 'snippet'; seq: number; snippet: AssistantSnippet }
-    | { kind: 'tool'; seq: number; activity: ToolActivity };
+    | { kind: 'tool'; seq: number; activity: ToolActivity }
+    | { kind: 'subagent'; seq: number; activity: SubagentActivity };
   const pending: PendingItem[] = [];
 
   for (const snippet of snippets) {
     pending.push({ kind: 'snippet', seq: snippet.seq, snippet });
   }
 
-  const liveOnly = input.liveActivity.filter(
-    (activity) => !seenToolIds.has(activity.toolCallId),
-  );
+  const liveOnly = input.liveActivity.filter((activity) => {
+    if (seenToolIds.has(activity.toolCallId)) return false;
+    // Delegates are rendered by subagent steps instead (lean line while
+    // running, digest card once settled) — keeping the tool row would show
+    // the same delegate twice in the reading path. A refused spawn has no
+    // subrun event, so its failed row still renders.
+    if (activity.toolName === 'delegate') {
+      if (activity.status === 'running') return false;
+      const text = previewToArgs(activity.resultPreview);
+      if (parseSubagentHeader(text ?? '')) return false;
+    }
+    return true;
+  });
   for (const activity of liveOnly) {
     pending.push({ kind: 'tool', seq: activity.seq, activity });
+  }
+  for (const activity of input.subagentActivity ?? []) {
+    pending.push({ kind: 'subagent', seq: activity.seq, activity });
   }
 
   pending.sort((a, b) => a.seq - b.seq);
@@ -217,21 +235,19 @@ export function buildTurnTimeline(input: {
           content: item.snippet.content,
         });
       }
+    } else if (item.kind === 'subagent') {
+      flushTools();
+      steps.push({ type: 'subagent', activity: item.activity });
     } else {
       pendingTools.push(item.activity);
     }
   }
   flushTools();
 
-  // Sub-agent delegation cards — rendered in seq order alongside other steps.
-  const subagentSteps = input.subagentActivity ?? [];
-  for (const activity of subagentSteps) {
-    steps.push({ type: 'subagent', activity });
-  }
-
-  const streamContent = input.streaming?.content.trim();
-  if (streamContent) {
-    steps.push({ type: 'stream', content: streamContent });
+  const stream = input.streaming;
+  const streamContent = stream?.content.trim();
+  if (stream && streamContent) {
+    steps.push({ type: 'stream', messageId: stream.id, content: streamContent });
   }
 
   if (input.compaction) {
@@ -239,4 +255,35 @@ export function buildTurnTimeline(input: {
   }
 
   return steps;
+}
+
+/**
+ * One-line account of what a turn did ("Edited 3 files · 12 tool calls ·
+ * 1 failed"). Built from timeline steps, so it rebuilds from the ledger.
+ * Undefined for pure chat turns, where it would be noise.
+ */
+export function summarizeTurnWork(steps: TimelineStep[]): string | undefined {
+  const rows = steps.flatMap((step) =>
+    step.type === 'tools' ? step.rows : [],
+  );
+  if (rows.length === 0) return undefined;
+  const files = new Set<string>();
+  let failed = 0;
+  for (const row of rows) {
+    if (row.status === 'failed') failed += 1;
+    if (row.toolName !== 'edit_file' || row.status === 'failed') continue;
+    try {
+      const path = (JSON.parse(row.args ?? '{}') as { path?: unknown }).path;
+      if (typeof path === 'string' && path) files.add(path);
+    } catch {
+      /* partial args while streaming */
+    }
+  }
+  const parts: string[] = [];
+  if (files.size > 0) {
+    parts.push(`Edited ${files.size} file${files.size === 1 ? '' : 's'}`);
+  }
+  parts.push(`${rows.length} tool call${rows.length === 1 ? '' : 's'}`);
+  if (failed > 0) parts.push(`${failed} failed`);
+  return parts.join(' · ');
 }

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Check, ChevronDown, Circle, ListTodo, Loader2 } from 'lucide-react';
 import {
   isThreadPlanEmpty,
+  planScopedTodos,
   planTodoCounts,
   type ThreadPlan,
 } from '@agent/agent-models';
@@ -40,6 +41,11 @@ export function ThreadPlanCard({ plan }: { plan: ThreadPlan | null }) {
         <span className="type-ui min-w-0 flex-1 truncate text-foreground/90">
           {plan.goal.trim() || label}
         </span>
+        {scopeLabel(plan) ? (
+          <span className="type-caption shrink-0 truncate text-muted-foreground" title="What the current request covers">
+            Scope: {scopeLabel(plan)}
+          </span>
+        ) : null}
         {todoHint ? (
           <span className="type-caption shrink-0 tabular-nums text-muted-foreground">
             {todoHint}
@@ -103,32 +109,7 @@ export function ThreadPlanCard({ plan }: { plan: ThreadPlan | null }) {
               </ul>
             </section>
           ) : null}
-          {plan.todos.length > 0 ? (
-            <section>
-              <p className="type-ui mb-1 font-medium text-muted-foreground">
-                Todos
-              </p>
-              <ul className="space-y-1">
-                {plan.todos.map((todo) => (
-                  <li
-                    key={todo.id}
-                    className="type-ui flex items-start gap-2 leading-relaxed"
-                  >
-                    <TodoMark status={todo.status} />
-                    <span
-                      className={cn(
-                        'min-w-0 flex-1 text-foreground/85',
-                        todo.status === 'completed' &&
-                          'text-muted-foreground line-through',
-                      )}
-                    >
-                      {todo.content}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
+          <TodoList plan={plan} />
         </div>
       ) : null}
     </section>
@@ -161,7 +142,7 @@ export function PlanChip({ plan }: { plan: ThreadPlan | null }) {
       >
         {allDone ? (
           <Check
-            className="size-3.5 shrink-0 text-muted-foreground/70"
+            className="size-3.5 shrink-0 text-subtle-foreground"
             strokeWidth={2}
           />
         ) : (
@@ -225,33 +206,55 @@ function PlanChipBody({ plan }: { plan: ThreadPlan }) {
           </pre>
         </section>
       ) : null}
-      {plan.todos.length > 0 ? (
-        <section>
-          <p className="type-ui mb-1 font-medium text-muted-foreground">
-            Todos
-          </p>
-          <ul className="space-y-1">
-            {plan.todos.map((todo) => (
-              <li
-                key={todo.id}
-                className="type-ui flex items-start gap-2 leading-relaxed"
-              >
-                <TodoMark status={todo.status} />
-                <span
-                  className={cn(
-                    'min-w-0 flex-1 text-foreground/85',
-                    todo.status === 'completed' &&
-                      'text-muted-foreground line-through',
-                  )}
-                >
-                  {todo.content}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
+      <TodoList plan={plan} />
     </div>
+  );
+}
+
+/** The scope's label when one is recorded on the plan, else null. */
+function scopeLabel(plan: ThreadPlan): string | null {
+  if (!planScopedTodos(plan)) return null;
+  return plan.scope?.label.trim() || 'selected items';
+}
+
+/**
+ * The plan's todos. With a scope recorded (what the user's current request
+ * covers), the todos outside it are dimmed: the run works on, and is held
+ * to, only the ones in scope.
+ */
+function TodoList({ plan }: { plan: ThreadPlan }) {
+  if (plan.todos.length === 0) return null;
+  const scoped = planScopedTodos(plan);
+  const inScope = new Set((scoped ?? []).map((todo) => todo.id));
+  const label = scopeLabel(plan);
+  return (
+    <section>
+      <p className="type-ui mb-1 font-medium text-muted-foreground">
+        Todos{label ? ` · scope: ${label}` : ''}
+      </p>
+      <ul className="space-y-1">
+        {plan.todos.map((todo) => (
+          <li
+            key={todo.id}
+            className={cn(
+              'type-ui flex items-start gap-2 leading-relaxed',
+              scoped && !inScope.has(todo.id) && 'opacity-50',
+            )}
+          >
+            <TodoMark status={todo.status} />
+            <span
+              className={cn(
+                'min-w-0 flex-1 text-foreground/85',
+                todo.status === 'completed' &&
+                  'text-muted-foreground line-through',
+              )}
+            >
+              {todo.content}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -262,7 +265,7 @@ function TodoMark({
 }) {
   if (status === 'completed') {
     return (
-      <Check className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
+      <Check className="mt-0.5 size-3.5 shrink-0 text-subtle-foreground" />
     );
   }
   if (status === 'in_progress') {
@@ -271,6 +274,6 @@ function TodoMark({
     );
   }
   return (
-    <Circle className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
+    <Circle className="mt-0.5 size-3.5 shrink-0 text-subtle-foreground" />
   );
 }

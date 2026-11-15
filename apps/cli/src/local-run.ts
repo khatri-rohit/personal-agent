@@ -4,7 +4,7 @@ import type {
   RunPosture,
   TraceEvent,
 } from '@agent/agent-models';
-import { planHasOpenWork } from '@agent/agent-models';
+import { isPlanScoped, planHasOpenWork } from '@agent/agent-models';
 import {
   RunManager,
   assembleContext,
@@ -85,6 +85,7 @@ export async function runLocally(input: {
     contextReport: report,
     contextBudget: report.budget,
     hasOpenPlanWork: async () => planHasOpenWork(await planStore.read()),
+    isPlanScoped: async () => isPlanScoped(await planStore.read()),
     ...(workspaceRoot ? { workspaceRoot } : {}),
     ...(input.trace ? { trace: input.trace } : {}),
   });

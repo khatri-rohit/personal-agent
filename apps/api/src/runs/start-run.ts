@@ -2,11 +2,14 @@ import type { StartRunRequest } from '@agent/agent-models';
 import {
   HOME_MODE,
   imageAttachments,
+  isPlanScoped,
   isWorkspaceKind,
   lastRunFrom,
+  MIN_CONTEXT_WINDOW_TOKENS,
   normalizeRunPosture,
   parseContextWindowMode,
   planHasOpenWork,
+  RUN_PAUSED_PREFIX,
   SYSTEM1_AUTO_THINKING,
 } from '@agent/agent-models';
 import {
@@ -18,15 +21,18 @@ import {
   getOllamaModelConfig,
   modelOwnsAuto,
   peekOllamaModelConfig,
+  taskRecordFromRun,
 } from '@agent/agent-core';
 
 import {
   appendUsageLog,
   capacityEnabled,
+  capacityPauseReason,
   capacitySnapshot,
   createCapacityGate,
 } from '../models/capacity';
-import { resolveCallOptions } from '../models/model-runtime';
+import { resolveCallOptions, resolveContextBudget } from '../models/model-runtime';
+import { resolveModelSettings } from '../models/model-settings-store';
 import {
   getAgentHome,
   getThreadStore,
@@ -34,6 +40,7 @@ import {
 } from '../platform/instances';
 import { threadTraceSink } from '../platform/trace-sink.js';
 import { compactThread, emitCompacted, maybeCompactThread } from './compaction';
+import { rewindLearningCursor, scheduleLearningReview } from '../memory/learning-loop';
 import {
   endpointFromLocal,
   lastUserEnvelope,
@@ -50,15 +57,15 @@ export type StartRunResult =
   | { ok: true; runId: string }
   | {
       ok: false;
-      /** invalid request · unknown thread · thread already running */
-      reason: 'invalid' | 'not_found' | 'busy';
+      /** invalid request · unknown thread · thread already running · account usage limit reached */
+      reason: 'invalid' | 'not_found' | 'busy' | 'paused';
       error: string;
       /** The active run, when reason is busy. */
       runId?: string;
     };
 
 function reject(
-  reason: 'invalid' | 'not_found' | 'busy',
+  reason: 'invalid' | 'not_found' | 'busy' | 'paused',
   error: string,
   runId?: string,
 ): StartRunResult {
@@ -146,8 +153,20 @@ async function startClaimedRun(
     return reject('invalid', 'workspace thread has no workspaceRoot');
   }
 
+  // The account's usage limit is reached: a run would pause before its
+  // first call. Refuse before anything is written (no rewind, no user row),
+  // so the message stays with the client to send after the reset.
+  const paused = endpointFromLocal(local) === 'cloud' ? capacityPauseReason() : null;
+  if (paused) {
+    return reject(
+      'paused',
+      `${RUN_PAUSED_PREFIX} ${paused}. Your message was not sent; send it again after the reset.`,
+    );
+  }
+
   if (rewindThroughSeq !== undefined) {
     await store.rewind(threadId, rewindThroughSeq);
+    await rewindLearningCursor(threadId, rewindThroughSeq);
   }
 
   const ledgerBefore = await store.readLedger(threadId, 0);
@@ -160,6 +179,9 @@ async function startClaimedRun(
 
   const useModel = model ?? thread.model ?? HOME_MODE.model;
   const endpoint = endpointFromLocal(local);
+  // Resolved once per run (file > env > run's model) and recorded on
+  // run.started; consumers below read this snapshot, never env directly.
+  const modelSettings = await resolveModelSettings(useModel, endpoint);
 
   // Before the user row is written, so a refusal leaves the ledger as it was.
   if (
@@ -177,6 +199,22 @@ async function startClaimedRun(
     } catch {
       // If /api/show is unavailable, let the model provider reject instead.
     }
+  }
+
+  // Also before the user row: a window this small cannot hold the prompt and
+  // a real conversation (local Ollama may serve less than the model's size).
+  const servedWindow = await resolveContextBudget(
+    useModel,
+    endpoint,
+    thread.contextWindowMode,
+  );
+  if (servedWindow.budget.windowTokens < MIN_CONTEXT_WINDOW_TOKENS) {
+    return reject(
+      'invalid',
+      servedWindow.source === 'served'
+        ? `Local Ollama is serving ${useModel} with a ${servedWindow.budget.windowTokens.toLocaleString()}-token context; the agent needs at least ${MIN_CONTEXT_WINDOW_TOKENS.toLocaleString()}. Raise OLLAMA_CONTEXT_LENGTH on the daemon and restart it.`
+        : `${useModel} has a ${servedWindow.budget.windowTokens.toLocaleString()}-token context; the agent needs at least ${MIN_CONTEXT_WINDOW_TOKENS.toLocaleString()}. Pick a model with a larger window.`,
+    );
   }
 
   if (message) {
@@ -223,8 +261,11 @@ async function startClaimedRun(
     store,
     threadId,
     model: useModel,
+    endpoint,
+    flags: prepared.flags,
     envelopes,
     report: prepared.report,
+    modelSettings,
   });
   if (preRunSnapshot) prepared = await prepareRun(prepareInput);
 
@@ -273,6 +314,20 @@ async function startClaimedRun(
       : undefined;
   const balanceBefore = capacitySnapshot();
 
+  // The run's task record, written as it grows and once more at the end.
+  // Writes are chained so an older snapshot never lands after a newer one
+  // (each write replaces this run's record in the file).
+  let recordWrites: Promise<void> = Promise.resolve();
+  const saveTaskRecord = (task: Parameters<typeof taskRecordFromRun>[1]): void => {
+    const record = taskRecordFromRun(runId, task);
+    if (!record) return;
+    recordWrites = recordWrites
+      .then(() => store.appendTaskRecord(threadId, record))
+      .catch((error: unknown) => {
+        console.error('appendTaskRecord failed:', error instanceof Error ? error.message : error);
+      });
+  };
+
   // Replaced in onFinished; survives only if the server stops mid-run.
   await store.writeLastRun(
     threadId,
@@ -290,6 +345,8 @@ async function startClaimedRun(
     estimatedPromptTokens: prepared.report.occupiedTokens,
     contextReport: prepared.report,
     contextBudget: prepared.report.budget,
+    flags: prepared.flags,
+    modelSettings,
     ...(thread.workspaceRoot ? { workspaceRoot: thread.workspaceRoot } : {}),
     putBlob: (text) => store.putBlob(threadId, text),
     // Every model call's exact input/output, for the eval viewer. Off: AGENT_RECORD_MODEL_CALLS=0.
@@ -307,12 +364,15 @@ async function startClaimedRun(
     },
     hasOpenPlanWork: async () =>
       planHasOpenWork(await store.readPlan(threadId)),
+    isPlanScoped: async () => isPlanScoped(await store.readPlan(threadId)),
+    // Saved as it grows, so a run that dies keeps its findings.
+    onTaskRecord: (task) => saveTaskRecord(task),
     // The loop binds the runner to this run (signal, budget, capabilities).
     ...(isWorkspaceKind(thread.kind) && thread.workspaceRoot
       ? {
           subagents: createSubagentRunner({
             runManager,
-            host: createSubagentHost({ store, endpoint }),
+            host: createSubagentHost({ store, endpoint, modelSettings }),
           }),
         }
       : {}),
@@ -354,6 +414,19 @@ async function startClaimedRun(
           error instanceof Error ? error.message : error,
         );
       }
+      // The run's findings outlive it: later runs of the thread see them in
+      // their prompt prefix (a rewind that cuts this run drops them). The
+      // final record goes after any save still in flight, so it is the last.
+      saveTaskRecord(result.task);
+      await recordWrites;
+      // Restarts the idle timer; the review runs once the thread goes quiet.
+      scheduleLearningReview({
+        threadId,
+        model: useModel,
+        endpoint,
+        enabled: prepared.flags.learningLoop,
+        modelSettings,
+      });
       // A cancelled run leaves compaction to the next run's pre-run pass, so
       // nothing it writes can race that run's rewind.
       if (outcome === 'cancelled' || !result.contextReport) return;
@@ -362,7 +435,10 @@ async function startClaimedRun(
         threadId,
         runId,
         model: useModel,
+        endpoint,
+        flags: prepared.flags,
         report: result.contextReport,
+        modelSettings,
       });
     },
   });
@@ -376,7 +452,7 @@ async function startClaimedRun(
   if (preRunSnapshot) emitCompacted(store, runId, threadId, preRunSnapshot);
 
   if (isFirstUserTurn && message) {
-    titleNewThread(store, threadId, message.content || 'Image chat', useModel, endpoint);
+    titleNewThread(store, threadId, message.content || 'Image chat', useModel, endpoint, modelSettings);
   }
 
   return { ok: true, runId };

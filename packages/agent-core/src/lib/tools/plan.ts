@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   PlanAction,
   PlanNoteKind,
+  PlanScope,
   PlanTodo,
   PlanTodoStatus,
   ThreadPlan,
@@ -9,6 +10,7 @@ import type {
 } from '@agent/agent-models';
 import {
   MAX_PLAN_DECISIONS,
+  MAX_PLAN_SCOPE_LABEL_CHARS,
   MAX_PLAN_FINAL_CHARS,
   MAX_PLAN_GOAL_CHARS,
   MAX_PLAN_NOTE_CHARS,
@@ -32,9 +34,17 @@ export type PlanActionInput = {
   kind?: PlanNoteKind;
 };
 
+/**
+ * What the user's current request covers. `items` are todo ids or their
+ * exact text (resolved after the update, so new todos can be named); `all`
+ * covers the whole list.
+ */
+export type TodoScopeInput = { label: string; items?: string[]; all?: boolean };
+
 export type TodoUpdateInput = {
   merge: boolean;
   todos: Array<{ id?: string; content: string; status?: PlanTodoStatus }>;
+  scope?: TodoScopeInput;
 };
 
 export type PlanMutation =
@@ -157,10 +167,12 @@ export function applyPlanAction(
       };
     }
     // finalize locks the plan; todos are execution scratch. Clearing them
-    // prevents planHasOpenWork from nudging forever on a locked plan.
+    // prevents planHasOpenWork from nudging forever on a locked plan. Their
+    // scope goes with them.
+    const { scope: _scope, ...rest } = plan;
     return {
       ok: true,
-      plan: { ...plan, final: text, todos: [], updatedAt: at },
+      plan: { ...rest, final: text, todos: [], updatedAt: at },
     };
   }
 
@@ -175,15 +187,66 @@ export function applyPlanAction(
   return { ok: true, plan: { ...plan, final: text, updatedAt: at } };
 }
 
+/**
+ * The plan's scope after an update. A new scope is resolved against the
+ * updated list (ids, then exact text); without one, the old scope keeps the
+ * todos that still exist and is dropped when none do. Items that match no
+ * todo are reported, never fatal: the rest of the update stands.
+ */
+function nextScope(
+  todos: PlanTodo[],
+  previous: PlanScope | undefined,
+  input: TodoScopeInput | undefined,
+): { scope: PlanScope | undefined; unmatched: string[] } {
+  if (!input) {
+    if (!previous) return { scope: undefined, unmatched: [] };
+    const kept = previous.todoIds.filter((id) => todos.some((todo) => todo.id === id));
+    return { scope: kept.length > 0 ? { ...previous, todoIds: kept } : undefined, unmatched: [] };
+  }
+  const label = clip(input.label ?? '', MAX_PLAN_SCOPE_LABEL_CHARS);
+  if (input.all) {
+    return { scope: todos.length > 0 ? { label: label || 'The whole plan', todoIds: todos.map((todo) => todo.id) } : undefined, unmatched: [] };
+  }
+  const ids: string[] = [];
+  const unmatched: string[] = [];
+  for (const raw of input.items ?? []) {
+    const item = raw.trim();
+    if (!item) continue;
+    const match =
+      todos.find((todo) => todo.id === item) ??
+      todos.find((todo) => todo.content.trim().toLowerCase() === item.toLowerCase());
+    if (match) {
+      if (!ids.includes(match.id)) ids.push(match.id);
+    } else {
+      unmatched.push(item);
+    }
+  }
+  return { scope: ids.length > 0 ? { label, todoIds: ids } : previous, unmatched };
+}
+
+function withScope(plan: ThreadPlan, scope: PlanScope | undefined): ThreadPlan {
+  const { scope: _old, ...rest } = plan;
+  return scope ? { ...rest, scope } : rest;
+}
+
 /** Replace or merge todos. At most one item stays in_progress. */
 export function applyTodoUpdate(
   plan: ThreadPlan,
   input: TodoUpdateInput,
-): PlanMutation {
+): PlanMutation & { unmatchedScope?: string[] } {
+  if (input.todos.length === 0 && input.scope) {
+    // Only the scope changes (a new request covers other items).
+    const next = nextScope(plan.todos, plan.scope, input.scope);
+    return {
+      ok: true,
+      plan: withScope({ ...plan, updatedAt: nowIso() }, next.scope),
+      ...(next.unmatched.length ? { unmatchedScope: next.unmatched } : {}),
+    };
+  }
   if (input.todos.length === 0 && !input.merge) {
     return {
       ok: true,
-      plan: { ...plan, todos: [], updatedAt: nowIso() },
+      plan: withScope({ ...plan, todos: [], updatedAt: nowIso() }, undefined),
     };
   }
   if (input.todos.length === 0) {
@@ -226,9 +289,26 @@ export function applyTodoUpdate(
   }
 
   todos = coerceOneInProgress(todos).slice(0, MAX_PLAN_TODOS);
+  const next = nextScope(todos, plan.scope, input.scope);
   return {
     ok: true,
-    plan: { ...plan, todos, updatedAt: nowIso() },
+    plan: withScope({ ...plan, todos, updatedAt: nowIso() }, next.scope),
+    ...(next.unmatched.length ? { unmatchedScope: next.unmatched } : {}),
+  };
+}
+
+function parseScopeArg(value: unknown): TodoScopeInput | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const rec = value as Record<string, unknown>;
+  const items = Array.isArray(rec.items)
+    ? rec.items.filter((item): item is string => typeof item === 'string')
+    : undefined;
+  const all = rec.all === true;
+  if (!all && (!items || items.length === 0)) return undefined;
+  return {
+    label: typeof rec.label === 'string' ? rec.label : '',
+    ...(items ? { items } : {}),
+    ...(all ? { all } : {}),
   };
 }
 
@@ -343,7 +423,7 @@ export function createPlanTools(store: PlanStore): Tool[] {
       function: {
         name: 'todo',
         description:
-          'Set or update this thread\'s implementation checklist. Use after a plan exists (or with finalize). merge=true upserts by id; merge=false replaces the list. One item in_progress at a time. Mark completed as you finish.',
+          'Set or update this thread\'s implementation checklist. Use after a plan exists (or with finalize). merge=true upserts by id; merge=false replaces the list. One item in_progress at a time. Mark completed as you finish. scope records which items the user\'s current request covers.',
         parameters: {
           type: 'object',
           properties: {
@@ -371,6 +451,28 @@ export function createPlanTools(store: PlanStore): Tool[] {
                 additionalProperties: false,
               },
             },
+            scope: {
+              type: 'object',
+              description:
+                'What the user\'s current request covers. Set it when they ask for part of the plan ("phase 2 only", "phases 1 and 2") or the whole plan (all=true). Change it when a new request covers other items; todos may then be empty.',
+              properties: {
+                label: {
+                  type: 'string',
+                  description: 'The user\'s words for it, e.g. "Phase 2".',
+                },
+                items: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Todo ids (shown in the plan) or exact todo text.',
+                },
+                all: {
+                  type: 'boolean',
+                  description: 'true when the request covers the whole plan.',
+                },
+              },
+              required: ['label'],
+              additionalProperties: false,
+            },
           },
           required: ['merge', 'todos'],
           additionalProperties: false,
@@ -388,13 +490,15 @@ export function createPlanTools(store: PlanStore): Tool[] {
       ],
       usage: [
         'Create the list from the final plan, then keep it current while you edit and verify.',
-        'Exactly one in_progress item. Do not finish the run with open todos unless you are stuck.',
+        'Exactly one in_progress item. Do not finish the run with open todos in the current scope unless you are stuck.',
+        'When the user asks for part of the plan, set scope to exactly those items and do only them; when they are done, stop and list what remains. Never widen the scope yourself.',
       ],
     },
     risk: 'write',
     previewArgs: (args) => ({
       merge: args.merge,
       todos: Array.isArray(args.todos) ? args.todos.length : 0,
+      ...(args.scope && typeof args.scope === 'object' ? { scope: (args.scope as { label?: unknown }).label } : {}),
     }),
     execute: async (args, _ctx: ToolContext) => {
       const merge = args.merge !== false;
@@ -410,11 +514,15 @@ export function createPlanTools(store: PlanStore): Tool[] {
           status: parseTodoStatus(rec.status),
         });
       }
+      const scope = parseScopeArg(args.scope);
       const current = await store.read();
-      const result = applyTodoUpdate(current, { merge, todos });
+      const result = applyTodoUpdate(current, { merge, todos, ...(scope ? { scope } : {}) });
       if (!result.ok) return `Rejected: ${result.error}`;
       const saved = await store.write(result.plan);
-      return summarizePlan(saved);
+      const unmatched = result.unmatchedScope?.length
+        ? `\n\n(scope: no todo matches ${result.unmatchedScope.map((item) => `"${item}"`).join(', ')}; use an id from the list)`
+        : '';
+      return `${summarizePlan(saved)}${unmatched}`;
     },
   };
 

@@ -12,6 +12,7 @@ export const MAX_PLAN_GOAL_CHARS = 400;
 export const MAX_PLAN_NOTE_CHARS = 800;
 export const MAX_PLAN_FINAL_CHARS = 8_000;
 export const MAX_PLAN_TODO_CHARS = 240;
+export const MAX_PLAN_SCOPE_LABEL_CHARS = 80;
 /** Journal lines kept in the prompt while still planning. Locked plans omit the journal. */
 export const MAX_PLAN_PROMPT_NOTES = 8;
 
@@ -44,6 +45,20 @@ export type PlanTodo = {
   status: PlanTodoStatus;
 };
 
+/**
+ * The part of the plan the user's current request covers ("phase 2 only",
+ * "phases 1 and 2", "the whole plan"). Set by the model through the todo
+ * tool from the user's words; the plan check and what the run treats as
+ * done read only these todos, so a run asked for phase 2 of ten finishes
+ * when phase 2 is done instead of working on (or being held to) the rest.
+ */
+export type PlanScope = {
+  /** The user's words for it, e.g. "Phase 2". */
+  label: string;
+  /** Todos the request covers. */
+  todoIds: string[];
+};
+
 export type ThreadPlan = {
   threadId: string;
   goal: string;
@@ -52,6 +67,8 @@ export type ThreadPlan = {
   /** Locked implementation plan. Null while still journaling. */
   final: string | null;
   todos: PlanTodo[];
+  /** What the current request covers; absent when none was recorded. */
+  scope?: PlanScope;
   updatedAt: string;
   /** Ledger seq at the last plan write. Used to restore plan on rewind. */
   ledgerSeq?: number;
@@ -101,13 +118,34 @@ export function planTodoCounts(plan: ThreadPlan): PlanTodoCounts {
   return counts;
 }
 
-/** True when a locked plan still has pending or in-progress todos. */
+/**
+ * The todos the current request covers, or null when no scope is recorded
+ * (or none of its todos still exist).
+ */
+export function planScopedTodos(plan: ThreadPlan | null | undefined): PlanTodo[] | null {
+  const ids = plan?.scope?.todoIds;
+  if (!plan || !ids || ids.length === 0) return null;
+  const wanted = new Set(ids);
+  const todos = plan.todos.filter((todo) => wanted.has(todo.id));
+  return todos.length > 0 ? todos : null;
+}
+
+/** A scope is recorded and some of its todos still exist. */
+export function isPlanScoped(plan: ThreadPlan | null | undefined): boolean {
+  return planScopedTodos(plan) !== null;
+}
+
+/**
+ * True when a locked plan still has pending or in-progress todos the
+ * current request covers: within the scope when one is recorded, else the
+ * whole list.
+ */
 export function planHasOpenWork(
   plan: ThreadPlan | null | undefined,
 ): boolean {
   if (!plan?.final?.trim()) return false;
-  const counts = planTodoCounts(plan);
-  return counts.pending + counts.in_progress > 0;
+  const todos = planScopedTodos(plan) ?? plan.todos;
+  return todos.some((todo) => todo.status !== 'completed');
 }
 
 /**
@@ -158,7 +196,14 @@ export function formatThreadPlanForPrompt(plan: ThreadPlan): string {
   }
 
   if (plan.todos.length > 0) {
+    const scoped = planScopedTodos(plan);
+    const inScope = new Set((scoped ?? []).map((todo) => todo.id));
     parts.push('', '## Todos');
+    if (scoped) {
+      parts.push(
+        `Scope of the current request: ${plan.scope!.label || 'the items marked'} (items marked "in scope"). Work only on those. When they are done, stop and say which plan items remain; do not start them unless the user asks.`,
+      );
+    }
     for (const todo of plan.todos) {
       const mark =
         todo.status === 'completed'
@@ -166,7 +211,8 @@ export function formatThreadPlanForPrompt(plan: ThreadPlan): string {
           : todo.status === 'in_progress'
             ? '>'
             : ' ';
-      parts.push(`- [${mark}] ${todo.content}`);
+      // The id is what `todo` merges and scopes by.
+      parts.push(`- [${mark}] ${todo.content} (id ${todo.id}${inScope.has(todo.id) ? ', in scope' : ''})`);
     }
   }
 
@@ -247,6 +293,18 @@ function parseTodos(value: unknown): PlanTodo[] {
   return todos.slice(0, MAX_PLAN_TODOS);
 }
 
+function parseScope(value: unknown): PlanScope | undefined {
+  const rec = asRecord(value);
+  if (!rec || !Array.isArray(rec.todoIds)) return undefined;
+  const todoIds = rec.todoIds
+    .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+    .map((id) => id.trim())
+    .slice(0, MAX_PLAN_TODOS);
+  if (todoIds.length === 0) return undefined;
+  const label = typeof rec.label === 'string' ? rec.label.trim().slice(0, MAX_PLAN_SCOPE_LABEL_CHARS) : '';
+  return { label, todoIds };
+}
+
 /** Reconstruct a plan from disk/SSE. Corrupt payloads become empty. */
 export function parseThreadPlan(raw: unknown, threadId: string): ThreadPlan {
   const empty = emptyThreadPlan(threadId);
@@ -255,6 +313,7 @@ export function parseThreadPlan(raw: unknown, threadId: string): ThreadPlan {
   const goal = typeof rec.goal === 'string' ? rec.goal : '';
   const final =
     typeof rec.final === 'string' && rec.final.trim() ? rec.final : null;
+  const scope = parseScope(rec.scope);
   return {
     threadId,
     goal,
@@ -262,6 +321,7 @@ export function parseThreadPlan(raw: unknown, threadId: string): ThreadPlan {
     decisions: parseDecisions(rec.decisions),
     final,
     todos: parseTodos(rec.todos),
+    ...(scope ? { scope } : {}),
     updatedAt:
       typeof rec.updatedAt === 'string' ? rec.updatedAt : empty.updatedAt,
     ledgerSeq:

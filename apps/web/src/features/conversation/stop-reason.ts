@@ -1,4 +1,5 @@
 import {
+  isPauseStop,
   isResumableStop,
   limitCodeOf,
   RUN_CANCELLED_REASON,
@@ -30,6 +31,12 @@ const LIMIT_LABELS: Record<string, string> = {
 export function stopReasonLabel(reason: string): string {
   if (reason === RUN_CANCELLED_REASON) return 'You stopped this run.';
   if (reason === RUN_INTERRUPTED_REASON) return reason;
+  // An account pause: say which limit and when it resets (the host puts the
+  // reset time in the reason), not a generic line with the time in a tooltip.
+  if (isPauseStop(reason)) {
+    const detail = reason.slice(reason.indexOf(':') + 1).trim();
+    return `Paused: ${detail || 'usage limit reached'}. Nothing was lost; resume once it resets.`;
+  }
   const code = limitCodeOf(reason);
   if (!code) return reason;
   const base = LIMIT_LABELS[code] ?? 'The run stopped early.';

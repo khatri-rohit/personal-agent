@@ -5,6 +5,8 @@ import type {
 
 import type { ToolContext, ToolRisk, ToolStage } from '@agent/agent-models';
 
+import type { ToolTraits } from './traits';
+
 /**
  * Guidance text injected into the system prompt per tool.
  * This is policy, not schema — kept separate from the OpenAI tool definition.
@@ -46,6 +48,14 @@ export type Tool = {
    * tools whose results carry a failure the trace cannot see otherwise.
    */
   classify?: (result: string) => ToolResultClass;
+  /**
+   * How the harness treats this tool's calls: what the task state counts
+   * them as (an edit, a check, a read of a file) and how long their results
+   * stay in the prompt (see tools/traits.ts). The built-in tools get theirs
+   * from the table there; a tool that declares nothing is treated as a
+   * generic call: no evidence, results leave with age.
+   */
+  traits?: ToolTraits;
   /** What the UI shows of the arguments, when the raw arguments are too long or noisy. */
   previewArgs?: (args: Record<string, unknown>) => unknown;
   execute: (

@@ -24,6 +24,13 @@ const LIMIT_CODES = {
 
 export type LimitCode = keyof typeof LIMIT_CODES;
 
+/**
+ * Start of the error a host returns when it refuses to start a run because
+ * the account's usage limit is reached (the message is not written). The
+ * rest is the pause reason, reset time included.
+ */
+export const RUN_PAUSED_PREFIX = 'Paused:';
+
 /** Stored as the stop reason of a run the user cancelled. */
 export const RUN_CANCELLED_REASON = 'Run cancelled';
 

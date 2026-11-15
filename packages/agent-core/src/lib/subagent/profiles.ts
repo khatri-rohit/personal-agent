@@ -1,16 +1,17 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-import type { ModelRole } from '@agent/agent-models';
+import type { ModelRole, SubagentThoroughness } from '@agent/agent-models';
 
 import type { ProfileThinking } from '../system1/effort';
 import { getSkill } from '../tools/skills';
 import type { SubagentContext, SubagentLimits, SubagentProfile } from './types';
 
 /**
- * Room for real research and review. A child's prompt tokens are also capped
- * at CHILD_BUDGET_SHARE of what the parent has left, so children cannot
- * outspend the parent however high this is.
+ * Ceiling for real research and review. The effort level of a brief
+ * (childAllocation) sets the child's actual limits below this, and its
+ * prompt tokens are also capped at CHILD_BUDGET_SHARE of what the parent
+ * has left, so children cannot outspend the parent.
  */
 const RESEARCH_LIMITS: SubagentLimits = {
   maxIterations: 200,
@@ -32,8 +33,10 @@ const BUILTIN_PROFILES: SubagentProfile[] = [
     modelRole: 'fast',
     // Search and report: routine steps, no design calls.
     thinking: 'off',
-    tools: ['glob', 'grep', 'read_file', 'recall', 'web_search', 'web_fetch'],
+    tools: ['glob', 'grep', 'read_file', 'recall', 'record_finding', 'web_search', 'web_fetch'],
     limits: RESEARCH_LIMITS,
+    // A brief that names no effort gets a bounded one, not 450 calls.
+    defaultThoroughness: 'medium',
     context: 'none',
     rules: false,
     report: true,
@@ -50,10 +53,15 @@ const BUILTIN_PROFILES: SubagentProfile[] = [
     description:
       'Fresh-context review of uncommitted changes against the user request and project rules. Run once after edits pass verification. Returns issues with location, problem, fix, severity.',
     modelRole: 'strong',
-    // Finding real defects is the hard part; give it the model's full depth.
-    thinking: 'max',
-    tools: ['diff', 'glob', 'grep', 'read_file', 'recall', 'web_search', 'web_fetch'],
+    // Finding real defects is the hard part, so it thinks above the default;
+    // `high`, not `max` (project decision, 2026-11-14): the top level is
+    // more prone to invented findings.
+    thinking: 'high',
+    tools: ['diff', 'glob', 'grep', 'read_file', 'recall', 'record_finding', 'web_search', 'web_fetch'],
     limits: RESEARCH_LIMITS,
+    // A brief that names no effort gets a bounded one, not 450 calls (a
+    // live review ran 237 calls and 1.6M tokens on the ceiling).
+    defaultThoroughness: 'medium',
     context: 'diff',
     rules: true,
     report: true,
@@ -122,7 +130,8 @@ function frontmatter(raw: string): { fields: Map<string, string>; body: string }
 }
 
 const ROLES: ModelRole[] = ['main', 'fast', 'strong'];
-const THINKING: ProfileThinking[] = ['off', 'default', 'max'];
+const THINKING: ProfileThinking[] = ['off', 'default', 'high', 'max'];
+const EFFORTS: SubagentThoroughness[] = ['quick', 'medium', 'thorough'];
 const USER_CONTEXTS: SubagentContext[] = ['none', 'diff'];
 
 function parseUserProfile(file: string, raw: string): SubagentProfile | string {
@@ -136,6 +145,11 @@ function parseUserProfile(file: string, raw: string): SubagentProfile | string {
   if (!ROLES.includes(role)) return `${file}: model must be one of ${ROLES.join(', ')}`;
   const thinking = (fields.get('thinking') ?? 'default') as ProfileThinking;
   if (!THINKING.includes(thinking)) return `${file}: thinking must be one of ${THINKING.join(', ')}`;
+  // The work budget a brief that names none gets: medium, like the built-in
+  // profiles, so a user agent never runs on the 450-call ceiling by default.
+  // `maxTurns` below still caps it from above.
+  const effort = (fields.get('effort') ?? 'medium') as SubagentThoroughness;
+  if (!EFFORTS.includes(effort)) return `${file}: effort must be one of ${EFFORTS.join(', ')}`;
   const context = (fields.get('context') ?? 'none') as SubagentContext;
   if (!USER_CONTEXTS.includes(context)) return `${file}: context must be none or diff`;
   const tools = (fields.get('tools') ?? 'glob, grep, read_file, recall')
@@ -163,6 +177,7 @@ function parseUserProfile(file: string, raw: string): SubagentProfile | string {
     thinking,
     tools,
     limits,
+    defaultThoroughness: effort,
     context,
     rules: fields.get('rules') === 'true' || context === 'diff',
     report: fields.get('report') !== 'false',
