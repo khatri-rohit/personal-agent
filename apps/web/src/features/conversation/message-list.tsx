@@ -167,6 +167,13 @@ export function MessageList({
 
   const hasMessages = (messages?.length ?? 0) > 0;
   const lastTurnIndex = turns.length - 1;
+  // Overlay clearance: the plan card and the running-sub-agent strip both
+  // float above the composer, so the newest lines need bottom room.
+  const hasLiveSubagents =
+    (chatState.activeRun?.subagentActivity?.some(
+      (activity) => activity.status === 'running',
+    ) ??
+      false) && isRunning;
 
   const latestAssistantMessageId = useMemo(() => {
     if (!messages?.length) return null;
@@ -229,8 +236,9 @@ export function MessageList({
         ref={scrollRef}
         className={cn(
           'min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto scrollbar-gutter-stable [overflow-anchor:none]',
-          // Keep the newest lines reachable above the floating plan card.
-          isRunning && chatState.plan ? 'pb-40' : 'pb-5',
+          // Keep the newest lines reachable above the floating plan card
+          // and the live sub-agent strip.
+          isRunning && (chatState.plan || hasLiveSubagents) ? 'pb-40' : 'pb-5',
         )}
       >
         <div className="mx-auto w-full min-w-0 max-w-4xl px-4 py-5 sm:px-6">

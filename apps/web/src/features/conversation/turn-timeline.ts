@@ -1,4 +1,8 @@
-import type { Message, PendingToolCall } from '@agent/agent-models';
+import {
+  parseSubagentHeader,
+  type Message,
+  type PendingToolCall,
+} from '@agent/agent-models';
 
 import {
   toolStatusOf,
@@ -179,18 +183,32 @@ export function buildTurnTimeline(input: {
   // order events actually arrived.
   type PendingItem =
     | { kind: 'snippet'; seq: number; snippet: AssistantSnippet }
-    | { kind: 'tool'; seq: number; activity: ToolActivity };
+    | { kind: 'tool'; seq: number; activity: ToolActivity }
+    | { kind: 'subagent'; seq: number; activity: SubagentActivity };
   const pending: PendingItem[] = [];
 
   for (const snippet of snippets) {
     pending.push({ kind: 'snippet', seq: snippet.seq, snippet });
   }
 
-  const liveOnly = input.liveActivity.filter(
-    (activity) => !seenToolIds.has(activity.toolCallId),
-  );
+  const liveOnly = input.liveActivity.filter((activity) => {
+    if (seenToolIds.has(activity.toolCallId)) return false;
+    // Delegates are rendered by subagent steps instead (lean line while
+    // running, digest card once settled) — keeping the tool row would show
+    // the same delegate twice in the reading path. A refused spawn has no
+    // subrun event, so its failed row still renders.
+    if (activity.toolName === 'delegate') {
+      if (activity.status === 'running') return false;
+      const text = previewToArgs(activity.resultPreview);
+      if (parseSubagentHeader(text ?? '')) return false;
+    }
+    return true;
+  });
   for (const activity of liveOnly) {
     pending.push({ kind: 'tool', seq: activity.seq, activity });
+  }
+  for (const activity of input.subagentActivity ?? []) {
+    pending.push({ kind: 'subagent', seq: activity.seq, activity });
   }
 
   pending.sort((a, b) => a.seq - b.seq);
@@ -217,17 +235,14 @@ export function buildTurnTimeline(input: {
           content: item.snippet.content,
         });
       }
+    } else if (item.kind === 'subagent') {
+      flushTools();
+      steps.push({ type: 'subagent', activity: item.activity });
     } else {
       pendingTools.push(item.activity);
     }
   }
   flushTools();
-
-  // Sub-agent delegation cards — rendered in seq order alongside other steps.
-  const subagentSteps = input.subagentActivity ?? [];
-  for (const activity of subagentSteps) {
-    steps.push({ type: 'subagent', activity });
-  }
 
   const stream = input.streaming;
   const streamContent = stream?.content.trim();
