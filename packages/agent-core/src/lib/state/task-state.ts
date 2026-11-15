@@ -196,6 +196,11 @@ export class TaskStateTracker {
     return this.findings.length;
   }
 
+  /** Sub-agents' open questions kept so far. */
+  get childGapCount(): number {
+    return this.childGaps.length;
+  }
+
   /** Set the provisional shape at the start of a run (see inferTaskShape). */
   setShape(shape: TaskShape): void {
     this.shapeValue = shape;

@@ -88,10 +88,25 @@ export async function runLoop(
   // What a call counts as comes from the run's own tools (a tool's declared
   // traits, else the built-in table), so a new tool is evidence too.
   const task = new TaskStateTracker(traitsResolver((name) => tools.byName.get(name)?.traits));
+  // The task record (findings and sub-agent gaps) goes to the host each time
+  // it changes, so a run that dies keeps what it found; the host also stores
+  // it when the run finishes.
+  let recorded = { findings: 0, gaps: 0 };
   const trace = (event: TraceEvent): void => {
     sink(event);
     const change = task.apply(event);
     if (change) sink({ type: 'task_phase', runId, iteration: task.iteration, ...change });
+    if (config.onTaskRecord && (event.type === 'tool_complete' || event.type === 'child_findings')) {
+      const now = { findings: task.findingCount, gaps: task.childGapCount };
+      if (now.findings !== recorded.findings || now.gaps !== recorded.gaps) {
+        recorded = now;
+        try {
+          config.onTaskRecord(task.snapshot());
+        } catch (error) {
+          console.error('[loop] onTaskRecord failed:', error instanceof Error ? error.message : error);
+        }
+      }
+    }
   };
   const usage = emptyRunUsage();
   const startedAt = Date.now();

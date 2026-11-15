@@ -110,6 +110,17 @@ export type RunLoopConfig = {
    * the loop nudges once, then finishes incomplete instead of a clean stop.
    */
   hasOpenPlanWork?: () => boolean | Promise<boolean>;
+  /**
+   * A scope (what the user's current request covers) is recorded on the
+   * plan. With one, open in-scope todos end the run on its plan limit after
+   * the nudge; without one, the answer stands after it (policy/finish).
+   */
+  isPlanScoped?: () => boolean | Promise<boolean>;
+  /**
+   * The run's task record changed (a finding recorded, sub-agent findings
+   * merged). The host stores it so a run that dies keeps what it found.
+   */
+  onTaskRecord?: (task: TaskStateSnapshot) => void;
   /** Budget for mid-turn tool-result stubbing. Defaults to DEFAULT_CONTEXT_BUDGET. */
   contextBudget?: ContextBudget;
   /** Harness switches resolved by the host at run start. Defaults to DEFAULT_HARNESS_FLAGS. */

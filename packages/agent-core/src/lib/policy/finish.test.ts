@@ -27,13 +27,17 @@ describe('changeGate', () => {
 });
 
 describe('planGate', () => {
-  it('nudges an Agent run once for open plan work, then stops', () => {
-    expect(planGate({ openPlanWork: false, nudges: 0, posture: 'agent' })).toBe('pass');
-    expect(planGate({ openPlanWork: true, nudges: 0, posture: 'agent' })).toBe('nudge');
-    expect(planGate({ openPlanWork: true, nudges: 1, posture: 'agent' })).toBe('stop');
+  it('nudges an Agent run once for open in-scope work, then stops', () => {
+    expect(planGate({ openPlanWork: false, nudges: 0, posture: 'agent', scoped: true })).toBe('pass');
+    expect(planGate({ openPlanWork: true, nudges: 0, posture: 'agent', scoped: true })).toBe('nudge');
+    expect(planGate({ openPlanWork: true, nudges: 1, posture: 'agent', scoped: true })).toBe('stop');
+  });
+  it('without a scope, nudges once and then lets the answer stand', () => {
+    expect(planGate({ openPlanWork: true, nudges: 0, posture: 'agent', scoped: false })).toBe('nudge');
+    expect(planGate({ openPlanWork: true, nudges: 1, posture: 'agent', scoped: false })).toBe('pass');
   });
   it('passes a read-only run: it cannot work on the todos', () => {
-    expect(planGate({ openPlanWork: true, nudges: 0, posture: 'plan' })).toBe('pass');
-    expect(planGate({ openPlanWork: true, nudges: 0, posture: 'ask' })).toBe('pass');
+    expect(planGate({ openPlanWork: true, nudges: 0, posture: 'plan', scoped: true })).toBe('pass');
+    expect(planGate({ openPlanWork: true, nudges: 0, posture: 'ask', scoped: true })).toBe('pass');
   });
 });

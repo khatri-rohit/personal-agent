@@ -88,7 +88,12 @@ describe('runLoop limits', () => {
     expect(result.limitReason).toMatch(/^limit\.finish:/);
   });
 
-  it('nudges once then finishes incomplete while a final plan has open todos', async () => {
+  it.each([
+    // The scope (what the request covers) still has open todos: the run is held to it.
+    { scoped: true, status: 'incomplete' },
+    // No scope recorded: the harness cannot know which todos were asked for, so the answer stands.
+    { scoped: false, status: 'completed' },
+  ])('nudges once, then with scope=$scoped finishes $status while the plan has open todos', async ({ scoped, status }) => {
     const tools = createToolRegistry([]);
     const seen: string[] = [];
     const modelCall: ModelCallFn = async (_model, messages) => {
@@ -102,15 +107,17 @@ describe('runLoop limits', () => {
       tools,
       {
         model: 'test',
-          mode: 'workspace',
+        mode: 'workspace',
         hasOpenPlanWork: () => true,
+        isPlanScoped: () => scoped,
         limits: { maxIterations: 8, toolTimeoutMs: 5_000 },
       },
     );
-    expect(result.status).toBe('incomplete');
+    expect(result.status).toBe(status);
     expect(seen).toHaveLength(2);
     expect(seen[1]).toMatch(/Open todos remain/);
-    expect(result.limitReason).toMatch(/^limit\.plan:/);
+    if (scoped) expect(result.limitReason).toMatch(/^limit\.plan:/);
+    else expect(result.limitReason).toBeUndefined();
   });
 
   it.each(['plan', 'ask'] as const)('does not hold a read-only %s run to open plan todos it cannot work on', async (posture) => {

@@ -39,7 +39,7 @@ router.post('/run', asyncRoute(async (req: Request, res: Response) => {
   });
 }));
 
-const REJECTION_STATUS = { invalid: 400, not_found: 404, busy: 409 } as const;
+const REJECTION_STATUS = { invalid: 400, not_found: 404, busy: 409, paused: 429 } as const;
 
 /**
  * POST /api/agent/context/estimate

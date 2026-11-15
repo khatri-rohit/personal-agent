@@ -242,6 +242,7 @@ export { lastRunFrom, parseThreadLastRun } from './lib/thread-last-run.js';
 export type { LimitCode } from './lib/limits.js';
 export {
   RUN_CANCELLED_REASON,
+  RUN_PAUSED_PREFIX,
   RUN_INTERRUPTED_REASON,
   limitMessage,
   limitCodeOf,
@@ -257,6 +258,7 @@ export type {
   PlanDecision,
   PlanNote,
   PlanNoteKind,
+  PlanScope,
   PlanTodo,
   PlanTodoCounts,
   PlanTodoStatus,
@@ -271,11 +273,14 @@ export {
   MAX_PLAN_TODO_CHARS,
   MAX_PLAN_TODOS,
   MAX_PLAN_PROMPT_NOTES,
+  MAX_PLAN_SCOPE_LABEL_CHARS,
   emptyThreadPlan,
   formatThreadPlanForPrompt,
+  isPlanScoped,
   isThreadPlanEmpty,
   parseThreadPlan,
   planHasOpenWork,
+  planScopedTodos,
   planTodoCounts,
   selectPlanForRewind,
 } from './lib/plan.js';

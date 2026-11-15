@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { isPauseStop, isResumableStop, RUN_CANCELLED_REASON, type ThinkingValue, type ThreadLastRun } from '@agent/agent-models';
+import { isPauseStop, isResumableStop, limitMessage, RUN_CANCELLED_REASON, RUN_PAUSED_PREFIX, type ThinkingValue, type ThreadLastRun } from '@agent/agent-models';
 
 import { readCatalog } from '../read/catalog.js';
 import { readLedger } from '../read/ledger.js';
@@ -261,13 +261,24 @@ export async function runTrial(
       if (turnIndex > 0 && (result.ended !== 'settled' || limitReason)) break;
       let message = turnPrompt;
       for (;;) {
-        const { runId } = await api.startRun({
-          threadId: thread.id,
-          content: message,
-          model: opts.model,
-          posture: task.posture,
-          ...(thinking !== undefined ? { thinking } : {}),
-        });
+        let started: { runId: string };
+        try {
+          started = await api.startRun({
+            threadId: thread.id,
+            content: message,
+            model: opts.model,
+            posture: task.posture,
+            ...(thinking !== undefined ? { thinking } : {}),
+          });
+        } catch (error) {
+          // The host refuses a start while the account is paused: the same
+          // capacity outcome as a run that paused (no grade), not an error.
+          const text = error instanceof Error ? error.message : String(error);
+          if (!text.startsWith(RUN_PAUSED_PREFIX)) throw error;
+          limitReason = limitMessage('limit.capacity', text.slice(RUN_PAUSED_PREFIX.length).trim());
+          break;
+        }
+        const { runId } = started;
         result.runIds.push(runId);
         const budgetStop = task.budget.maxPromptTokens * OVER_BUDGET_FACTOR;
         let lastRun: ThreadLastRun | null = null;

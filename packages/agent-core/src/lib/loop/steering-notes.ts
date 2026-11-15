@@ -11,7 +11,7 @@ import { pushHarnessNote, type RunState } from './run-state';
  */
 
 export const OPEN_PLAN_WORK_NUDGE =
-  'Open todos remain on the Final plan. Update todo status or finish those items before ending the turn. Do not claim the work is done.';
+  'Open todos remain on the Final plan. If the user\'s current request covers them, finish them or update their status before ending the turn, and do not claim that work is done. If the request covers only part of the plan, record that with todo scope, then answer and list what remains.';
 
 const BUDGET_NUDGE =
   'Run budget nearly spent. Finish the current step, run verification once, and report what is done and what is left. Do not start new work.';

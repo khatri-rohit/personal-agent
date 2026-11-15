@@ -37,11 +37,22 @@ export function changeGate(input: {
 }
 
 /**
- * Plan gate: open todos on the plan send an Agent run back once, then end
- * it on its plan limit. A read-only run (Plan, Ask) passes: it cannot work
- * on the todos, so they never hold its answer back.
+ * Plan gate: open todos send an Agent run back once. With a scope recorded
+ * (what the user's request covers) the open todos are the scope's, and a
+ * run still leaving them after the nudge ends on its plan limit. Without a
+ * scope the harness cannot know which todos the user asked for ("is phase
+ * 1 done?" must not end incomplete because phases 2–10 are open), so after
+ * the one nudge the answer stands. A read-only run (Plan, Ask) passes: it
+ * cannot work on the todos.
  */
-export function planGate(input: { openPlanWork: boolean; nudges: number; posture: string }): 'pass' | 'nudge' | 'stop' {
+export function planGate(input: {
+  openPlanWork: boolean;
+  nudges: number;
+  posture: string;
+  /** A scope is recorded on the plan. */
+  scoped: boolean;
+}): 'pass' | 'nudge' | 'stop' {
   if (input.posture !== 'agent' || !input.openPlanWork) return 'pass';
-  return input.nudges < 1 ? 'nudge' : 'stop';
+  if (input.nudges < 1) return 'nudge';
+  return input.scoped ? 'stop' : 'pass';
 }

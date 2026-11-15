@@ -10,6 +10,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import {
+  isPauseStop,
   isResumableStop,
   type Message,
   type System1FallbackKind,
@@ -313,7 +314,7 @@ export function MessageList({
                   onClick={() => void runTranscriptAction(() => onContinue())}
                   className="type-caption rounded-md border border-border px-2 py-0.5 text-foreground hover:bg-muted disabled:opacity-50"
                 >
-                  Continue
+                  {isPauseStop(chatState.limitNotice.reason) ? 'Resume' : 'Continue'}
                 </button>
               ) : null}
             </div>

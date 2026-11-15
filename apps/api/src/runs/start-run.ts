@@ -2,12 +2,14 @@ import type { StartRunRequest } from '@agent/agent-models';
 import {
   HOME_MODE,
   imageAttachments,
+  isPlanScoped,
   isWorkspaceKind,
   lastRunFrom,
   MIN_CONTEXT_WINDOW_TOKENS,
   normalizeRunPosture,
   parseContextWindowMode,
   planHasOpenWork,
+  RUN_PAUSED_PREFIX,
   SYSTEM1_AUTO_THINKING,
 } from '@agent/agent-models';
 import {
@@ -25,6 +27,7 @@ import {
 import {
   appendUsageLog,
   capacityEnabled,
+  capacityPauseReason,
   capacitySnapshot,
   createCapacityGate,
 } from '../models/capacity';
@@ -54,15 +57,15 @@ export type StartRunResult =
   | { ok: true; runId: string }
   | {
       ok: false;
-      /** invalid request · unknown thread · thread already running */
-      reason: 'invalid' | 'not_found' | 'busy';
+      /** invalid request · unknown thread · thread already running · account usage limit reached */
+      reason: 'invalid' | 'not_found' | 'busy' | 'paused';
       error: string;
       /** The active run, when reason is busy. */
       runId?: string;
     };
 
 function reject(
-  reason: 'invalid' | 'not_found' | 'busy',
+  reason: 'invalid' | 'not_found' | 'busy' | 'paused',
   error: string,
   runId?: string,
 ): StartRunResult {
@@ -148,6 +151,17 @@ async function startClaimedRun(
 
   if (isWorkspaceKind(thread.kind) && !thread.workspaceRoot) {
     return reject('invalid', 'workspace thread has no workspaceRoot');
+  }
+
+  // The account's usage limit is reached: a run would pause before its
+  // first call. Refuse before anything is written (no rewind, no user row),
+  // so the message stays with the client to send after the reset.
+  const paused = endpointFromLocal(local) === 'cloud' ? capacityPauseReason() : null;
+  if (paused) {
+    return reject(
+      'paused',
+      `${RUN_PAUSED_PREFIX} ${paused}. Your message was not sent; send it again after the reset.`,
+    );
   }
 
   if (rewindThroughSeq !== undefined) {
@@ -300,6 +314,20 @@ async function startClaimedRun(
       : undefined;
   const balanceBefore = capacitySnapshot();
 
+  // The run's task record, written as it grows and once more at the end.
+  // Writes are chained so an older snapshot never lands after a newer one
+  // (each write replaces this run's record in the file).
+  let recordWrites: Promise<void> = Promise.resolve();
+  const saveTaskRecord = (task: Parameters<typeof taskRecordFromRun>[1]): void => {
+    const record = taskRecordFromRun(runId, task);
+    if (!record) return;
+    recordWrites = recordWrites
+      .then(() => store.appendTaskRecord(threadId, record))
+      .catch((error: unknown) => {
+        console.error('appendTaskRecord failed:', error instanceof Error ? error.message : error);
+      });
+  };
+
   // Replaced in onFinished; survives only if the server stops mid-run.
   await store.writeLastRun(
     threadId,
@@ -336,6 +364,9 @@ async function startClaimedRun(
     },
     hasOpenPlanWork: async () =>
       planHasOpenWork(await store.readPlan(threadId)),
+    isPlanScoped: async () => isPlanScoped(await store.readPlan(threadId)),
+    // Saved as it grows, so a run that dies keeps its findings.
+    onTaskRecord: (task) => saveTaskRecord(task),
     // The loop binds the runner to this run (signal, budget, capabilities).
     ...(isWorkspaceKind(thread.kind) && thread.workspaceRoot
       ? {
@@ -384,15 +415,10 @@ async function startClaimedRun(
         );
       }
       // The run's findings outlive it: later runs of the thread see them in
-      // their prompt prefix (a rewind that cuts this run drops them).
-      const record = taskRecordFromRun(runId, result.task);
-      if (record) {
-        try {
-          await store.appendTaskRecord(threadId, record);
-        } catch (error) {
-          console.error('appendTaskRecord failed:', error instanceof Error ? error.message : error);
-        }
-      }
+      // their prompt prefix (a rewind that cuts this run drops them). The
+      // final record goes after any save still in flight, so it is the last.
+      saveTaskRecord(result.task);
+      await recordWrites;
       // Restarts the idle timer; the review runs once the thread goes quiet.
       scheduleLearningReview({
         threadId,
