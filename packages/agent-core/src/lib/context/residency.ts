@@ -322,13 +322,20 @@ export async function manageWorkingSet(
   if (overCap) {
     // Down to the low mark in one pass, so the next results fit without one.
     // Results a finding cites go first (the finding stands for them), then
-    // the least recently touched.
+    // the least recently touched. Material under judgement (`no_aging`, a
+    // diff) goes last: it is usually the oldest result, so by touch alone it
+    // left first, and a live review then fetched it back three times.
     let residentChars = residentOf();
+    const judged = (candidate: Candidate) => Number(candidate.traits?.residency === 'no_aging');
     const order = candidates
       .filter((candidate) => candidate.index >= runStart && !candidate.pinned && !chosen.has(candidate.index))
       .sort(
         (a, b) =>
-          Number(b.cited) - Number(a.cited) || a.touch - b.touch || b.chars - a.chars || a.index - b.index,
+          Number(b.cited) - Number(a.cited) ||
+          judged(a) - judged(b) ||
+          a.touch - b.touch ||
+          b.chars - a.chars ||
+          a.index - b.index,
       );
     for (const candidate of order) {
       if (residentChars <= lowChars) break;
