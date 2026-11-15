@@ -11,7 +11,6 @@ import {
 } from '../context/residency';
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
 import { sha256Text } from '../tools/web/source';
-import { pathFromToolArgs } from './call-identity';
 import { tracePolicyDecision } from './policy-trace';
 import { recordDeltaTokens, recordMessage, removeRecordMessages } from './record-message';
 import type { RunState } from './run-state';
@@ -72,7 +71,7 @@ export async function manageResidency(s: RunState): Promise<void> {
       s.contextBudget,
       s.tools.definitions,
       putBlob,
-      { milestone: true, stepOf, session: s.task.taskClass === 'long' },
+      { milestone: true, stepOf, session: s.task.taskClass === 'long', traitsOf: s.traitsOf },
     );
     if (compacted) {
       traceFold(s, compacted, 'milestone');
@@ -88,6 +87,7 @@ export async function manageResidency(s: RunState): Promise<void> {
     keepFindingCalls: !s.flags.stateCard,
     stepOf,
     putBlob,
+    traitsOf: s.traitsOf,
   });
   if (folded) {
     traceFold(s, folded, 'residue');
@@ -101,7 +101,7 @@ export async function manageResidency(s: RunState): Promise<void> {
       s.contextBudget,
       s.tools.definitions,
       putBlob,
-      { stepOf },
+      { stepOf, traitsOf: s.traitsOf },
     );
     if (compacted) {
       traceFold(s, compacted, undefined);
@@ -139,6 +139,7 @@ export async function manageResidency(s: RunState): Promise<void> {
       stepOf,
       putBlob,
       requireSaving: true,
+      traitsOf: s.traitsOf,
     });
     if (residue) {
       traceFold(s, residue, 'residue');
@@ -172,7 +173,7 @@ async function workingSetPass(
     budget,
     s.tools.definitions,
     putBlob,
-    pathFromToolArgs,
+    s.traitsOf,
     {
       iteration: s.iterations,
       callIteration: (id) => s.task.callIteration(id),

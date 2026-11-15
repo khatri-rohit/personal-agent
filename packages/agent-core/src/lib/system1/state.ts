@@ -1,5 +1,6 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
+import { userTextOf } from '../context/message-origin';
 import type { EffortSignals } from '../policy';
 
 const TASK_MAX = 600;
@@ -33,10 +34,13 @@ export function buildEffortState(input: {
 }): string {
   const { messages, runStart, signals } = input;
 
+  // The task is what the user asked, in their own words: not the harness
+  // context in front of their message (the plan, the last-run note).
   let task = '';
   for (let i = Math.min(runStart, messages.length) - 1; i >= 0; i--) {
-    if (messages[i]?.role === 'user') {
-      task = textOf(messages[i]);
+    const text = userTextOf(messages[i]);
+    if (text !== null) {
+      task = text;
       break;
     }
   }

@@ -50,7 +50,7 @@ function needsStopCheck(s: RunState, answer: string): boolean {
     alreadySent: s.stopChecked,
     posture: s.posture,
     unchecked: s.task.unchecked,
-    canRunChecks: s.tools.byName.has('run_terminal'),
+    canRunChecks: s.can.check,
     answer,
   });
 }

@@ -1,5 +1,7 @@
 import type { LedgerEnvelope } from '@agent/agent-models';
 
+import { builtinToolTraits } from '../tools/traits';
+
 /**
  * Deterministic per-send context, built from the ledger with no model call.
  *
@@ -70,16 +72,19 @@ function evidenceLine(info: CallInfo, content: string): string | null {
   if (content.startsWith(FAILED_PREFIX)) {
     return `${info.name} failed: ${clip(content.slice(FAILED_PREFIX.length), 160)}`;
   }
-  if (info.name === 'edit_file') {
-    const path = typeof info.args.path === 'string' ? info.args.path : '?';
-    return `edit_file ${path} → ${clip(content.split('\n')[0] ?? '', 140)}`;
+  // What counts is decided by the tool's traits (the ledger knows only
+  // names, so the built-in table): changes and commands.
+  const traits = builtinToolTraits(info.name);
+  if (traits?.effect === 'change') {
+    const path = traits.file?.(info.args) ?? '?';
+    return `${info.name} ${path} → ${clip(content.split('\n')[0] ?? '', 140)}`;
   }
-  if (info.name === 'run_terminal') {
-    const command = typeof info.args.command === 'string' ? info.args.command : '?';
+  if (traits?.effect === 'command') {
+    const command = traits.repeatKey?.(info.args) ?? '?';
     // `cwd: …`, then `exit <n>` / `signal <name>`; blocked runs return one line.
     const status = content.split('\n')[1]?.trim() ?? '';
     const outcome = /^(exit|signal) /.test(status) ? status : clip(content, 120);
-    return `run_terminal \`${clip(command, 100)}\` → ${outcome}`;
+    return `${info.name} \`${clip(command, 100)}\` → ${outcome}`;
   }
   return null;
 }

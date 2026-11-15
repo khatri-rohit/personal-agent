@@ -6,6 +6,8 @@ import {
   type Snapshot,
 } from '@agent/agent-models';
 
+import { builtinToolTraits } from '../tools/traits';
+
 const BRIEF_MAX = 1_200;
 const SUMMARY_MAX = 8_000;
 const TURN_MAX = 400;
@@ -207,13 +209,10 @@ function collectToolFacts(envelopes: LedgerEnvelope[]): {
           files.push(filePath);
         }
       }
-      if (
-        call.function.name === 'run_terminal' &&
-        typeof args.command === 'string' &&
-        args.command.trim()
-      ) {
-        commands.push(args.command.trim());
-      }
+      // A command call (its tool's traits; the ledger knows only names).
+      const traits = builtinToolTraits(call.function.name);
+      const command = traits?.effect === 'command' ? traits.repeatKey?.(args) : null;
+      if (command) commands.push(command);
     }
   }
   return { files: files.slice(-8), commands: commands.slice(-4) };

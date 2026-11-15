@@ -1,5 +1,7 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
+import { builtinToolTraits } from '../tools/traits';
+
 /**
  * Outcome cards: what an old tool call did and what came back, in one line.
  * They replace bare "(stub) … omitted" rows so a later turn can still answer
@@ -44,8 +46,10 @@ function clip(text: string, max: number): string {
 const FAILED_PREFIX = 'Tool execution failed:';
 
 /**
- * The part of a result worth keeping, by tool family. Terminal errors sit at
- * the end of the output, so a failed command keeps its last lines.
+ * The part of a result worth keeping, by what the tool is (its traits).
+ * Command errors sit at the end of the output, so a failed command keeps its
+ * last lines. Cards are built from the ledger, where only tool names are
+ * known, so this reads the built-in table.
  */
 function outcomeOf(name: string, content: string): string {
   if (content.startsWith(FAILED_PREFIX)) {
@@ -56,7 +60,8 @@ function outcomeOf(name: string, content: string): string {
     .map((line) => line.trim())
     .filter(Boolean);
   const first = lines[0] ?? '(empty result)';
-  if (name === 'run_terminal') {
+  const traits = builtinToolTraits(name);
+  if (traits?.effect === 'command') {
     // `cwd: …`, then `exit <n>` / `signal <name>`, then output.
     const status = lines[1] ?? '';
     if (!/^(exit|signal) /.test(status)) return clip(first, 200);
@@ -66,7 +71,8 @@ function outcomeOf(name: string, content: string): string {
       ? `${status}; ${clip(output.at(-1) ?? '', 160)}`
       : `${status}; ${clip(output.slice(-3).join(' | '), 240)}`;
   }
-  if (name === 'glob' || name === 'grep') {
+  // A search: its size and first line say what it found.
+  if (traits?.dependsOn === 'workspace' && !traits.lineRange) {
     return `${lines.length} lines; first: ${clip(first, 140)}`;
   }
   return clip(first, 200);

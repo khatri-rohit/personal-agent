@@ -41,7 +41,7 @@ export function maybeSteerProgress(s: RunState): void {
   if (!s.flags.stateCard) {
     const perCall = Math.max(1, estimatePromptTokens(s.messages, s.tools.definitions));
     const callsLeft = Math.floor(Math.max(0, max - spent) / perCall);
-    const delegate = s.tools.byName.has('delegate')
+    const delegate = s.can.delegate
       ? ' If one specific fact is still missing, delegate(explore) with that question instead of searching more yourself.'
       : '';
     pushHarnessNote(
@@ -60,7 +60,7 @@ export function maybeSteerProgress(s: RunState): void {
 }
 
 export function maybeSuggestAdvisor(s: RunState): void {
-  if (s.advisorHinted || !s.tools.byName.has('delegate')) return;
+  if (s.advisorHinted || !s.can.delegate) return;
   s.advisorHinted = true;
   if (s.flags.stateCard) s.advisories.push(ADVISOR_HINT);
   else pushHarnessNote(s, ADVISOR_HINT);

@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-import type { ModelRole } from '@agent/agent-models';
+import type { ModelRole, SubagentThoroughness } from '@agent/agent-models';
 
 import type { ProfileThinking } from '../system1/effort';
 import { getSkill } from '../tools/skills';
@@ -131,6 +131,7 @@ function frontmatter(raw: string): { fields: Map<string, string>; body: string }
 
 const ROLES: ModelRole[] = ['main', 'fast', 'strong'];
 const THINKING: ProfileThinking[] = ['off', 'default', 'high', 'max'];
+const EFFORTS: SubagentThoroughness[] = ['quick', 'medium', 'thorough'];
 const USER_CONTEXTS: SubagentContext[] = ['none', 'diff'];
 
 function parseUserProfile(file: string, raw: string): SubagentProfile | string {
@@ -144,6 +145,11 @@ function parseUserProfile(file: string, raw: string): SubagentProfile | string {
   if (!ROLES.includes(role)) return `${file}: model must be one of ${ROLES.join(', ')}`;
   const thinking = (fields.get('thinking') ?? 'default') as ProfileThinking;
   if (!THINKING.includes(thinking)) return `${file}: thinking must be one of ${THINKING.join(', ')}`;
+  // The work budget a brief that names none gets: medium, like the built-in
+  // profiles, so a user agent never runs on the 450-call ceiling by default.
+  // `maxTurns` below still caps it from above.
+  const effort = (fields.get('effort') ?? 'medium') as SubagentThoroughness;
+  if (!EFFORTS.includes(effort)) return `${file}: effort must be one of ${EFFORTS.join(', ')}`;
   const context = (fields.get('context') ?? 'none') as SubagentContext;
   if (!USER_CONTEXTS.includes(context)) return `${file}: context must be none or diff`;
   const tools = (fields.get('tools') ?? 'glob, grep, read_file, recall')
@@ -171,6 +177,7 @@ function parseUserProfile(file: string, raw: string): SubagentProfile | string {
     thinking,
     tools,
     limits,
+    defaultThoroughness: effort,
     context,
     rules: fields.get('rules') === 'true' || context === 'diff',
     report: fields.get('report') !== 'false',

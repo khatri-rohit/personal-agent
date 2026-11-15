@@ -14,6 +14,7 @@ import {
 } from '@agent/agent-models';
 
 import { refreshContextReport } from '../context/assemble-context';
+import { originOf } from '../context/message-origin';
 import { consoleTrace } from '../events/trace';
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
 import { inferTaskShape, TaskStateTracker } from '../state/task-state';
@@ -28,6 +29,7 @@ import {
 } from '../system1/effort';
 import { buildEffortState } from '../system1/state';
 import { getSkill } from '../tools/skills';
+import { traitsResolver } from '../tools/traits';
 import type { ToolRegistry } from '../tools/types';
 import {
   appendDurable,
@@ -83,7 +85,9 @@ export async function runLoop(
   // Task state is reduced from the same event stream the sink records, so an
   // offline reader can rebuild it from the trace; phase changes are traced
   // right after the event that caused them.
-  const task = new TaskStateTracker();
+  // What a call counts as comes from the run's own tools (a tool's declared
+  // traits, else the built-in table), so a new tool is evidence too.
+  const task = new TaskStateTracker(traitsResolver((name) => tools.byName.get(name)?.traits));
   const trace = (event: TraceEvent): void => {
     sink(event);
     const change = task.apply(event);
@@ -285,9 +289,13 @@ async function runLoopCore(
       }
 
       const nudged = turnSignals.nudged;
+      // A new instruction: the user's message, or a harness note. The task
+      // record the harness writes into the history is user-role too, but it
+      // tells the model nothing new to act on.
+      const newest = originOf(messages[messages.length - 1]);
       const effortSignals: EffortSignals = {
         iteration: s.iterations,
-        steering: nudged || messages[messages.length - 1]?.role === 'user',
+        steering: nudged || newest === 'user' || newest === 'note',
         toolError: turnSignals.toolError,
         wrote: turnSignals.wrote,
         idleSteps: s.task.stepsSinceEvidence,

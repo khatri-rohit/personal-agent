@@ -38,8 +38,10 @@ import { stubWebSourceCard } from '../tools/web/source';
 import { hostListedWebUrls } from '../tools/web/trust';
 import { liveResultCapChars } from '../tools/workspace/tools';
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
+import { HARNESS_CONTEXT_CLOSE, HARNESS_CONTEXT_OPEN } from './message-origin';
 import { outcomeCard, toolCallIndex, type ToolCallInfo } from './outcome-card';
 import { MIN_EVICT_CHARS } from './residency';
+import { traitsResolver } from '../tools/traits';
 import { buildEvidenceLog, buildSituationCard } from './situation';
 
 export type MentionedThreadContext = {
@@ -521,39 +523,9 @@ function toParam(
   };
 }
 
-const HARNESS_CONTEXT_OPEN =
-  '[Context from the harness for this message. The user did not write it.]';
-const HARNESS_CONTEXT_CLOSE =
-  "[End of harness context. The user's message follows.]";
-
-/** The user's own words of a message `withHarnessContext` put a header on. */
-function withoutHarnessContext(text: string): string {
-  if (!text.startsWith(HARNESS_CONTEXT_OPEN)) return text;
-  const close = text.indexOf(HARNESS_CONTEXT_CLOSE);
-  return close < 0 ? text : text.slice(close + HARNESS_CONTEXT_CLOSE.length).trimStart();
-}
-
-/**
- * What the user asked in the current turn: the last user message of an
- * assembled prompt, without the harness context in front of it. Read it
- * when the run starts, before the loop appends its own user-role messages
- * (harness notes, the task record): those are not the user's words.
- */
-export function currentUserRequest(messages: ChatCompletionMessageParam[]): string | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (message?.role !== 'user') continue;
-    const text =
-      typeof message.content === 'string'
-        ? message.content
-        : message.content
-            .map((part) => (part.type === 'text' ? part.text : ''))
-            .filter(Boolean)
-            .join('\n\n');
-    return withoutHarnessContext(text);
-  }
-  return undefined;
-}
+// Who wrote a user-role message, and the user's own words of one, live in
+// message-origin.ts; re-exported for the callers that already import it here.
+export { currentUserRequest } from './message-origin';
 
 /**
  * Put per-send context at the top of the current user message. Assembly-time
@@ -574,6 +546,43 @@ function withHarnessContext(
       ? `${header}\n\n${first.content}`
       : [{ type: 'text', text: header }, ...first.content];
   return [{ role: 'user', content } as ChatCompletionMessageParam, ...turn.slice(1)];
+}
+
+/** A string argument value kept in full in an earlier turn's call; longer ones are cut. */
+const EARLIER_ARG_VALUE_MAX_CHARS = 300;
+
+/**
+ * Earlier turns' tool calls with long string argument values cut, for the
+ * calls `trim` picks. The arguments stay valid JSON with the same keys, so
+ * the call still reads as what it was; a value that is not a string, or a
+ * call that does not parse, is left as it is.
+ */
+function trimEarlierCallArguments(
+  calls: ChatCompletionMessageToolCall[],
+  trim: (call: { id: string; name: string }) => boolean,
+): ChatCompletionMessageToolCall[] {
+  return calls.map((call) => {
+    if (call.type !== 'function' || call.function.arguments.length <= EARLIER_ARG_VALUE_MAX_CHARS) return call;
+    if (!trim({ id: call.id, name: call.function.name })) return call;
+    let args: unknown;
+    try {
+      args = JSON.parse(call.function.arguments);
+    } catch {
+      return call;
+    }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return call;
+    let cut = false;
+    const shortened: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+      if (typeof value === 'string' && value.length > EARLIER_ARG_VALUE_MAX_CHARS) {
+        shortened[key] = `${value.slice(0, EARLIER_ARG_VALUE_MAX_CHARS)}… (${value.length.toLocaleString('en-US')} chars, cut in this earlier turn; the workspace or the result holds the rest)`;
+        cut = true;
+      } else {
+        shortened[key] = value;
+      }
+    }
+    return cut ? { ...call, function: { ...call.function, arguments: JSON.stringify(shortened) } } : call;
+  });
 }
 
 function layerTokens(
@@ -773,6 +782,21 @@ export function assembleContext(
     }
   }
 
+  // Arguments of earlier turns' calls are re-sent on every call too. Where
+  // what they carry is held elsewhere, long values are cut: a call whose
+  // result is now a card (the card names the call), or a call that changed
+  // the workspace (the file holds the change: an edit's oldText/newText).
+  // Measured on a live migration thread: arguments at a run's start fell
+  // from ~27k to ~21k tokens. Prompt-only: the ledger keeps them.
+  const traitsOf = traitsResolver((name) => input.tools.byName.get(name)?.traits);
+  const cardedCalls = new Set<string>();
+  for (const envelope of live) {
+    if (envelope.record.role !== 'tool') continue;
+    if (envelope.seq < keepToolsFrom || overCarryOver.has(envelope.seq)) cardedCalls.add(envelope.record.tool_call_id);
+  }
+  const trimCall = (call: { id: string; name: string }) =>
+    cardedCalls.has(call.id) || traitsOf(call.name)?.effect === 'change';
+
   for (const envelope of live) {
     const inTurn = lastUserSeq !== undefined && envelope.seq >= lastUserSeq;
     const oldTool =
@@ -822,6 +846,9 @@ export function assembleContext(
       };
     }
     if (!message) continue;
+    if (!inTurn && message.role === 'assistant' && message.tool_calls?.length) {
+      message = { ...message, tool_calls: trimEarlierCallArguments(message.tool_calls, trimCall) };
+    }
     if (inTurn) turnMessages.push(message);
     else tailMessages.push(message);
   }

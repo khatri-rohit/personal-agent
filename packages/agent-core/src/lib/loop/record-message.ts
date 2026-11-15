@@ -2,6 +2,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 
 import { CHARS_PER_TOKEN, type TaskFinding } from '@agent/agent-models';
 
+import { harnessMessage, originOf, RECORD_MESSAGE_PREFIX } from '../context/message-origin';
 import { recordSection } from '../state/record-view';
 
 /**
@@ -13,11 +14,10 @@ import { recordSection } from '../state/record-view';
  * carries only the findings recorded since. Prompt-only: it never reaches
  * the ledger, and the next boundary replaces it.
  */
-export const RECORD_MESSAGE_PREFIX =
-  "[Task record: this run's findings so far, written by the harness at its last prompt boundary, not from the user]";
+export { RECORD_MESSAGE_PREFIX };
 
 export function isRecordMessage(message: ChatCompletionMessageParam | undefined): boolean {
-  return message?.role === 'user' && typeof message.content === 'string' && message.content.startsWith(RECORD_MESSAGE_PREFIX);
+  return originOf(message) === 'record';
 }
 
 /** Drop the run's record message(s) from the live prompt; returns how many. */
@@ -38,10 +38,10 @@ function recordHeader(count: number): string {
 
 /** The record message for these findings, within `tokens` (the full record behind `blobSha` when it does not fit). */
 export function recordMessage(findings: TaskFinding[], tokens: number, blobSha?: string): ChatCompletionMessageParam {
-  return {
-    role: 'user',
-    content: [RECORD_MESSAGE_PREFIX, ...recordSection(findings, tokens, blobSha, recordHeader)].join('\n'),
-  };
+  return harnessMessage(
+    'record',
+    [RECORD_MESSAGE_PREFIX, ...recordSection(findings, tokens, blobSha, recordHeader)].join('\n'),
+  );
 }
 
 /** Tokens the card spends on findings recorded after the record message. */

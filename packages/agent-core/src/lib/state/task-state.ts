@@ -17,44 +17,23 @@ import {
 
 import { pathFromToolArgs } from '../loop/call-identity';
 import { taskClassFor } from '../policy';
+import { builtinToolTraits, toolArgs, type ToolTraits, type TraitsOf } from '../tools/traits';
+
+export { isCheckCommand } from '../tools/traits';
 
 /**
  * Reduces loop trace events into the run's task state (phase, working set,
  * evidence, task class). Deterministic and model-free: it reads exactly what
  * the trace sink records, so an offline reader can rebuild the same state
  * from a trace file. Residency, the harness card and the stop check read it.
+ *
+ * What a tool call counts as (a read, an edit, a check, a finding, a
+ * sub-agent) comes from the tool's traits (tools/traits.ts), never from its
+ * name: a new tool that declares them is evidence and working set like the
+ * built-in ones.
  */
 
 export type PhaseChange = { from: TaskPhase; to: TaskPhase; cause: string };
-
-const LOCATE_TOOLS = new Set([
-  'read_file',
-  'grep',
-  'glob',
-  'diff',
-  'recall',
-  'web_search',
-  'web_fetch',
-  'session_search',
-]);
-
-const RANGE_RE = /^\[lines (\d+)–(\d+) of (\d+)/;
-
-/** Words that make a command a project check. */
-const CHECK_RE =
-  /\b(test|tests|typecheck|type-check|tsc|lint|eslint|build|compile|check|vet|clippy|vitest|jest|pytest|mocha)\b/i;
-/** Commands that only look around, whatever their arguments contain. */
-const LOOK_ONLY_RE = /^(ls|dir|cat|type|head|tail|echo|pwd|cd|find|git|which|where|tree)\b/i;
-
-/**
- * A project check: build, typecheck, test, lint or compile. Only a check
- * that ran verifies edits; `git status` or `nx show project` do not.
- * Heuristic by design (word match on the command), kept in one place.
- */
-export function isCheckCommand(command: string): boolean {
-  const trimmed = command.trim();
-  return trimmed.length > 0 && !LOOK_ONLY_RE.test(trimmed) && CHECK_RE.test(trimmed);
-}
 
 function argString(args: unknown, key: string): string {
   if (args === null || typeof args !== 'object') return '';
@@ -169,6 +148,18 @@ export class TaskStateTracker {
   /** Files with a successful edit since the last check that ran. */
   private readonly uncheckedFiles = new Set<string>();
 
+  /**
+   * `traitsOf`: what each tool declares about its calls. The loop passes the
+   * run's registry; the default is the built-in table (tests, and a trace
+   * read offline, where only the tool names are known).
+   */
+  constructor(private readonly traitsOf: TraitsOf = builtinToolTraits) {}
+
+  /** The workspace file a call is about, by its tool's traits. */
+  private fileOf(traits: ToolTraits | undefined, args: unknown): string | null {
+    return traits?.file?.(toolArgs(args)) ?? null;
+  }
+
   get current(): TaskPhase {
     return this.phase;
   }
@@ -279,14 +270,16 @@ export class TaskStateTracker {
       case 'tool_complete':
         this.onToolComplete(event);
         return null;
-      case 'tool_error':
+      case 'tool_error': {
         this.toolErrors += 1;
-        if (event.toolName === 'edit_file') {
+        const traits = this.traitsOf(event.toolName);
+        if (traits?.effect === 'change') {
           this.failedEdits += 1;
-          const path = pathFromToolArgs(event.toolCallId ? this.calls.get(event.toolCallId)?.args : undefined);
+          const path = this.fileOf(traits, event.toolCallId ? this.calls.get(event.toolCallId)?.args : undefined);
           if (path) this.entry(path).failedEdits += 1;
         }
         return null;
+      }
       case 'limit':
         return this.move('blocked', 'limit');
       case 'child_findings':
@@ -330,56 +323,64 @@ export class TaskStateTracker {
     // A finding is recorded when its result comes back (onToolComplete): the
     // tool checks the evidence and the record keeps what it checked. The
     // phase says the run is recording, not still locating (F-7).
-    if (name === 'record_finding') return this.move('record', 'record_finding');
-    if (name === 'edit_file') return this.move('change', 'edit_file');
-    if (name === 'run_terminal') {
-      if (!isCheckCommand(argString(args, 'command'))) return this.move('locate', 'command');
-      return this.move('verify', this.unverifiedSince !== null ? 'check after edit' : 'check');
-    }
-    if (name === 'delegate') {
-      const profile = argString(args, 'profile');
-      if (profile === 'review') {
-        this.reviewed = true;
-        return this.move('verify', 'delegate review');
+    const traits = this.traitsOf(name);
+    switch (traits?.effect) {
+      case 'record':
+        return this.move('record', name);
+      case 'change':
+        return this.move('change', name);
+      case 'command':
+        if (!traits.isCheck?.(toolArgs(args))) return this.move('locate', 'command');
+        return this.move('verify', this.unverifiedSince !== null ? 'check after edit' : 'check');
+      case 'subagent': {
+        const profile = argString(args, 'profile');
+        if (profile === 'review') {
+          this.reviewed = true;
+          return this.move('verify', 'delegate review');
+        }
+        if (profile === 'explore') return this.move('locate', 'delegate explore');
+        return null;
       }
-      if (profile === 'explore') return this.move('locate', 'delegate explore');
-      return null;
+      case 'read': {
+        // Looking again at a file edited since the last check is part of
+        // that change; anything else is locating (often the next fix of a
+        // multi-fix task). Outstanding edits stay visible in
+        // evidence.unverifiedSince.
+        const path = this.fileOf(traits, args);
+        if (path !== null && this.uncheckedFiles.has(path)) return this.move('change', name);
+        return this.move('locate', name);
+      }
+      default:
+        return null;
     }
-    if (LOCATE_TOOLS.has(name)) {
-      // Re-reading a file edited since the last check is part of that change;
-      // anything else is locating (often the next fix of a multi-fix task).
-      // Outstanding edits stay visible in evidence.unverifiedSince.
-      const path = name === 'read_file' ? pathFromToolArgs(args) : null;
-      if (path !== null && this.uncheckedFiles.has(path)) return this.move('change', name);
-      return this.move('locate', name);
-    }
-    return null;
   }
 
   private onToolComplete(event: Extract<TraceEvent, { type: 'tool_complete' }>): void {
     const call = event.toolCallId ? this.calls.get(event.toolCallId) : undefined;
-    if (event.toolName === 'record_finding') {
+    const traits = this.traitsOf(event.toolName);
+    if (traits?.effect === 'record') {
       if (event.resultPreview.startsWith('Recorded')) this.recordFinding(call?.args, event.resultPreview);
       return;
     }
     // A sub-agent report arrived (its header carries a report status): new
     // findings or gaps for this run, even when it found nothing.
-    if (event.toolName === 'delegate') {
+    if (traits?.effect === 'subagent') {
       if (parseSubagentHeader(event.resultPreview)?.reportStatus) this.noteEvidence(event.iteration);
       return;
     }
-    const path = pathFromToolArgs(call?.args) ?? '';
-    if (event.toolName === 'read_file' && path) {
+    const path = this.fileOf(traits, call?.args) ?? '';
+    // Only a tool that returns a window of the file's own content counts as
+    // reading it (a diff or a search that names the file does not).
+    if (traits?.effect === 'read') {
+      if (!traits.lineRange || !path) return;
       const entry = this.entry(path);
       entry.reads += 1;
       entry.lastReadIteration = event.iteration;
-      const range = RANGE_RE.exec(event.resultPreview);
-      if (range) {
-        entry.lastRange = { from: Number(range[1]), to: Number(range[2]), of: Number(range[3]) };
-      }
+      const range = traits.lineRange(event.resultPreview);
+      if (range?.of !== undefined) entry.lastRange = { from: range.from, to: range.to, of: range.of };
       return;
     }
-    if (event.toolName === 'edit_file') {
+    if (traits?.effect === 'change') {
       if (event.outcome === 'error') {
         this.failedEdits += 1;
         if (path) this.entry(path).failedEdits += 1;
@@ -398,15 +399,17 @@ export class TaskStateTracker {
       }
       return;
     }
-    if (event.toolName === 'run_terminal') {
-      const command = argString(call?.args, 'command');
+    if (traits?.effect === 'command') {
+      const args = toolArgs(call?.args);
+      // The call's own key is the command text the record keeps.
+      const command = traits.repeatKey?.(args) ?? '';
       const ran = event.exitCode !== undefined;
       const record: TaskCommand = {
         command,
         ...(ran ? { exitCode: event.exitCode } : {}),
         iteration: event.iteration,
         afterEdit: this.unverifiedSince !== null,
-        check: isCheckCommand(command),
+        check: traits.isCheck?.(args) ?? false,
       };
       this.commands.push(record);
       if (this.commands.length > TASK_STATE_COMMANDS_MAX) this.commands.shift();

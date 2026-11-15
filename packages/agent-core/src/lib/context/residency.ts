@@ -7,6 +7,7 @@ import { CHARS_PER_TOKEN, type ContextBudget } from '@agent/agent-models';
 
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
 import { skillCard } from '../tools/skills';
+import { builtinToolTraits, fileLineRange, type ToolTraits, type TraitsOf } from '../tools/traits';
 import { sha256Text } from '../tools/web/source';
 import { argsPreview, toolCallIndex, type ToolCallInfo } from './outcome-card';
 
@@ -18,15 +19,15 @@ import { argsPreview, toolCallIndex, type ToolCallInfo } from './outcome-card';
  * what is in use), applied skill bodies retire to their core rules, old
  * iterations fold into a recap (at a size mark, or at a verified
  * milestone), and unchanged re-reads are answered with a pointer.
+ *
+ * How a result is treated (which file it is a view of, what replaces it,
+ * whether it ages, whether it may leave at all) comes from its tool's traits
+ * (tools/traits.ts), passed in as `traitsOf`; nothing here matches a tool by
+ * name. The default is the built-in table.
  */
 
 /** Tool results smaller than this are not worth a card. */
 export const MIN_EVICT_CHARS = 800;
-/**
- * Live state the generic pass never evicts. load_skill bodies leave through
- * retireSkillBodies instead, which keeps their core rules.
- */
-const NEVER_EVICT = new Set(['plan', 'todo', 'load_skill']);
 /** Text a removed tool result starts with. */
 export const CARD_PREFIX = '(evicted)';
 const SKILL_CARD_PREFIX = '(skill card)';
@@ -64,34 +65,24 @@ function parseArgs(raw: string): Record<string, unknown> {
   }
 }
 
-/** A run_terminal result from a command that executed (see outcome-card). */
-function terminalRan(content: string): boolean {
-  const [first = '', second = ''] = content.split('\n', 2);
-  return first.startsWith('cwd:') && /^(exit|signal) /.test(second.trim());
-}
-
-/** Lines a read_file result shows, from its `[lines a–b of N]` header. */
-function readRange(content: string): { from: number; to: number } | null {
-  const match = /^\[lines (\d+)–(\d+) of /.exec(content);
-  return match ? { from: Number(match[1]), to: Number(match[2]) } : null;
-}
-
 /**
- * Paths whose latest read_file result is still resident in full in the
+ * Paths whose latest file read (a result that is a window of the file's own
+ * content: its tool has `lineRange`) is still resident in full in the
  * prompt (not a card, stub or unchanged-pointer). The harness card lists
  * only these, so it never claims content the model can no longer see.
  */
 export function residentReadPaths(
   messages: ChatCompletionMessageParam[],
-  pathOf: (args: Record<string, unknown>) => string | null,
+  traitsOf: TraitsOf = builtinToolTraits,
 ): Set<string> {
   const calls = toolCallIndex(messages);
   const latest = new Map<string, boolean>();
   for (const message of messages) {
     if (message.role !== 'tool' || typeof message.content !== 'string') continue;
     const info = calls.get(message.tool_call_id);
-    if (info?.name !== 'read_file') continue;
-    const path = pathOf(parseArgs(info.args));
+    const traits = info ? traitsOf(info.name) : undefined;
+    if (!traits?.lineRange) continue;
+    const path = traits.file?.(parseArgs(info!.args)) ?? null;
     if (path) latest.set(path, isResident(message.content));
   }
   return new Set([...latest].filter(([, resident]) => resident).map(([path]) => path));
@@ -99,25 +90,32 @@ export function residentReadPaths(
 
 export type EvictionReason = 'superseded' | 'cold' | 'cited' | 'budget';
 
-/** Sub-agent report shas named in delegate results (`reportSha=<sha>` in the header). */
-function reportShas(messages: ChatCompletionMessageParam[], calls: Map<string, ToolCallInfo>): Set<string> {
+/** Sub-agent report shas named in sub-agent results (`reportSha=<sha>` in the header). */
+function reportShas(
+  messages: ChatCompletionMessageParam[],
+  calls: Map<string, ToolCallInfo>,
+  traitsOf: TraitsOf,
+): Set<string> {
   const shas = new Set<string>();
   for (const message of messages) {
     if (message.role !== 'tool' || typeof message.content !== 'string') continue;
-    if (calls.get(message.tool_call_id)?.name !== 'delegate') continue;
+    const info = calls.get(message.tool_call_id);
+    if (!info || traitsOf(info.name)?.effect !== 'subagent') continue;
     for (const match of message.content.matchAll(/reportSha=([a-f0-9]{64})/g)) shas.add(match[1]!);
   }
   return shas;
 }
 
 /**
- * A result that cost a sub-agent run to produce: a delegate report, or a
- * recall of one. Getting it back would mean running the child again, so it
- * is never removed to save tokens (it is small next to what it stands for).
+ * A result that cost a sub-agent run to produce: a sub-agent's report, or a
+ * result that restores one (`restores` names its sha). Getting it back would
+ * mean running the child again, so it is never removed to save tokens (it
+ * is small next to what it stands for).
  */
-function isReport(info: ToolCallInfo | undefined, args: Record<string, unknown>, shas: Set<string>): boolean {
-  if (info?.name === 'delegate') return true;
-  return info?.name === 'recall' && typeof args.sha256 === 'string' && shas.has(args.sha256.trim().toLowerCase());
+function isReport(traits: ToolTraits | undefined, args: Record<string, unknown>, shas: Set<string>): boolean {
+  if (traits?.effect === 'subagent') return true;
+  const restored = traits?.restores?.(args);
+  return typeof restored === 'string' && shas.has(restored);
 }
 
 export type EvictionResult = {
@@ -150,6 +148,7 @@ type Candidate = {
   index: number;
   toolCallId: string;
   info: ToolCallInfo | undefined;
+  traits: ToolTraits | undefined;
   chars: number;
   /** Iteration of the latest use of this result (file touch, else its own call). */
   touch: number;
@@ -170,7 +169,7 @@ type Candidate = {
 function workingSetCard(candidate: Candidate, content: string, sha: string, reason: EvictionReason): string {
   const name = candidate.info?.name ?? 'tool';
   const args = candidate.info ? ` ${argsPreview(candidate.info.args)}` : '';
-  const range = name === 'read_file' ? readRange(content) : null;
+  const range = candidate.traits?.lineRange?.(content) ?? null;
   const lines = range ? ` [${range.from}–${range.to}]` : '';
   return `${CARD_PREFIX} ${name}${args}${lines} · ${reason} · ${content.length} chars · sha256:${sha}`;
 }
@@ -180,10 +179,13 @@ function workingSetCard(candidate: Candidate, content: string, sha: string, reas
  * Results are priced: what it costs to get one back against what it costs
  * to keep sending it.
  * - superseded: a later resident read covers the same lines of the same
- *   file, or the same command ran again (only commands that executed count);
- * - cold: a file not read or edited for `inRunColdAfterIterations`, or any
- *   other result that old, except the newest `inRunKeepToolResults` non-file
- *   results;
+ *   file (`lineRange`), or the same call was made again (`repeatKey`: the
+ *   same command, the same file's diff; only calls that ran count);
+ * - cold: a file view (a `read` with a `file`) whose file was not read or
+ *   edited for `inRunColdAfterIterations`, or any other result that old,
+ *   except the newest `inRunKeepToolResults` non-file results. A tool whose
+ *   results are `no_aging` (a diff) never goes cold: it is material under
+ *   judgement, and removing it by age makes the model fetch it again;
  * - cited / budget: past `inRunResidentToolTokens` of resident results,
  *   down to the low mark (`inRunResidentLowRatio` of the cap) in one pass:
  *   results whose file a recorded finding cites first (traced `cited`: the
@@ -191,9 +193,10 @@ function workingSetCard(candidate: Candidate, content: string, sha: string, reas
  *   a tie, traced `budget`). A cited result is not stale by itself: a
  *   finding may cite one line of a 2,000-line window still in use.
  * Never removed: a file edited since the last check, this iteration's
- * results, and sub-agent reports (and recalls of them), which would cost a
- * child run to get back. Edits never supersede reads (several edits from
- * one read are normal).
+ * results, results a tool marks `never` (live state: the plan, todos, a
+ * loaded skill), and sub-agent reports (and recalls of them), which would
+ * cost a child run to get back. Edits never supersede reads (several edits
+ * from one read are normal).
  *
  * Removal happens in passes, because each pass changes the cached prompt:
  * a pass runs when resident results pass the cap, or when stale (superseded,
@@ -208,15 +211,16 @@ export async function manageWorkingSet(
   budget: ContextBudget,
   tools: ChatCompletionTool[],
   putBlob: (text: string) => Promise<string>,
-  pathOf: (args: Record<string, unknown>) => string | null,
+  /** What each tool declares about its results (tools/traits.ts). */
+  traitsOf: TraitsOf,
   view: WorkingSetView,
 ): Promise<EvictionResult | null> {
   const calls = toolCallIndex(messages);
-  const shas = reportShas(messages, calls);
+  const shas = reportShas(messages, calls, traitsOf);
   // Reports are resident and count toward the cap, but never leave.
   let reportChars = 0;
   const laterReads = new Map<string, Array<{ from: number; to: number }>>();
-  const laterCommands = new Set<string>();
+  const laterCalls = new Set<string>();
   const candidates: Candidate[] = [];
   let nonFileSeen = 0;
 
@@ -228,33 +232,35 @@ export async function manageWorkingSet(
     const content = message.content;
     if (!isResident(content)) continue;
     const info = calls.get(message.tool_call_id);
-    if (info && NEVER_EVICT.has(info.name)) continue;
+    const traits = info ? traitsOf(info.name) : undefined;
     const args = info ? parseArgs(info.args) : {};
     const inRun = i >= runStart;
-    if (isReport(info, args, shas)) {
+    if (isReport(traits, args, shas)) {
       if (inRun) reportChars += content.length;
       continue;
     }
+    // Live state (the plan, todos, a loaded skill) stays where it is.
+    if (traits?.residency === 'never') continue;
 
     let superseded = false;
-    let path: string | null = null;
-    if (info?.name === 'read_file') {
-      path = pathOf(args);
-      const range = readRange(content);
-      if (path && range) {
-        const later = laterReads.get(path) ?? [];
-        superseded = later.some((r) => r.from <= range.from && r.to >= range.to);
-        if (!superseded) {
-          later.push(range);
-          laterReads.set(path, later);
-        }
+    // The file this result is a view of: a read that names one (a file
+    // window, a diff). An edit's report is a receipt, not a view.
+    const path = traits?.effect === 'read' ? (traits.file?.(args) ?? null) : null;
+    const range = traits?.lineRange?.(content) ?? null;
+    if (path && range) {
+      const later = laterReads.get(path) ?? [];
+      superseded = later.some((r) => r.from <= range.from && r.to >= range.to);
+      if (!superseded) {
+        later.push(range);
+        laterReads.set(path, later);
       }
-    } else if (info?.name === 'run_terminal') {
-      const command = typeof args.command === 'string' ? args.command.trim() : '';
+    } else if (traits?.repeatKey) {
+      const key = traits.repeatKey(args);
       // A blocked, skipped or repeat-refused call must not card a real run.
-      if (command && terminalRan(content)) {
-        superseded = laterCommands.has(command);
-        laterCommands.add(command);
+      if (key && (traits.ran?.(content) ?? true)) {
+        const callKey = `${info?.name ?? ''}|${key}`;
+        superseded = laterCalls.has(callKey);
+        laterCalls.add(callKey);
       }
     }
     if (content.length < MIN_EVICT_CHARS) continue;
@@ -263,7 +269,7 @@ export async function manageWorkingSet(
     const own = view.callIteration(message.tool_call_id) ?? view.iteration;
     const touch = path ? Math.max(own, view.lastTouch(path) ?? own) : own;
     let cold = false;
-    if (inRun && !superseded) {
+    if (inRun && !superseded && traits?.residency !== 'no_aging') {
       if (path) {
         cold = view.iteration - touch >= budget.inRunColdAfterIterations;
       } else {
@@ -279,6 +285,7 @@ export async function manageWorkingSet(
       index: i,
       toolCallId: message.tool_call_id,
       info,
+      traits,
       chars: content.length,
       touch,
       path,
@@ -341,7 +348,7 @@ export async function manageWorkingSet(
     if (message?.role !== 'tool' || typeof message.content !== 'string') continue;
     const content = message.content;
     const card =
-      candidate.info?.name === 'edit_file'
+      candidate.traits?.effect === 'change'
         ? editCard(content)
         : workingSetCard(candidate, content, await putBlob(content), reason);
     messages[candidate.index] = { role: 'tool', tool_call_id: message.tool_call_id, content: card };
@@ -405,6 +412,7 @@ function clip(text: string, max: number): string {
  */
 function outcomeLine(
   info: ToolCallInfo | undefined,
+  traits: ToolTraits | undefined,
   content: string,
   storedSha?: string,
 ): string {
@@ -412,9 +420,9 @@ function outcomeLine(
   const args = info ? argsPreview(info.args) : '';
   const first = content.split('\n')[0] ?? '';
   let outcome: string;
-  if (name === 'edit_file') {
+  if (traits?.effect === 'change') {
     outcome = first;
-  } else if (name === 'run_terminal') {
+  } else if (traits?.effect === 'command') {
     const exit = content.split('\n').find((line) => /^(exit|signal) /.test(line));
     outcome = exit ?? first;
   } else {
@@ -468,6 +476,8 @@ export async function compactCurrentRun(
   options: {
     milestone?: boolean;
     stepOf?: StepOf;
+    /** What each tool declares about its results; default: the built-in table. */
+    traitsOf?: TraitsOf;
     /**
      * At a milestone of a long task: start a fresh session. The recap
      * becomes one pointer to every earlier step (stored whole), so the
@@ -519,6 +529,7 @@ export async function compactCurrentRun(
     putBlob,
     options.stepOf,
     milestone && options.session === true,
+    options.traitsOf,
   );
   return {
     beforeTokens,
@@ -577,6 +588,8 @@ export async function foldResidue(
   options: {
     keepFindingCalls?: boolean;
     stepOf?: StepOf;
+    /** What each tool declares about its results; default: the built-in table. */
+    traitsOf?: TraitsOf;
     /** Stores a recap that outgrows its bound, so its oldest lines stay recallable. */
     putBlob?: (text: string) => Promise<string>;
     /**
@@ -596,6 +609,7 @@ export async function foldResidue(
   }
   const removable = groupStarts.length - Math.max(1, budget.inRunKeepToolResults);
   const calls = toolCallIndex(messages);
+  const traitsOf = options.traitsOf ?? builtinToolTraits;
   const ranges: Array<[number, number]> = [];
   let foldedResidue = 0;
   for (let g = 0; g < removable; g++) {
@@ -605,8 +619,10 @@ export async function foldResidue(
     const holdsLive = messages.slice(from, to).some((message) => {
       if (message.role !== 'tool' || typeof message.content !== 'string') return false;
       const name = calls.get(message.tool_call_id)?.name;
-      if (name === 'record_finding' && options.keepFindingCalls) return true;
-      if (name === 'delegate' || (name && NEVER_EVICT.has(name))) return message.content.length >= MIN_EVICT_CHARS;
+      const traits = name ? traitsOf(name) : undefined;
+      if (traits?.effect === 'record' && options.keepFindingCalls) return true;
+      // A sub-agent report, or live state the working set never removes.
+      if (traits?.residency === 'never') return message.content.length >= MIN_EVICT_CHARS;
       return isResident(message.content) && message.content.length >= MIN_EVICT_CHARS;
     });
     if (holdsLive) continue;
@@ -627,7 +643,17 @@ export async function foldResidue(
     if (foldedResidue <= (priorRecap ? 0 : RECAP_HEADER_CHARS) + rows * RECAP_LINE_CHARS) return null;
   }
   const beforeTokens = estimatePromptTokens(messages, tools);
-  const toolCallIds = await foldIntoRecap(messages, runStart, start, ranges, priorRecap, options.putBlob, options.stepOf);
+  const toolCallIds = await foldIntoRecap(
+    messages,
+    runStart,
+    start,
+    ranges,
+    priorRecap,
+    options.putBlob,
+    options.stepOf,
+    false,
+    traitsOf,
+  );
   return { beforeTokens, afterTokens: estimatePromptTokens(messages, tools), toolCallIds, prefixHeavy: false };
 }
 
@@ -653,6 +679,7 @@ async function foldIntoRecap(
   putBlob?: (text: string) => Promise<string>,
   stepOf?: StepOf,
   session = false,
+  traitsOf: TraitsOf = builtinToolTraits,
 ): Promise<string[]> {
   const calls = toolCallIndex(messages);
   const lines: string[] = priorRecap ? [priorRecap] : [];
@@ -673,15 +700,16 @@ async function foldIntoRecap(
         if (text) lines.push(`[step ${step}] Note: ${text}`);
       } else if (message.role === 'tool' && typeof message.content === 'string') {
         const info = calls.get(message.tool_call_id);
+        const traits = info ? traitsOf(info.name) : undefined;
         // Edit hunks are not worth keeping (the file is the source of truth);
         // cards already carry their own sha.
         const keepBody =
           putBlob !== undefined &&
-          info?.name !== 'edit_file' &&
+          traits?.effect !== 'change' &&
           message.content.length >= MIN_EVICT_CHARS &&
           isResident(message.content);
         const storedSha = keepBody ? await putBlob(message.content) : undefined;
-        lines.push(`[step ${step}] ${outcomeLine(info, message.content, storedSha)}`);
+        lines.push(`[step ${step}] ${outcomeLine(info, traits, message.content, storedSha)}`);
         toolCallIds.push(message.tool_call_id);
       }
     }
@@ -754,7 +782,7 @@ export class ReadDedupe {
     // Key on the lines actually returned: a file that fits comes back whole
     // whatever offset/limit asked, so two differently-sliced asks can be
     // the same read. Args are the fallback for results without a header.
-    const range = readRange(result);
+    const range = fileLineRange(result);
     const key = range
       ? `${path}|${range.from}-${range.to}`
       : `${path}|${String(args.offset ?? '')}|${String(args.limit ?? '')}`;

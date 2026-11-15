@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONTEXT_BUDGET, DEFAULT_HARNESS_FLAGS, type TraceEvent } from '@agent/agent-models';
 
 import { TaskStateTracker } from '../state/task-state';
+import { runCapabilities, traitsResolver } from '../tools/traits';
 import type { RunState } from './run-state';
 import { buildStateCard, CARD_HEADER, recordOverflowText, recordSection, withStateCard } from './state-card';
 
@@ -26,15 +27,20 @@ function state(over: {
 }): RunState {
   const task = new TaskStateTracker();
   for (const event of over.events ?? []) task.apply(event);
+  const toolNames = over.tools ?? ['read_file', 'edit_file', 'run_terminal', 'record_finding'];
+  // The same derivation createRunState uses: built-in traits by name.
+  const traitsOf = traitsResolver(() => undefined);
   return {
     task,
+    traitsOf,
+    can: runCapabilities(toolNames, traitsOf),
     runId,
     trace: () => undefined,
     iterations: over.iterations ?? 5,
     posture: 'agent',
     contextBudget: { ...DEFAULT_CONTEXT_BUDGET, recordCardTokens: over.recordCardTokens ?? DEFAULT_CONTEXT_BUDGET.recordCardTokens },
     flags: { ...DEFAULT_HARNESS_FLAGS, stateCard: over.stateCard ?? true },
-    tools: { byName: new Map((over.tools ?? ['read_file', 'edit_file', 'run_terminal', 'record_finding']).map((name) => [name, {}])) },
+    tools: { byName: new Map(toolNames.map((name) => [name, {}])) },
     serialReadTurns: over.serialReadTurns ?? 0,
     steering: { stalled: () => over.stalled },
     budget: {

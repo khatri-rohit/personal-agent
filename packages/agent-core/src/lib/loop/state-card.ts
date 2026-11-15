@@ -1,10 +1,9 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
-
+import { CARD_HEADER, harnessMessage } from '../context/message-origin';
 import { residentReadPaths } from '../context/residency';
 import { cardDue, cardItems, classPace, EVIDENCE_WORDS } from '../policy';
 import { recordSection } from '../state/record-view';
-import { pathFromToolArgs } from './call-identity';
 import { tracePolicyDecision } from './policy-trace';
 import type { RunState } from './run-state';
 
@@ -22,7 +21,7 @@ import type { RunState } from './run-state';
  * from them.
  */
 
-export const CARD_HEADER = '[Harness card: this run\'s state, rebuilt every step by the harness, not from the user]';
+export { CARD_HEADER };
 
 /*
  * Which items show and when the card goes out is policy/card (marks in
@@ -61,13 +60,13 @@ export function composeStateCard(
   const changing = task.shape === 'change';
   // No evidence yet whether the task changes the workspace: advice stays neutral.
   const unknown = task.shape === 'unknown';
-  const canRecord = s.tools.byName.has('record_finding');
+  const canRecord = s.can.record;
   const findings = task.evidence.findings;
 
   // Working set as the prompt holds it right now, newest touch first: files
   // whose latest read is resident, plus files being changed. A file whose
   // read became a card is counted, never listed as if still visible.
-  const resident = residentReadPaths(s.messages, pathFromToolArgs);
+  const resident = residentReadPaths(s.messages, s.traitsOf);
   const touched = task.workingSet
     .map((entry) => ({ entry, touch: s.task.lastTouch(entry.path) ?? 0 }))
     .sort((a, b) => b.touch - a.touch);
@@ -82,7 +81,7 @@ export function composeStateCard(
     shape: task.shape,
     posture: s.posture,
     taskClass: task.taskClass,
-    canDelegate: s.tools.byName.has('delegate'),
+    canDelegate: s.can.delegate,
     canRecord,
     edits: task.evidence.edits,
     unverifiedSince: task.evidence.unverifiedSince,
@@ -131,7 +130,7 @@ export function composeStateCard(
         break;
       case 'advice:stall': {
         const callsLeft = Math.floor(Math.max(0, item.max - s.budget.spent()) / Math.max(1, perCallTokens));
-        const delegate = s.tools.byName.has('delegate')
+        const delegate = s.can.delegate
           ? ' If one specific fact is missing, delegate(explore) with that question instead of searching more.'
           : '';
         const act = changing
@@ -234,5 +233,5 @@ export function withStateCard(
       findings: task.findingCount,
     });
   }
-  return [...messages, { role: 'user', content: card.text }];
+  return [...messages, harnessMessage('card', card.text)];
 }

@@ -19,8 +19,7 @@ import {
 
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
 import type { Tool } from '../tools/types';
-import { isEditSuccess } from '../tools/workspace/tools';
-import { outcomeKey, pathFromToolArgs, toolCallKey } from './call-identity';
+import { outcomeKey, toolCallKey } from './call-identity';
 import { manageResidency } from './residency-pass';
 import { EVIDENCE_WORDS, repeatAction, reportOnlyCall } from '../policy';
 import { tracePolicyDecision } from './policy-trace';
@@ -141,7 +140,7 @@ function withWebSliceNote(
     note: 'web_slices',
     count,
   });
-  const delegate = s.tools.byName.has('delegate')
+  const delegate = s.can.delegate
     ? ', or delegate(explore) to read a long source for you'
     : '';
   return `${result}\n\n(note) ${count} slices of this source read in order; every slice stays in context. Use query="…" to jump to what you need${delegate}.`;
@@ -172,8 +171,12 @@ function shapeBareResult(
     cap !== undefined && raw.length > cap
       ? `${raw.slice(0, cap)}\n\n(${toolName} output capped at ${cap} chars)`
       : raw;
-  if (toolName === 'read_file') {
-    const readPath = pathFromToolArgs(args);
+  // What the call is, from the tool's traits (tools/traits.ts), not its name.
+  const traits = s.traitsOf(toolName);
+  const filePath = traits?.file?.(args) ?? null;
+  // A window of a file's own content: an identical read is a pointer.
+  if (traits?.lineRange) {
+    const readPath = filePath;
     if (readPath === null) return result;
     const shaped = s.readDedupe.apply(readPath, args, result, s.iterations, toolCallId);
     // The same text was removed earlier and the model paid a step to get it
@@ -184,13 +187,14 @@ function shapeBareResult(
     // The harness answered an identical read with a pointer (F-5): traced, so
     // the guard's action on identical calls is measured, not silent.
     if (shaped.deduped) {
-      tracePolicyDecision(s, 'guard', ['dedupe_answered:read_file'], 'identical result still in context', {
+      tracePolicyDecision(s, 'guard', [`dedupe_answered:${toolName}`], 'identical result still in context', {
         path: readPath,
       });
     }
     return shaped.text;
   }
-  if (toolName === 'grep' || toolName === 'glob') {
+  // Any other result that changes only with the workspace (a search).
+  if (traits?.dependsOn === 'workspace') {
     const answered = s.readDedupe.applySearch(toolName, args, result, s.iterations, toolCallId);
     if (answered !== result) {
       tracePolicyDecision(s, 'guard', [`dedupe_answered:${toolName}`], 'identical result still in context');
@@ -214,13 +218,23 @@ function shapeBareResult(
     });
     return result;
   }
-  if (toolName === 'edit_file' && isEditSuccess(result)) {
-    const editPath = pathFromToolArgs(args);
-    if (editPath !== null) s.readDedupe.invalidatePath(editPath);
-  } else if (toolName === 'run_terminal') {
+  if (changeSucceeded(s, toolName, result)) {
+    // The file's reads and every search may return something else now.
+    if (filePath !== null) s.readDedupe.invalidatePath(filePath);
+  } else if (traits?.effect === 'command') {
+    // A command (a formatter, codegen) may have changed anything.
     s.readDedupe.clear();
   }
   return result;
+}
+
+/**
+ * A call that changes the workspace did so: its tool's effect is `change`
+ * and its own reading of the result (`classify`) does not say it failed.
+ */
+function changeSucceeded(s: RunState, toolName: string, result: string): boolean {
+  if (s.traitsOf(toolName)?.effect !== 'change') return false;
+  return s.tools.byName.get(toolName)?.classify?.(result).outcome !== 'error';
 }
 
 /**
@@ -255,7 +269,7 @@ function buildToolContext(s: RunState, toolCallId?: string): ToolContext {
       ? { workspaceRoot: config.workspaceRoot }
       : {}),
     ...(config.offerChoice ? { offerChoice: config.offerChoice } : {}),
-    ...(config.subagents && tools.byName.has('delegate')
+    ...(config.subagents && s.can.delegate
       ? {
           spawnSubagent: (spec) =>
             config.subagents!(spec, {
@@ -375,7 +389,7 @@ async function admitToolCall(
   // refusal row, not a halt: reads, edits and delegate(explore) still work.
   if (tool.research && steering.researchGated()) {
     const idle = steering.idleTokens();
-    const delegate = tools.byName.has('delegate')
+    const delegate = s.can.delegate
       ? ' If one specific fact is still missing, delegate(explore) with that question.'
       : '';
     if (steering.noteGated()) {
@@ -397,11 +411,14 @@ async function admitToolCall(
     return { kind: 'filled' };
   }
 
-  const readPath =
-    toolName === 'read_file' ? pathFromToolArgs(args) : null;
+  // Storm guards by what the tool is: paging one file's content, or
+  // flooding the shell.
+  const traits = s.traitsOf(toolName);
+  const isCommand = traits?.effect === 'command';
+  const readPath = traits?.lineRange ? (traits.file?.(args) ?? null) : null;
   const stormLimit =
     (readPath !== null ? guard.readStorm(readPath) : null) ??
-    (toolName === 'run_terminal' ? guard.terminalStorm() : null);
+    (isCommand ? guard.terminalStorm() : null);
   if (stormLimit) {
     noteLimit(s, stormLimit);
     return { kind: 'halt', reason: 'limit', toolCall };
@@ -421,7 +438,7 @@ async function admitToolCall(
     return { kind: 'halt', reason: 'limit', toolCall };
   }
 
-  const repeatCount = guard.countCall(toolCallKey(toolName, args));
+  const repeatCount = guard.countCall(toolCallKey(toolName, args), traits?.dependsOn === 'workspace');
 
   // Exact repeats: policy/guards repeatAction (run, answer from earlier, or halt).
   const repeat = repeatAction({ count: repeatCount, limit: limits.maxRepeatedToolCalls, stage: toolStage(tool) });
@@ -442,7 +459,7 @@ async function admitToolCall(
   }
 
   s.totalToolCalls += 1;
-  guard.admitted(toolName, readPath);
+  guard.admitted(isCommand, readPath);
 
   return {
     kind: 'ready',
@@ -532,8 +549,12 @@ async function settleReturned(
   // or run_terminal producing the same exit code with no edit between).
   const stage = toolStage(tool);
   if (stage === 'mutate' || stage === 'exec') {
+    const traits = s.traitsOf(toolName);
     const outcome = s.guard.recordOutcome(
-      outcomeKey(toolName, args, result),
+      outcomeKey(toolName, args, result, {
+        ...(traits?.effect ? { effect: traits.effect } : {}),
+        file: traits?.file?.(args) ?? null,
+      }),
       stage === 'exec',
     );
     if (outcome.nearStuck) maybeSuggestAdvisor(s);
@@ -553,7 +574,7 @@ async function settleReturned(
   // fresh instead of accumulating toward a false stuck-ness halt.
   // Progress itself (stall, effort floor) is the task state's evidence,
   // which the trace above already fed; steering reads it from there.
-  if (toolName === 'edit_file' && isEditSuccess(result)) {
+  if (changeSucceeded(s, toolName, result)) {
     s.guard.editSucceeded();
   }
   return 'ok';

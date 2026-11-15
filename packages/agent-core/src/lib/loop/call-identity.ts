@@ -76,12 +76,18 @@ export function pathFromToolArgs(args: unknown): string | null {
  * first error but different file counts don't falsely match; other tools keep
  * call+result (repeat guard already covers identical args).
  */
-export function outcomeKey(toolName: string, args: unknown, result: string): string {
-  if (toolName === 'edit_file') {
-    const filePath = pathFromToolArgs(args) ?? toolCallKey(toolName, args);
+export function outcomeKey(
+  toolName: string,
+  args: unknown,
+  result: string,
+  /** What the tool's call does (its traits' effect) and the file it is about. */
+  about: { effect?: string; file?: string | null } = {},
+): string {
+  if (about.effect === 'change') {
+    const filePath = about.file ?? toolCallKey(toolName, args);
     return `${toolName}:${filePath}#${sha256Text(result.slice(0, 2000))}`;
   }
-  if (toolName === 'run_terminal') {
+  if (about.effect === 'command') {
     // Result format: "cwd: <path>\nexit <code>\n<body>" / "cwd: <path>\nsignal <n>\n<body>"
     // Hash the first two lines (cwd + status) — the exit-code-bearing prefix.
     // Two runs with the same exit code but different output bodies are progress

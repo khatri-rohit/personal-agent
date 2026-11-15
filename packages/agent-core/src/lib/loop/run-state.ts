@@ -19,9 +19,11 @@ import {
   type WebTrust,
 } from '@agent/agent-models';
 
-import { currentUserRequest, refreshContextReport } from '../context/assemble-context';
+import { refreshContextReport } from '../context/assemble-context';
+import { currentUserRequest, HARNESS_NOTE_PREFIX, harnessMessage } from '../context/message-origin';
 import { ReadDedupe } from '../context/residency';
 import type { TaskStateTracker } from '../state/task-state';
+import { runCapabilities, traitsResolver, type RunCapabilities, type TraitsOf } from '../tools/traits';
 import type { Tool, ToolRegistry } from '../tools/types';
 import { createCallRecorder, type CallRecorder } from './call-record';
 import { resolveLimits, type AgentLimits } from './limits';
@@ -54,6 +56,10 @@ export type RunState = {
   /** The live prompt. Phases append to it; the prefix before runStart is never rewritten. */
   readonly messages: ChatCompletionMessageParam[];
   readonly tools: ToolRegistry;
+  /** What each of this run's tools declares about its calls (tools/traits.ts). */
+  readonly traitsOf: TraitsOf;
+  /** What this run can do (edit, check, record, delegate), from its tools' traits. */
+  readonly can: RunCapabilities;
   readonly runId: string;
   readonly threadId: string;
   readonly signal: AbortSignal | undefined;
@@ -137,12 +143,15 @@ export function createRunState(
   runStartedAt: number,
 ): RunState {
   const limits = resolveLimits(config.limits);
+  const traitsOf = traitsResolver((name) => tools.byName.get(name)?.traits);
+  const can = runCapabilities(tools.byName.keys(), traitsOf);
   const turnSignals = { toolError: false, wrote: false, nudged: false };
   const trace: LoopTrace = (event) => {
     if (event.type === 'tool_error') turnSignals.toolError = true;
     else if (
       event.type === 'tool_start' &&
-      (event.toolName === 'edit_file' || event.toolName === 'run_terminal' || event.toolName === 'delegate')
+      // A change, a command or a sub-agent: the run acted.
+      ['change', 'command', 'subagent'].includes(traitsOf(event.toolName)?.effect ?? '')
     ) {
       turnSignals.wrote = true;
     } else if (event.type === 'budget_warning') {
@@ -177,7 +186,7 @@ export function createRunState(
       capped: limits.maxPromptTokens !== undefined,
       depth: config.depth ?? 0,
       posture,
-      canEdit: tools.byName.has('edit_file'),
+      canEdit: can.edit,
     }),
     () => config.capacity?.conserve() === true,
     () => config.task.evidenceCount,
@@ -195,6 +204,8 @@ export function createRunState(
     modelCall,
     messages,
     tools,
+    traitsOf,
+    can,
     runId: config.runId,
     threadId: config.threadId ?? 'unknown',
     signal: config.signal,
@@ -312,17 +323,13 @@ export function emitTurnCompleted(s: RunState, iteration: number, usage?: TokenU
   });
 }
 
-const HARNESS_NOTE_PREFIX = '[Harness note, not from the user]';
 
 /**
  * Loop control the model must read as the harness speaking, not the user
  * changing their mind. Joins the live prompt only, never the ledger.
  */
 export function pushHarnessNote(s: RunState, text: string): void {
-  s.messages.push({
-    role: 'user',
-    content: s.flags.harnessNotes ? `${HARNESS_NOTE_PREFIX} ${text}` : text,
-  });
+  s.messages.push(harnessMessage('note', s.flags.harnessNotes ? `${HARNESS_NOTE_PREFIX} ${text}` : text));
 }
 
 export function lastAssistantContent(s: RunState): string {

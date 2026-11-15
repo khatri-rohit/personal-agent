@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_CONTEXT_BUDGET, type ContextBudget } from '@agent/agent-models';
 
+import { builtinToolTraits } from '../tools/traits';
 import { CARD_PREFIX, compactCurrentRun, foldResidue, manageWorkingSet, ReadDedupe, type WorkingSetView } from './residency';
 
 type Call = { id: string; name: string; args: Record<string, unknown>; result: string; iteration: number };
@@ -50,7 +51,8 @@ const budget = (over: Partial<ContextBudget> = {}): ContextBudget => ({
   ...over,
 });
 
-const pathOf = (args: Record<string, unknown>) => (typeof args.path === 'string' ? args.path : null);
+// What the built-in tools declare about their results (tools/traits.ts).
+const pathOf = builtinToolTraits;
 const blob = async (text: string) => `sha-${text.length}`;
 const contentOf = (messages: ChatCompletionMessageParam[], id: string) =>
   messages.find((message) => message.role === 'tool' && message.tool_call_id === id)?.content as string;
