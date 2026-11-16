@@ -12,7 +12,7 @@ import type {
   ModelCallOptions,
   OllamaChatCompletionCreateParamsStreaming,
 } from './call-options';
-import { parseTokenUsage } from './parse-usage';
+import { parseTokenUsage, rawUsage } from './parse-usage';
 import type { ModelTurn, OnTextDelta } from './types';
 import type { ToolRegistry } from '../tools/types';
 
@@ -72,6 +72,7 @@ export async function streamModelTurn(
   let content = '';
   let finishReason: string | null = null;
   let usage: TokenUsage | undefined;
+  let providerUsage: Record<string, unknown> | undefined;
   const toolCalls = new Map<number, AccumulatedToolCall>();
 
   for await (const chunk of stream) {
@@ -84,6 +85,7 @@ export async function streamModelTurn(
     const chunkUsage = parseTokenUsage(chunk.usage);
     if (chunkUsage) {
       usage = chunkUsage;
+      providerUsage = rawUsage(chunk.usage);
     }
 
     const choice = chunk.choices?.[0];
@@ -155,5 +157,6 @@ export async function streamModelTurn(
     toolCalls: reconstructedToolCalls as PendingToolCall[],
     finishReason,
     ...(usage ? { usage } : {}),
+    ...(providerUsage ? { providerUsage } : {}),
   };
 }

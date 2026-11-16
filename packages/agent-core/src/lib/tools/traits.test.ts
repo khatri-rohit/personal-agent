@@ -168,12 +168,11 @@ function view(calls: Call[], iteration: number, cited: string[] = []): WorkingSe
 
 const budget = (over: Partial<ContextBudget> = {}): ContextBudget => ({
   ...DEFAULT_CONTEXT_BUDGET,
-  inRunClearAtLeastTokens: 500,
-  inRunResidentToolTokens: 100_000,
-  inRunColdAfterIterations: 4,
   inRunKeepToolResults: 1,
   ...over,
 });
+/** A budget whose in-run high mark is `tokens` on the whole prompt. */
+const marks = (tokens: number, lowShare = 0.9) => budget({ inRunHighTokens: tokens, inRunLowShare: lowShare });
 const blob = async (text: string) => `sha-${text.length}`;
 const body = (label: string, chars = 4_000) => `${label}\n${'x'.repeat(chars)}`;
 const resident = (messages: ChatCompletionMessageParam[], id: string) =>
@@ -190,10 +189,10 @@ describe('working set: results that are material under judgement', () => {
       iteration: i + 1,
     }));
 
-  it('a diff does not leave because it is old (it used to go cold after four steps)', async () => {
+  it('a diff does not leave because it is old: under the high mark nothing leaves', async () => {
     const calls = diffs(6);
     const messages = transcript(calls);
-    // Step 20: every diff is far past the cold window, and the cap is not reached.
+    // Step 20: every diff is old, and the prompt is under the high mark.
     expect(await manageWorkingSet(messages, 1, budget(), [], blob, builtinToolTraits, view(calls, 20))).toBeNull();
     expect(calls.every((call) => resident(messages, call.id))).toBe(true);
   });
@@ -205,45 +204,47 @@ describe('working set: results that are material under judgement', () => {
       { id: 'c', name: 'diff', args: { path: 'src/a.ts' }, result: body('diff a v2'), iteration: 3 },
     ];
     const messages = transcript(calls);
-    const result = await manageWorkingSet(messages, 1, budget(), [], blob, builtinToolTraits, view(calls, 3));
+    const result = await manageWorkingSet(messages, 1, budget(), [], blob, builtinToolTraits, view(calls, 3), { freeOnly: true });
     expect(result?.byReason).toEqual({ superseded: ['a'] });
     expect(resident(messages, 'b')).toBe(true);
     expect(resident(messages, 'c')).toBe(true);
   });
 
-  it('under the cap’s pressure, diffs of files a finding already cites leave first', async () => {
-    const calls = diffs(6, 8_000);
+  it('past the high mark, a diff (under judgement) leaves after other results, even newer ones', async () => {
+    const calls: Call[] = [
+      ...diffs(3, 8_000),
+      { id: 'g', name: 'grep', args: { pattern: 'x' }, result: body('grep', 8_000), iteration: 4 },
+      { id: 'now', name: 'grep', args: { pattern: 'y' }, result: body('grep now', 900), iteration: 5 },
+    ];
     const messages = transcript(calls);
-    // Six 2k-token diffs against a 6k cap: half must go. Two files are judged (cited).
-    const result = await manageWorkingSet(
-      messages,
-      1,
-      budget({ inRunResidentToolTokens: 6_000 }),
-      [],
-      blob,
-      builtinToolTraits,
-      view(calls, 7, ['src/f4.ts', 'src/f5.ts']),
-    );
-    expect(result?.byReason.cited).toEqual(expect.arrayContaining(['d4', 'd5']));
-    expect(resident(messages, 'd4')).toBe(false);
-    expect(resident(messages, 'd5')).toBe(false);
+    // ~8.3k tokens against a 8k mark (low mark 7.2k): one result must go. The
+    // older diffs stay; the newer search goes.
+    const result = await manageWorkingSet(messages, 1, marks(8_000), [], blob, builtinToolTraits, view(calls, 5));
+    expect(result?.byReason).toEqual({ budget: ['g'] });
+    expect(calls.slice(0, 3).every((call) => resident(messages, call.id))).toBe(true);
   });
 
   it('a new tool gets the same treatment by declaring it', async () => {
-    const calls: Call[] = Array.from({ length: 5 }, (_, i) => ({
-      id: `p${i}`,
-      name: 'page_snapshot',
-      args: { page: `/page/${i}` },
-      result: body(`snapshot ${i}`),
-      iteration: i + 1,
-    }));
+    const calls: Call[] = [
+      ...Array.from({ length: 3 }, (_, i) => ({
+        id: `p${i}`,
+        name: 'page_snapshot',
+        args: { page: `/page/${i}` },
+        result: body(`snapshot ${i}`, 8_000),
+        iteration: i + 1,
+      })),
+      { id: 'g', name: 'grep', args: { pattern: 'x' }, result: body('grep', 8_000), iteration: 4 },
+      { id: 'now', name: 'grep', args: { pattern: 'y' }, result: body('grep now', 900), iteration: 5 },
+    ];
+    // Declared as material under judgement: past the mark the search goes first.
     const messages = transcript(calls);
-    expect(await manageWorkingSet(messages, 1, budget(), [], blob, traitsOf, view(calls, 20))).toBeNull();
+    const declared = await manageWorkingSet(messages, 1, marks(8_000), [], blob, traitsOf, view(calls, 5));
+    expect(declared?.byReason).toEqual({ budget: ['g'] });
 
-    // Without traits the same results age out.
+    // Without traits the snapshots are generic results: the oldest goes first.
     const generic = transcript(calls);
-    const aged = await manageWorkingSet(generic, 1, budget(), [], blob, () => undefined, view(calls, 20));
-    expect(aged?.byReason.cold?.length).toBeGreaterThan(0);
+    const plain = await manageWorkingSet(generic, 1, marks(8_000), [], blob, (name) => builtinToolTraits(name), view(calls, 5));
+    expect(plain?.byReason).toEqual({ budget: ['p0'] });
   });
 
   it('only a window of the file’s own content counts as the file being read', () => {

@@ -71,7 +71,7 @@ export function composeStateCard(
     .map((entry) => ({ entry, touch: s.task.lastTouch(entry.path) ?? 0 }))
     .sort((a, b) => b.touch - a.touch);
   const hot = touched.filter(({ entry }) => resident.has(entry.path) || s.task.isUnchecked(entry.path));
-  const cold = touched.filter(
+  const outOfView = touched.filter(
     ({ entry }) => entry.reads > 0 && !resident.has(entry.path) && !s.task.isUnchecked(entry.path),
   ).length;
 
@@ -184,15 +184,15 @@ export function composeStateCard(
     CARD_HEADER,
     `Phase: ${task.phase} · step ${step} · task ${task.taskClass} ${task.shape} · ~${tokensK(perCallTokens)} tokens per call${spend}`,
   ];
-  if (hot.length > 0 || cold > 0) {
+  if (hot.length > 0 || outOfView > 0) {
     const files = hot.slice(0, WORKING_SET_MAX).map(({ entry }) => {
       const mark = s.task.isUnchecked(entry.path) ? ' (edited, unchecked)' : entry.edits > 0 ? ' (edited)' : '';
       return `${entry.path}${mark}`;
     });
     const more = hot.length > WORKING_SET_MAX ? `, +${hot.length - WORKING_SET_MAX} more` : '';
     const older =
-      cold > 0
-        ? `${files.length > 0 ? '; ' : ''}${cold} file(s) read earlier are no longer in full view (read_file again if needed)`
+      outOfView > 0
+        ? `${files.length > 0 ? '; ' : ''}${outOfView} file(s) read earlier are no longer in full view (read_file again if needed)`
         : '';
     lines.push(`Working set: ${files.join(', ')}${more}${older}`);
   }

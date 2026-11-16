@@ -86,7 +86,7 @@ Eval reads these files. It does not re-derive what core already put in the trace
 **Context** — `packages/agent-core/src/lib/context/`
 
 - `assemble-context.ts` — builds the prompt. Old tool results stub first, then attachments; large bodies spill to blobs; tape compact last.
-- `residency.ts` — in-run eviction (`(evicted)` cards) and extractive recap. Compaction is not an LLM call.
+- `residency.ts` — in-run residency: one pass at the high mark on the whole prompt (`inRunMarks` in `agent-models/src/lib/context.ts`), removing by value down to the low mark (`(evicted)` cards with a sha), then the extractive recap; nothing leaves below the mark. The boundary that runs it is `loop/residency-pass.ts`. Compaction is not an LLM call.
 - Host-side between-run compact: `apps/api/src/runs/compaction.ts`. Window size: `apps/api/src/models/model-runtime.ts` + `agent-models/src/lib/context.ts`.
 
 **Tools** — `packages/agent-core/src/lib/tools/`

@@ -298,6 +298,7 @@ export {
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   MIN_CONTEXT_WINDOW_TOKENS,
   compactionMarks,
+  inRunMarks,
   contextBudgetForWindow,
   parseContextWindowMode,
   parseSnapshot,

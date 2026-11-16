@@ -32,6 +32,7 @@ describe('task matrix', () => {
       'm6-large-file',
       'm7-shell-commands',
       'm8-multi-turn-extraction',
+      'm9-long-investigation',
     ]);
     for (const { task } of tasks) {
       // Every task grades something: a command, a file or the answer.

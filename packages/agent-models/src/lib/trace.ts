@@ -101,6 +101,8 @@ export type TraceEvent =
       contentPreview?: string;
       /** Provider-reported token counts for this iteration, when available. */
       usage?: TokenUsage;
+      /** The provider's raw `usage` object, as sent (which counters it reports). */
+      providerUsage?: Record<string, unknown>;
       /** Model call + stream time. */
       durationMs?: number;
       /** Provider sent no usage; the run charged the local estimate. */
@@ -189,10 +191,11 @@ export type TraceEvent =
       toolCallIds?: string[];
       /**
        * Why these left the working set: `superseded` (a later read of the same
-       * lines or run of the same command), `cold` (not used for a few
-       * iterations), `cited` (a recorded finding cites the file, so the
-       * finding stands for it), `budget` (resident cap, removed down to the
-       * low mark in one pass). Absent on older traces (size-triggered eviction).
+       * lines or run of the same command), `cited` (removed past the high
+       * mark; a recorded finding cites the file, so the finding stands for
+       * it), `budget` (removed past the high mark, down to the low mark in one
+       * pass). `cold` (not used for a few iterations) is on older traces only.
+       * Absent on older traces (size-triggered eviction).
        */
       reason?: 'superseded' | 'cold' | 'cited' | 'budget';
     }
@@ -207,9 +210,9 @@ export type TraceEvent =
       toolCallIds?: string[];
       /**
        * `milestone`: folded at a verified checkpoint (a check passed after
-       * edits). `residue`: old steps whose results had all left were folded
-       * once their cards and call arguments passed the residue mark. Absent =
-       * size mark.
+       * edits). `residue`: old steps whose results had all left (cards and
+       * call arguments only) were folded at a boundary. Absent = the recap
+       * fold, the last step of a pass at the in-run high mark.
        */
       reason?: 'milestone' | 'residue';
     }

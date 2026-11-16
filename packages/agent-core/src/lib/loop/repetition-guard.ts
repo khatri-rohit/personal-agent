@@ -14,6 +14,7 @@ const MAX_IDENTICAL_OUTCOMES = GUARD_LIMITS.identicalOutcomes;
  */
 export class RepetitionGuard {
   private unknownToolStreak = 0;
+  /** Reads asked for per path (answered or not), for `readStormAction`. */
   private readonly readsByPath = new Map<string, number>();
   private terminalCalls = 0;
   private readonly callCounts = new Map<string, number>();
@@ -37,11 +38,21 @@ export class RepetitionGuard {
     this.unknownToolStreak = 0;
   }
 
-  readStorm(readPath: string): string | null {
-    if ((this.readsByPath.get(readPath) ?? 0) < MAX_READ_FILE_PER_PATH) return null;
+  /**
+   * Count one read asked for on this path (answered or not); returns how
+   * many there have been, this one included. `readStormAction` decides.
+   */
+  readAttempt(readPath: string): number {
+    const attempts = (this.readsByPath.get(readPath) ?? 0) + 1;
+    this.readsByPath.set(readPath, attempts);
+    return attempts;
+  }
+
+  /** The halt for a read loop on one path (past twice the per-path limit). */
+  readStormLimit(): string {
     return limitMessage(
       'limit.read_storm',
-      `read_file path storm blocked (${MAX_READ_FILE_PER_PATH} per path)`,
+      `read_file path storm blocked (${MAX_READ_FILE_PER_PATH * 2} reads of one path)`,
     );
   }
 
@@ -66,10 +77,7 @@ export class RepetitionGuard {
   }
 
   /** A call passed admission and will run. */
-  admitted(command: boolean, readPath: string | null): void {
-    if (readPath !== null) {
-      this.readsByPath.set(readPath, (this.readsByPath.get(readPath) ?? 0) + 1);
-    }
+  admitted(command: boolean): void {
     if (command) this.terminalCalls += 1;
   }
 

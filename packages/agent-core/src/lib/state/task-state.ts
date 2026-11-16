@@ -220,6 +220,15 @@ export class TaskStateTracker {
     return [...this.restored.keys()].filter((path) => !this.cited.has(path));
   }
 
+  /**
+   * The model read this path back after its read had left the prompt: it
+   * paid a step for it, so it is in use (the working set removes it last).
+   * `path` is canonical (pathFromToolArgs), as both sides store it.
+   */
+  wasRestored(path: string): boolean {
+    return this.restored.has(path);
+  }
+
   /** A successful edit has no check after it yet. */
   get unchecked(): boolean {
     return this.unverifiedSince !== null;

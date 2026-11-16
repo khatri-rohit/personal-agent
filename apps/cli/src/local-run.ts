@@ -1,16 +1,23 @@
 import type {
   AgentEvent,
+  ContextBudget,
   ModeConfig,
   RunPosture,
   TraceEvent,
 } from '@agent/agent-models';
-import { isPlanScoped, planHasOpenWork } from '@agent/agent-models';
+import {
+  contextBudgetForWindow,
+  isPlanScoped,
+  planHasOpenWork,
+  resolveContextWindow,
+} from '@agent/agent-models';
 import {
   RunManager,
   assembleContext,
   createInMemoryPlanStore,
   createPlanTools,
   createRunToolset,
+  getOllamaModelConfig,
   loadWorkspaceRules,
   type AgentLimits,
   type ModelCallFn,
@@ -18,6 +25,21 @@ import {
 } from '@agent/agent-core';
 
 const runs = new RunManager();
+
+/**
+ * The budget for the model's window in `default` mode, resolved the way the
+ * API does (min(260k, the model's size); 260k when /api/show fails), so a
+ * local run's marks match a chat run on the same model.
+ */
+async function resolveBudget(model: string): Promise<ContextBudget> {
+  let modelMax: number | null = null;
+  try {
+    modelMax = (await getOllamaModelConfig(model, 'cloud')).contextLength ?? null;
+  } catch {
+    // Keep the fallback window when /api/show is unavailable.
+  }
+  return contextBudgetForWindow(resolveContextWindow({ mode: 'default', modelMax }).windowTokens);
+}
 
 /**
  * One run outside the API through the pieces the API uses: the mode's tool
@@ -68,7 +90,7 @@ export async function runLocally(input: {
     ],
     mode: mode.name,
     posture,
-  });
+  }, await resolveBudget(input.model));
 
   const claimed = runs.claim(`local-${Date.now()}`);
   if (!claimed.ok) throw new Error('local run could not claim its thread');

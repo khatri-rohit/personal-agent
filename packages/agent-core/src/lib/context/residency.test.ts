@@ -44,12 +44,12 @@ function view(calls: Call[], iteration: number, unchecked: string[] = []): Worki
 
 const budget = (over: Partial<ContextBudget> = {}): ContextBudget => ({
   ...DEFAULT_CONTEXT_BUDGET,
-  inRunClearAtLeastTokens: 500,
-  inRunResidentToolTokens: 100_000,
-  inRunColdAfterIterations: 4,
   inRunKeepToolResults: 1,
   ...over,
 });
+/** A budget whose in-run high mark is `tokens` on the whole prompt (low mark: `lowShare` of it). */
+const marks = (tokens: number, lowShare = DEFAULT_CONTEXT_BUDGET.inRunLowShare) =>
+  budget({ inRunHighTokens: tokens, inRunLowShare: lowShare });
 
 // What the built-in tools declare about their results (tools/traits.ts).
 const pathOf = builtinToolTraits;
@@ -58,62 +58,49 @@ const contentOf = (messages: ChatCompletionMessageParam[], id: string) =>
   messages.find((message) => message.role === 'tool' && message.tool_call_id === id)?.content as string;
 
 describe('manageWorkingSet', () => {
-  it('cards an older read that a later read covers, with a short card that keeps the sha', async () => {
+  it('under the high mark nothing leaves, however long a file sat untouched', async () => {
+    const calls: Call[] = [
+      { id: 'a', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 50, 50), iteration: 1 },
+      { id: 'g', name: 'grep', args: { pattern: 'x' }, result: body('grep'), iteration: 2 },
+      { id: 'b', name: 'read_file', args: { path: 'b.ts' }, result: read(1, 50, 50), iteration: 30 },
+    ];
+    const messages = transcript(calls);
+    expect(await manageWorkingSet(messages, 1, budget(), [], blob, pathOf, view(calls, 31))).toBeNull();
+    expect(contentOf(messages, 'a')).toMatch(/^\[lines/);
+  });
+
+  it('a ride-along (freeOnly) removes a superseded read under the mark, with a short card that keeps the sha', async () => {
     const calls: Call[] = [
       { id: 'a', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 100, 100), iteration: 1 },
       { id: 'b', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 100, 100, 4_100), iteration: 2 },
     ];
     const messages = transcript(calls);
-    const result = await manageWorkingSet(messages, 1, budget(), [], blob, pathOf, view(calls, 2));
+    expect(await manageWorkingSet(structuredClone(messages), 1, budget(), [], blob, pathOf, view(calls, 2))).toBeNull();
+    const result = await manageWorkingSet(messages, 1, budget(), [], blob, pathOf, view(calls, 2), { freeOnly: true });
     expect(result?.byReason).toEqual({ superseded: ['a'] });
     expect(contentOf(messages, 'a')).toBe('(evicted) read_file {"path":"a.ts"} [1–100] · superseded · 4021 chars · sha256:sha-4021');
     expect(contentOf(messages, 'b')).toMatch(/^\[lines 1–100 of 100\]/);
   });
 
-  it('cards a file nobody touched for the cold window, keeps one in use', async () => {
+  it('never removes a file edited since the last check, even past the mark', async () => {
     const calls: Call[] = [
-      { id: 'a', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 50, 50), iteration: 1 },
-      { id: 'b', name: 'read_file', args: { path: 'b.ts' }, result: read(1, 50, 50), iteration: 5 },
+      { id: 'a', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 50, 50, 8_000), iteration: 1 },
     ];
     const messages = transcript(calls);
-    const result = await manageWorkingSet(messages, 1, budget(), [], blob, pathOf, view(calls, 6));
-    expect(result?.byReason).toEqual({ cold: ['a'] });
-    expect(contentOf(messages, 'a')).toMatch(/^\(evicted\) read_file \{"path":"a\.ts"\} \[1–50\] · cold · /);
+    expect(await manageWorkingSet(messages, 1, marks(500), [], blob, pathOf, view(calls, 20, ['a.ts']))).toBeNull();
   });
 
-  it('never cards a file edited since the last check, however old', async () => {
-    const calls: Call[] = [
-      { id: 'a', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 50, 50), iteration: 1 },
-    ];
-    const messages = transcript(calls);
-    const result = await manageWorkingSet(messages, 1, budget(), [], blob, pathOf, view(calls, 20, ['a.ts']));
-    expect(result).toBeNull();
-  });
-
-  it('waits until a cold/superseded pass frees enough (cache-friendly steps)', async () => {
-    const calls: Call[] = [
-      { id: 'a', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 50, 50, 900), iteration: 1 },
-    ];
-    const messages = transcript(calls);
-    const result = await manageWorkingSet(
-      messages, 1, budget({ inRunClearAtLeastTokens: 10_000 }), [], blob, pathOf, view(calls, 9),
-    );
-    expect(result).toBeNull();
-  });
-
-  it('past the cap, removes down to the low mark in one pass, least recently touched first, sparing this step', async () => {
+  it('past the high mark, removes down to the low mark in one pass, least recently touched first, sparing this step', async () => {
     const calls: Call[] = [
       { id: 'a', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 50, 50, 8_000), iteration: 1 },
       { id: 'b', name: 'read_file', args: { path: 'b.ts' }, result: read(1, 50, 50, 8_000), iteration: 2 },
       { id: 'c', name: 'read_file', args: { path: 'c.ts' }, result: read(1, 50, 50, 8_000), iteration: 3 },
     ];
     const messages = transcript(calls);
-    // ~6k tokens resident against a 4.5k cap (low mark 2.25k); nothing is cold
-    // yet. Trimming to the cap would remove only a; the pass goes to the low
-    // mark, so b goes too, and the next results fit without another pass.
-    const result = await manageWorkingSet(
-      messages, 1, budget({ inRunResidentToolTokens: 4_500, inRunClearAtLeastTokens: 100_000 }), [], blob, pathOf, view(calls, 3),
-    );
+    // ~6k tokens against a 4.5k mark (low mark 3.15k). Trimming to the mark
+    // would remove only a; the pass goes to the low mark, so b goes too, and
+    // the next results fit without another pass.
+    const result = await manageWorkingSet(messages, 1, marks(4_500), [], blob, pathOf, view(calls, 3));
     expect(result?.byReason).toEqual({ budget: ['b', 'a'] });
     expect(contentOf(messages, 'c')).toMatch(/^\[lines/);
   });
@@ -125,28 +112,46 @@ describe('manageWorkingSet', () => {
       { id: 'b', name: 'run_terminal', args: { command: 'npm test' }, result: 'This exact tool call has already been attempted multiple times.', iteration: 2 },
     ];
     const messages = transcript(calls);
-    expect(await manageWorkingSet(messages, 1, budget(), [], blob, pathOf, view(calls, 2))).toBeNull();
+    expect(await manageWorkingSet(messages, 1, budget(), [], blob, pathOf, view(calls, 2), { freeOnly: true })).toBeNull();
 
     const rerun: Call[] = [...calls.slice(0, 1), { id: 'c', name: 'run_terminal', args: { command: 'npm test' }, result: ran, iteration: 3 }];
     const again = transcript(rerun);
-    const result = await manageWorkingSet(again, 1, budget(), [], blob, pathOf, view(rerun, 3));
+    const result = await manageWorkingSet(again, 1, budget(), [], blob, pathOf, view(rerun, 3), { freeOnly: true });
     expect(result?.byReason).toEqual({ superseded: ['a'] });
   });
 
-  it('keeps the newest non-file results and earlier turns except when superseded', async () => {
+  it('past the mark, other results (a search) leave before file views; earlier turns are only superseded', async () => {
     const calls: Call[] = [
-      { id: 'old', name: 'grep', args: { pattern: 'x' }, result: body('grep old'), iteration: 1 },
-      { id: 'new', name: 'grep', args: { pattern: 'y' }, result: body('grep new'), iteration: 1 },
+      { id: 'g', name: 'grep', args: { pattern: 'x' }, result: body('grep old'), iteration: 1 },
+      { id: 'a', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 50, 50, 8_000), iteration: 2 },
+      { id: 'c', name: 'read_file', args: { path: 'c.ts' }, result: read(1, 50, 50, 2_000), iteration: 3 },
     ];
+    // runStart after every row: they are earlier-turn results, never removed for size.
+    const earlier = transcript(calls);
+    expect(await manageWorkingSet(earlier, earlier.length, marks(500), [], blob, pathOf, view(calls, 3))).toBeNull();
+    // In-run, ~3.6k tokens against a 3k mark (low mark 2.7k): the older
+    // search goes, which is enough; the older file view stays.
     const messages = transcript(calls);
-    // runStart after both rows: they are earlier-turn results, never cold here.
-    expect(await manageWorkingSet(messages, messages.length, budget(), [], blob, pathOf, view(calls, 9))).toBeNull();
-    // In-run: the newest non-file result stays, the older one is cold.
-    const inRun = await manageWorkingSet(transcript(calls), 1, budget(), [], blob, pathOf, view(calls, 9));
-    expect(inRun?.byReason).toEqual({ cold: ['old'] });
+    const result = await manageWorkingSet(messages, 1, marks(3_000, 0.9), [], blob, pathOf, view(calls, 3));
+    expect(result?.byReason).toEqual({ budget: ['g'] });
+    expect(contentOf(messages, 'a')).toMatch(/^\[lines/);
   });
 
-  it('never removes a sub-agent report or a recall of one, even past the cap', async () => {
+  it('a file the model read back after a removal leaves last', async () => {
+    const calls: Call[] = [
+      { id: 'a', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 50, 50, 8_000), iteration: 1 },
+      { id: 'b', name: 'read_file', args: { path: 'b.ts' }, result: read(1, 50, 50, 8_000), iteration: 2 },
+      { id: 'c', name: 'read_file', args: { path: 'c.ts' }, result: read(1, 50, 50, 2_000), iteration: 3 },
+    ];
+    const messages = transcript(calls);
+    // a is the least recently touched, but it was read back: b goes instead.
+    const restored = { ...view(calls, 3), isRestored: (path: string) => path === 'a.ts' };
+    const result = await manageWorkingSet(messages, 1, marks(4_000, 0.9), [], blob, pathOf, restored);
+    expect(result?.byReason).toEqual({ budget: ['b'] });
+    expect(contentOf(messages, 'a')).toMatch(/^\[lines/);
+  });
+
+  it('never removes a sub-agent report or a recall of one, even past the mark', async () => {
     const sha = 'f'.repeat(64);
     const calls: Call[] = [
       { id: 'd', name: 'delegate', args: { profile: 'explore' }, result: `subagent:profile=explore reportSha=${sha}\n${'r'.repeat(6_000)}`, iteration: 1 },
@@ -155,56 +160,30 @@ describe('manageWorkingSet', () => {
       { id: 'b', name: 'read_file', args: { path: 'b.ts' }, result: read(1, 50, 50, 6_000), iteration: 4 },
     ];
     const messages = transcript(calls);
-    const result = await manageWorkingSet(
-      messages, 1, budget({ inRunResidentToolTokens: 3_000, inRunClearAtLeastTokens: 100_000 }), [], blob, pathOf, view(calls, 5),
-    );
-    // Only the plain read goes; the report and its recall cost a child run to get back.
+    const result = await manageWorkingSet(messages, 1, marks(3_000), [], blob, pathOf, view(calls, 5));
+    // Only the plain reads go; the report and its recall cost a child run to get back.
     expect(result?.toolCallIds.sort()).toEqual(['a', 'b']);
     expect(contentOf(messages, 'd')).toMatch(/^subagent:/);
     expect(contentOf(messages, 'r')).toMatch(/^rest of report/);
   });
 
-  it('a cited read is not stale on its own: under the cap it stays', async () => {
-    const calls: Call[] = [
-      { id: 'a', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 50, 50, 3_000), iteration: 1 },
-      { id: 'b', name: 'read_file', args: { path: 'b.ts' }, result: read(1, 50, 50, 3_000), iteration: 1 },
-    ];
-    const messages = transcript(calls);
-    const cited = { ...view(calls, 2), isCited: (path: string) => path === 'a.ts' };
-    expect(await manageWorkingSet(messages, 1, budget(), [], blob, pathOf, cited)).toBeNull();
-    expect(contentOf(messages, 'a')).toMatch(/^\[lines/);
-  });
-
-  it('past the cap, cited reads leave first (traced cited), then least recently touched', async () => {
+  it('a removed file a finding cites is traced cited; it does not jump the order', async () => {
     const calls: Call[] = [
       { id: 'a', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 50, 50, 8_000), iteration: 1 },
       { id: 'b', name: 'read_file', args: { path: 'b.ts' }, result: read(1, 50, 50, 8_000), iteration: 2 },
-      { id: 'c', name: 'read_file', args: { path: 'c.ts' }, result: read(1, 50, 50, 8_000), iteration: 2 },
-      { id: 'd', name: 'read_file', args: { path: 'd.ts' }, result: read(1, 50, 50, 8_000), iteration: 3 },
+      { id: 'c', name: 'read_file', args: { path: 'c.ts' }, result: read(1, 50, 50, 8_000), iteration: 3 },
     ];
     const messages = transcript(calls);
-    // ~8k tokens resident against a 5k cap (low mark 2.5k): three of four go.
-    // c is cited, so it goes before the older a; then a, then b.
-    const cited = { ...view(calls, 3), isCited: (path: string) => path === 'c.ts' };
-    const result = await manageWorkingSet(
-      messages, 1, budget({ inRunResidentToolTokens: 5_000, inRunClearAtLeastTokens: 100_000 }), [], blob, pathOf, cited,
-    );
-    expect(result?.byReason).toEqual({ cited: ['c'], budget: ['b', 'a'] });
-    expect(contentOf(messages, 'c')).toMatch(/ · cited · /);
-    expect(contentOf(messages, 'd')).toMatch(/^\[lines/);
-  });
-
-  it('makes no pass under the cap when stale results would free too little', async () => {
-    const calls: Call[] = [
-      { id: 'a', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 50, 50, 1_000), iteration: 1 },
-    ];
-    const messages = transcript(calls);
-    expect(await manageWorkingSet(messages, 1, budget({ inRunClearAtLeastTokens: 5_000 }), [], blob, pathOf, view(calls, 9))).toBeNull();
+    const cited = { ...view(calls, 3), isCited: (path: string) => path === 'b.ts' };
+    const result = await manageWorkingSet(messages, 1, marks(4_500), [], blob, pathOf, cited);
+    expect(result?.byReason).toEqual({ cited: ['b'], budget: ['a'] });
+    expect(contentOf(messages, 'b')).toMatch(/ · cited · /);
+    expect(contentOf(messages, 'c')).toMatch(/^\[lines/);
   });
 });
 
 describe('foldResidue', () => {
-  const card = (n: number) => `${CARD_PREFIX} read_file {"path":"f${n}.ts"} [1–50] · cold · 9000 chars · sha256:${String(n).padStart(64, '0')}`;
+  const card = (n: number) => `${CARD_PREFIX} read_file {"path":"f${n}.ts"} [1–50] · budget · 9000 chars · sha256:${String(n).padStart(64, '0')}`;
   const steps = (count: number, resident: number[] = []): ChatCompletionMessageParam[] =>
     transcript(
       Array.from({ length: count }, (_, i) => ({
@@ -215,9 +194,9 @@ describe('foldResidue', () => {
         iteration: i + 1,
       })),
     );
-  const small = budget({ inRunResidueFoldTokens: 1_000, inRunKeepToolResults: 2 });
+  const small = budget({ inRunKeepToolResults: 2 });
 
-  it('folds old steps that hold only cards once residue passes the mark, keeping the newest', async () => {
+  it('folds old steps that hold only cards, keeping the newest', async () => {
     const messages = steps(12);
     const before = messages.length;
     const result = await foldResidue(messages, 1, small, []);
@@ -271,7 +250,7 @@ describe('foldResidue', () => {
 
   it('leaves tool_call pairing valid after folding around several live steps', async () => {
     const messages = steps(14, [1, 5, 6, 10]);
-    const result = await foldResidue(messages, 1, { ...small, inRunResidueFoldTokens: 600 }, []);
+    const result = await foldResidue(messages, 1, small, []);
     expect(result).not.toBeNull();
     expect(pairingValid(messages)).toBe(true);
     for (const id of ['c1', 'c5', 'c6', 'c10']) expect(contentOf(messages, id)).toMatch(/^\[lines/);
@@ -330,14 +309,18 @@ describe('foldResidue', () => {
     for (const id of ['c8', 'c9', 'c10', 'c11']) expect(contentOf(messages, id)).toBe(card(Number(id.slice(1))));
   });
 
-  it('does not fold a stretch too small to be worth changing the cached prompt', async () => {
-    // Residue (mostly live steps' call arguments) passes the mark, but only
-    // two card-only steps are foldable: under half the 1k mark.
-    expect(await foldResidue(steps(12, [2, 3, 4, 5, 6, 7, 8, 9]), 1, small, [])).toBeNull();
+  it('with requireSaving, skips a fold that frees less than the recap it writes', async () => {
+    // Tiny card-only steps (short card, no padding): a recap line per row
+    // plus the recap header would outweigh what folding them removes.
+    const tiny: ChatCompletionMessageParam[] = transcript(
+      Array.from({ length: 4 }, (_, i) => ({ id: `t${i}`, name: 'read_file', args: { path: `t${i}.ts` }, result: '(evicted) x', iteration: i + 1 })),
+    );
+    expect(await foldResidue(tiny, 1, small, [], { requireSaving: true })).toBeNull();
+    expect(await foldResidue(steps(12), 1, small, [], { requireSaving: true })).not.toBeNull();
   });
 
-  it('does nothing under the residue mark', async () => {
-    expect(await foldResidue(steps(3), 1, budget({ inRunResidueFoldTokens: 50_000 }), [])).toBeNull();
+  it('does nothing when every foldable step still holds resident content', async () => {
+    expect(await foldResidue(steps(3, [0, 1, 2]), 1, small, [])).toBeNull();
   });
 });
 
@@ -365,7 +348,7 @@ describe('ReadDedupe', () => {
 });
 
 describe('recap stays lossless (phase 7)', () => {
-  const card = (n: number) => `${CARD_PREFIX} read_file {"path":"f${n}.ts"} [1–50] · cold · 9000 chars · sha256:${String(n).padStart(64, '0')}`;
+  const card = (n: number) => `${CARD_PREFIX} read_file {"path":"f${n}.ts"} [1–50] · budget · 9000 chars · sha256:${String(n).padStart(64, '0')}`;
   const many = (count: number): ChatCompletionMessageParam[] =>
     transcript(
       Array.from({ length: count }, (_, i) => ({
@@ -384,11 +367,22 @@ describe('recap stays lossless (phase 7)', () => {
       return 'e'.repeat(64);
     };
     const messages = many(120);
-    await foldResidue(messages, 1, budget({ inRunResidueFoldTokens: 1_000, inRunKeepToolResults: 2 }), [], { putBlob });
+    await foldResidue(messages, 1, budget({ inRunKeepToolResults: 2 }), [], { putBlob });
     const recap = String(messages[1]?.content);
     expect(recap).toContain(`Older steps of this run, in full: recall sha256:${'e'.repeat(64)}`);
     // The stored text has the oldest step the bounded recap no longer shows.
     expect(stored.at(-1)).toContain(`sha256:${'0'.repeat(64)}`);
+  });
+
+  it('past the high mark, the recap fold takes the oldest steps down to the low mark, and does nothing below it', async () => {
+    const messages = many(40);
+    // ~40 steps of ~250 tokens each (call arguments + card): about 10k tokens.
+    expect(await compactCurrentRun(structuredClone(messages), 1, marks(50_000), [])).toBeNull();
+    const high = 6_000;
+    const result = await compactCurrentRun(messages, 1, marks(high), [], undefined, { stepOf: (id) => Number(id.slice(1)) + 1 });
+    expect(result).not.toBeNull();
+    expect(result!.afterTokens).toBeLessThanOrEqual(high * DEFAULT_CONTEXT_BUDGET.inRunLowShare);
+    expect(String(messages[1]?.content)).toMatch(/^\(compacted progress\)/);
   });
 
   it('starts a fresh session at a long task\'s milestone: the recap is one pointer to every earlier step', async () => {

@@ -8,9 +8,10 @@ import type { SubagentThoroughness } from './subagent.js';
  * limit the child runs under), one is derived from the other here, and
  * harness-limits.test.ts checks they agree.
  *
- * In-run context knobs (resident cap, cold window, compaction marks) are
- * scaled per model window and live in context.ts (ContextBudget); the
- * consistency test covers them too.
+ * In-run context marks (the high and low marks on the whole prompt, and the
+ * between-run compaction marks) derive from the model window in context.ts
+ * (ContextBudget, inRunMarks, compactionMarks); the consistency test covers
+ * them too.
  */
 
 /**

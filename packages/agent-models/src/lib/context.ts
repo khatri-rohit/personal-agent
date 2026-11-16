@@ -35,42 +35,24 @@ export type ContextBudget = {
    */
   carryOverToolTokens: number;
   /**
-   * Cap on this run's resident tool results (the working set). Past it, the
-   * least recently touched results become cards at once. Absolute on
-   * purpose: every call re-sends them, so per-call cost stays bounded on a
-   * 1M window.
+   * In-run high mark, as a share of the input budget (window minus output
+   * reserve). The whole prompt is measured, not one part of it: below the
+   * mark nothing leaves and the prompt only grows (a stable prefix the
+   * provider can cache); past it one pass removes down to the low mark,
+   * cheapest loss first (see `inRunMarks`).
    */
-  inRunResidentToolTokens: number;
+  inRunHighRatio: number;
+  /** In-run low mark, as a share of the high mark: where a pass stops, so the next steps fit without another. */
+  inRunLowShare: number;
   /**
-   * A file not read or edited for this many iterations (other results: this
-   * many iterations old) is cold and becomes a card. Files edited since the
-   * last check stay resident.
+   * Optional absolute ceiling on the in-run high mark. Unset, the mark
+   * scales with the window (the window mode is the ceiling: `default` caps
+   * the window at 260k, `model` opts in to the model's full size). Set it
+   * when the provider does not cache prompts, so per-call cost is bounded.
    */
-  inRunColdAfterIterations: number;
-  /**
-   * Low mark of the resident cap, as a share of it. Past the cap, results
-   * leave in one pass down to this share, so the next few results fit
-   * without another pass (each pass changes the cached prompt).
-   */
-  inRunResidentLowRatio: number;
-  /**
-   * Residue mark: once this run's cards and old call arguments pass it, old
-   * steps whose results have all left fold into the recap.
-   */
-  inRunResidueFoldTokens: number;
-  /** Newest non-file tool results that never go cold; also the in-run recap's kept iterations. */
+  inRunHighTokens?: number;
+  /** Newest steps an in-run fold keeps in place (recap and residue folds). */
   inRunKeepToolResults: number;
-  /** Skip a cold/superseded pass that frees less than this (each pass breaks the cached prefix). */
-  inRunClearAtLeastTokens: number;
-  /**
-   * Overflow guard: when the prompt passes this share of the input budget,
-   * the run's oldest steps fold into the recap down to `compactAtRatio`
-   * (the ceiling a run may start at), in one pass. It sits at the window's
-   * edge, not inside the working range: the working-set cap and the residue
-   * fold keep a run well below it, and a run that starts near the ceiling
-   * (a heavy conversation) does not trip it every step.
-   */
-  inRunCompactRatio: number;
   /** Iterations a loaded skill body stays in full before it becomes a skill card. */
   skillResidentIterations: number;
   /**
@@ -116,13 +98,9 @@ export const DEFAULT_CONTEXT_BUDGET: ContextBudget = {
   compactToRatio: 0.25,
   compactToTokens: 50_000,
   carryOverToolTokens: 40_000,
-  inRunResidentToolTokens: 24_000,
-  inRunResidentLowRatio: 0.5,
-  inRunResidueFoldTokens: 6_000,
-  inRunColdAfterIterations: 4,
+  inRunHighRatio: 0.8,
+  inRunLowShare: 0.7,
   inRunKeepToolResults: 4,
-  inRunClearAtLeastTokens: 10_000,
-  inRunCompactRatio: 0.9,
   skillResidentIterations: 4,
   /** ~24k chars: about 200 typical (~120-char) findings. */
   recordCardTokens: 6_000,
@@ -167,7 +145,7 @@ function chooseContextWindow(
   };
 }
 
-/** Budget for a resolved window. Absolute in-run knobs stay below the input budget. */
+/** Budget for a resolved window. Absolute knobs stay below a share of the input budget. */
 export function contextBudgetForWindow(
   windowTokens: number,
   base: ContextBudget = DEFAULT_CONTEXT_BUDGET,
@@ -177,26 +155,35 @@ export function contextBudgetForWindow(
     ...base,
     windowTokens,
     carryOverToolTokens: Math.min(base.carryOverToolTokens, Math.floor(input * 0.2)),
-    inRunResidentToolTokens: Math.min(base.inRunResidentToolTokens, Math.floor(input * 0.15)),
-    inRunResidueFoldTokens: Math.min(base.inRunResidueFoldTokens, Math.floor(input * 0.05)),
     recordCardTokens: Math.min(base.recordCardTokens, Math.floor(input * 0.05)),
-    inRunClearAtLeastTokens: Math.min(
-      base.inRunClearAtLeastTokens,
-      Math.floor(input * 0.1),
-    ),
   };
 }
+
+/**
+ * The in-run marks in tokens, on the whole prompt. `high`: past it, one pass
+ * removes down to `low`. Derived from the window alone (P2), unless
+ * `inRunHighTokens` sets an absolute ceiling.
+ */
+export function inRunMarks(budget: ContextBudget): { high: number; low: number } {
+  const input = Math.max(1, budget.windowTokens - budget.outputReserveTokens);
+  const high = Math.min(input * budget.inRunHighRatio, budget.inRunHighTokens ?? Number.POSITIVE_INFINITY);
+  return { high, low: high * budget.inRunLowShare };
+}
+
+/** Share of the in-run low mark a run may start at, so a run starts with room before its first pass. */
+const START_BELOW_LOW = 0.9;
 
 /**
  * Between-run compaction marks in tokens: compact when the prompt is over
  * `at`, down to `to`. Each is the lower of its window share and its absolute
  * figure, so a small window keeps its ratio and a large one stops at the
- * absolute mark.
+ * absolute mark. `at` also stays under the in-run low mark: a run that starts
+ * above it would pass the high mark on its first steps and fold every step.
  */
 export function compactionMarks(budget: ContextBudget): { at: number; to: number } {
   const input = Math.max(1, budget.windowTokens - budget.outputReserveTokens);
   return {
-    at: Math.min(input * budget.compactAtRatio, budget.compactAtTokens),
+    at: Math.min(input * budget.compactAtRatio, budget.compactAtTokens, inRunMarks(budget).low * START_BELOW_LOW),
     to: Math.min(input * budget.compactToRatio, budget.compactToTokens),
   };
 }

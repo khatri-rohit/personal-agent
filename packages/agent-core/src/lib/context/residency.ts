@@ -3,7 +3,7 @@ import type {
   ChatCompletionTool,
 } from 'openai/resources/chat/completions';
 
-import { CHARS_PER_TOKEN, type ContextBudget } from '@agent/agent-models';
+import { CHARS_PER_TOKEN, inRunMarks, type ContextBudget } from '@agent/agent-models';
 
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
 import { skillCard } from '../tools/skills';
@@ -13,15 +13,18 @@ import { argsPreview, toolCallIndex, type ToolCallInfo } from './outcome-card';
 
 /**
  * In-run context residency. assembleContext evicts by user turn when a run
- * starts; inside one long run every iteration re-sends every resident tool
- * result. These passes keep a long run's prompt to its working set without
- * an LLM call: superseded and cold results become cards (task state says
- * what is in use), applied skill bodies retire to their core rules, old
- * iterations fold into a recap (at a size mark, or at a verified
- * milestone), and unchanged re-reads are answered with a pointer.
+ * starts; inside one long run every iteration re-sends the whole prompt.
+ * One budget governs it: the in-run high mark on the whole prompt
+ * (`inRunMarks`, derived from the window). Below it nothing leaves, so the
+ * prompt only grows and its prefix stays reusable. Past it one pass removes
+ * down to the low mark without an LLM call: card-only steps fold into the
+ * recap, results become cards by value (`manageWorkingSet`), and if that is
+ * not enough the oldest steps fold (`compactCurrentRun`). Applied skill
+ * bodies retire to their core rules, a verified milestone folds old steps,
+ * and unchanged re-reads are answered with a pointer.
  *
  * How a result is treated (which file it is a view of, what replaces it,
- * whether it ages, whether it may leave at all) comes from its tool's traits
+ * whether it is under judgement, whether it may leave at all) comes from its tool's traits
  * (tools/traits.ts), passed in as `traitsOf`; nothing here matches a tool by
  * name. The default is the built-in table.
  */
@@ -34,9 +37,12 @@ const SKILL_CARD_PREFIX = '(skill card)';
 const UNCHANGED_PREFIX = '(unchanged';
 const RECAP_PREFIX = '(compacted progress)';
 const RECAP_MAX_CHARS = 8_000;
-/** Size estimates of what a fold writes: the recap's header, and one recap line per folded tool row. */
+/** Size of the text a recap message adds around its lines (its prefix and instructions). */
 const RECAP_HEADER_CHARS = 180;
-const RECAP_LINE_CHARS = 110;
+/** `[step 1234] `: a recap line's prefix, sized for four-digit steps. */
+const STEP_PREFIX_CHARS = 12;
+/** Room the overflow pointer takes when a recap outgrows RECAP_MAX_CHARS. */
+const RECAP_POINTER_CHARS = 150;
 
 function isResident(content: string): boolean {
   return (
@@ -88,7 +94,7 @@ export function residentReadPaths(
   return new Set([...latest].filter(([, resident]) => resident).map(([path]) => path));
 }
 
-export type EvictionReason = 'superseded' | 'cold' | 'cited' | 'budget';
+export type EvictionReason = 'superseded' | 'cited' | 'budget';
 
 /** Sub-agent report shas named in sub-agent results (`reportSha=<sha>` in the header). */
 function reportShas(
@@ -142,6 +148,8 @@ export type WorkingSetView = {
   isUnchecked(path: string): boolean;
   /** A recorded finding cites the path: the finding stands for its reads. */
   isCited?(path: string): boolean;
+  /** The model read the path back after its read was removed: it is in use, so it leaves last. */
+  isRestored?(path: string): boolean;
 };
 
 type Candidate = {
@@ -154,9 +162,10 @@ type Candidate = {
   touch: number;
   path: string | null;
   superseded: boolean;
-  cold: boolean;
   /** A recorded finding cites this result's file. */
   cited: boolean;
+  /** The model read this result's file back after a removal. */
+  restored: boolean;
   /** Must stay: being changed, or this iteration's result. */
   pinned: boolean;
 };
@@ -175,35 +184,34 @@ function workingSetCard(candidate: Candidate, content: string, sha: string, reas
 }
 
 /**
- * Keep this run's tool results to the working set (task state decides).
- * Results are priced: what it costs to get one back against what it costs
- * to keep sending it.
- * - superseded: a later resident read covers the same lines of the same
- *   file (`lineRange`), or the same call was made again (`repeatKey`: the
- *   same command, the same file's diff; only calls that ran count);
- * - cold: a file view (a `read` with a `file`) whose file was not read or
- *   edited for `inRunColdAfterIterations`, or any other result that old,
- *   except the newest `inRunKeepToolResults` non-file results. A tool whose
- *   results are `no_aging` (a diff) never goes cold: it is material under
- *   judgement, and removing it by age makes the model fetch it again;
- * - cited / budget: past `inRunResidentToolTokens` of resident results,
- *   down to the low mark (`inRunResidentLowRatio` of the cap) in one pass:
- *   results whose file a recorded finding cites first (traced `cited`: the
- *   finding stands for them), then least recently touched (larger first on
- *   a tie, traced `budget`). A cited result is not stale by itself: a
- *   finding may cite one line of a 2,000-line window still in use.
+ * Keep this run's prompt under the in-run high mark (`inRunMarks`), measured
+ * on the whole prompt. Below the mark nothing leaves: the prompt only grows,
+ * so its prefix stays reusable and nothing the model is using disappears
+ * (P3). Past it, one pass removes results down to the low mark, cheapest loss
+ * first (P4: what it costs to get one back against what it costs to keep):
+ * 1. superseded: a later resident read covers the same lines of the same
+ *    file (`lineRange`), or the same call was made again (`repeatKey`: the
+ *    same command, the same file's diff; only calls that ran count). Nothing
+ *    is lost: the newer copy is resident;
+ * 2. other results (searches, web, commands, edit receipts), oldest first:
+ *    their hits are read or their output re-run when they still matter;
+ * 3. file views read once, least recently touched first (larger first on a
+ *    tie);
+ * 4. material under judgement (`no_aging`, a diff);
+ * 5. file views the model already read back after a removal (`isRestored`),
+ *    last: it paid a step to get them, so they are in use.
+ * A removed file view a recorded finding cites is traced `cited` (the finding
+ * stands for it), any other `budget`.
  * Never removed: a file edited since the last check, this iteration's
  * results, results a tool marks `never` (live state: the plan, todos, a
  * loaded skill), and sub-agent reports (and recalls of them), which would
  * cost a child run to get back. Edits never supersede reads (several edits
- * from one read are normal).
+ * from one read are normal). Results from earlier turns are only superseded
+ * (assembleContext already stubs them). Every card keeps a sha for recall.
  *
- * Removal happens in passes, because each pass changes the cached prompt:
- * a pass runs when resident results pass the cap, or when stale (superseded,
- * cold) results free at least `inRunClearAtLeastTokens`. A pass that
- * runs for the cap also takes the stale results. Between passes nothing
- * leaves. Every card keeps a sha for recall. Results from earlier turns are
- * only superseded (assembleContext already stubs them).
+ * `freeOnly`: remove only superseded copies, whatever the size. The boundary
+ * passes it when the prompt changes at this step anyway (a ride-along).
+ * `marks`: the run's marks when the boundary lifted them (default: `inRunMarks`).
  */
 export async function manageWorkingSet(
   messages: ChatCompletionMessageParam[],
@@ -214,18 +222,20 @@ export async function manageWorkingSet(
   /** What each tool declares about its results (tools/traits.ts). */
   traitsOf: TraitsOf,
   view: WorkingSetView,
+  options: { freeOnly?: boolean; marks?: { high: number; low: number } } = {},
 ): Promise<EvictionResult | null> {
+  const beforeTokens = estimatePromptTokens(messages, tools);
+  const { high, low } = options.marks ?? inRunMarks(budget);
+  const overMark = beforeTokens > high;
+  if (!overMark && !options.freeOnly) return null;
+
   const calls = toolCallIndex(messages);
   const shas = reportShas(messages, calls, traitsOf);
-  // Reports are resident and count toward the cap, but never leave.
-  let reportChars = 0;
   const laterReads = new Map<string, Array<{ from: number; to: number }>>();
   const laterCalls = new Set<string>();
   const candidates: Candidate[] = [];
-  let nonFileSeen = 0;
 
-  // Newest first: supersession compares each result with what came after it,
-  // and the newest non-file results are counted as they are met.
+  // Newest first: supersession compares each result with what came after it.
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message?.role !== 'tool' || typeof message.content !== 'string') continue;
@@ -235,11 +245,8 @@ export async function manageWorkingSet(
     const traits = info ? traitsOf(info.name) : undefined;
     const args = info ? parseArgs(info.args) : {};
     const inRun = i >= runStart;
-    if (isReport(traits, args, shas)) {
-      if (inRun) reportChars += content.length;
-      continue;
-    }
-    // Live state (the plan, todos, a loaded skill) stays where it is.
+    // Reports cost a child run to get back; live state stays where it is.
+    if (isReport(traits, args, shas)) continue;
     if (traits?.residency === 'never') continue;
 
     let superseded = false;
@@ -268,19 +275,7 @@ export async function manageWorkingSet(
 
     const own = view.callIteration(message.tool_call_id) ?? view.iteration;
     const touch = path ? Math.max(own, view.lastTouch(path) ?? own) : own;
-    let cold = false;
-    if (inRun && !superseded && traits?.residency !== 'no_aging') {
-      if (path) {
-        cold = view.iteration - touch >= budget.inRunColdAfterIterations;
-      } else {
-        nonFileSeen += 1;
-        cold =
-          nonFileSeen > budget.inRunKeepToolResults &&
-          view.iteration - own >= budget.inRunColdAfterIterations;
-      }
-    }
     const pinned = (path !== null && view.isUnchecked(path)) || own >= view.iteration;
-    const cited = inRun && path !== null && view.isCited?.(path) === true;
     candidates.push({
       index: i,
       toolCallId: message.tool_call_id,
@@ -290,62 +285,34 @@ export async function manageWorkingSet(
       touch,
       path,
       superseded,
-      cold: cold && !pinned,
-      cited: cited && !pinned,
+      cited: inRun && path !== null && view.isCited?.(path) === true,
+      restored: inRun && path !== null && view.isRestored?.(path) === true,
       pinned,
     });
   }
 
-  // Stale results: superseded (even when pinned: the newer copy is
-  // resident) or cold. A cited result is not stale on its own: a finding may
-  // stand for one line of a long window, so it only goes first under pressure.
+  // 1. Superseded copies go first, even pinned ones: the newer copy is resident.
   const chosen = new Map<number, EvictionReason>();
-  let staleChars = 0;
+  let tokens = beforeTokens;
   for (const candidate of candidates) {
-    const reason: EvictionReason | null = candidate.superseded ? 'superseded' : candidate.cold ? 'cold' : null;
-    if (!reason) continue;
-    chosen.set(candidate.index, reason);
-    staleChars += candidate.chars - 250;
+    if (!candidate.superseded) continue;
+    chosen.set(candidate.index, 'superseded');
+    tokens -= freedTokens(candidate);
   }
 
-  const highChars = budget.inRunResidentToolTokens * CHARS_PER_TOKEN;
-  const lowChars = highChars * budget.inRunResidentLowRatio;
-  const residentOf = () =>
-    reportChars +
-    candidates
-      .filter((candidate) => candidate.index >= runStart && !chosen.has(candidate.index))
-      .reduce((sum, candidate) => sum + candidate.chars, 0);
-  const overCap = residentOf() > highChars;
-  // No pass this step: stale results wait until they are worth a pass.
-  if (!overCap && staleChars / CHARS_PER_TOKEN < budget.inRunClearAtLeastTokens) return null;
-
-  if (overCap) {
-    // Down to the low mark in one pass, so the next results fit without one.
-    // Results a finding cites go first (the finding stands for them), then
-    // the least recently touched. Material under judgement (`no_aging`, a
-    // diff) goes last: it is usually the oldest result, so by touch alone it
-    // left first, and a live review then fetched it back three times.
-    let residentChars = residentOf();
-    const judged = (candidate: Candidate) => Number(candidate.traits?.residency === 'no_aging');
+  if (overMark) {
+    // 2–5. Down to the low mark in one pass, cheapest loss first.
     const order = candidates
       .filter((candidate) => candidate.index >= runStart && !candidate.pinned && !chosen.has(candidate.index))
-      .sort(
-        (a, b) =>
-          Number(b.cited) - Number(a.cited) ||
-          judged(a) - judged(b) ||
-          a.touch - b.touch ||
-          b.chars - a.chars ||
-          a.index - b.index,
-      );
+      .sort((a, b) => removalRank(a) - removalRank(b) || a.touch - b.touch || b.chars - a.chars || a.index - b.index);
     for (const candidate of order) {
-      if (residentChars <= lowChars) break;
+      if (tokens <= low) break;
       chosen.set(candidate.index, candidate.cited ? 'cited' : 'budget');
-      residentChars -= candidate.chars;
+      tokens -= freedTokens(candidate);
     }
   }
   if (chosen.size === 0) return null;
 
-  const beforeTokens = estimatePromptTokens(messages, tools);
   const toolCallIds: string[] = [];
   const byReason: Partial<Record<EvictionReason, string[]>> = {};
   for (const candidate of candidates) {
@@ -369,6 +336,22 @@ export async function manageWorkingSet(
     toolCallIds,
     byReason,
   };
+}
+
+/** Rough tokens a card frees (the card itself stays, about 250 chars). */
+function freedTokens(candidate: Candidate): number {
+  return Math.max(0, candidate.chars - 250) / CHARS_PER_TOKEN;
+}
+
+/**
+ * Order of removal past the high mark (lower leaves first): other results,
+ * file views read once, material under judgement, file views read back.
+ */
+function removalRank(candidate: Candidate): number {
+  if (candidate.restored) return 3;
+  if (candidate.traits?.residency === 'no_aging') return 2;
+  if (candidate.path !== null) return 1;
+  return 0;
 }
 
 /**
@@ -460,11 +443,11 @@ export type InRunCompactionResult = {
 
 /**
  * Collapse the oldest iterations of the current run into one extractive
- * recap once the prompt passes `inRunCompactRatio` (the overflow mark, at
- * the window's edge) of the input budget, folding as many iterations as it
- * takes to get under `compactAtRatio` (the ceiling a run may start at) in
- * one pass, so the next trigger needs real growth: the gap between the two
- * marks is the hysteresis (D3). Whole iterations (assistant + its tool rows) are removed, so
+ * recap once the prompt passes the in-run high mark (`inRunMarks`), folding
+ * as many iterations as it takes to get under the low mark in one pass, so
+ * the next trigger needs real growth: the gap between the two marks is the
+ * hysteresis (D3). It is the last step of a pass at the mark, after card-only
+ * steps folded and results left by value. Whole iterations (assistant + its tool rows) are removed, so
  * tool_call pairing stays valid. Prompt-only; the ledger is untouched.
  * `runStart` is the index of the first message this run appended.
  *
@@ -492,13 +475,15 @@ export async function compactCurrentRun(
      * (Anthropic's long-running harness pattern, inside the run).
      */
     session?: boolean;
+    /** The run's marks when the boundary lifted them (default: `inRunMarks`). */
+    marks?: { high: number; low: number };
   } = {},
 ): Promise<InRunCompactionResult | null> {
   const beforeTokens = estimatePromptTokens(messages, tools);
-  const inputBudget = budget.windowTokens - budget.outputReserveTokens;
+  const marks = options.marks ?? inRunMarks(budget);
   const milestone = options.milestone === true;
-  if (!milestone && beforeTokens < inputBudget * budget.inRunCompactRatio) return null;
-  const lowMark = milestone ? 0 : inputBudget * budget.compactAtRatio;
+  if (!milestone && beforeTokens <= marks.high) return null;
+  const lowMark = milestone ? 0 : marks.low;
 
   // An existing recap sits at runStart; fold it into the new one.
   const { start, priorRecap } = recapStart(messages, runStart);
@@ -512,15 +497,23 @@ export async function compactCurrentRun(
   const removable = groupStarts.length - keepGroups;
   if (removable <= 0) return null;
 
-  // Fold groups oldest-first until the estimate (minus folded, plus a recap
-  // line per tool row) reaches the low mark, or nothing removable is left.
+  // Fold groups oldest-first until the estimate (minus folded, plus the
+  // recap they become, sized as foldIntoRecap writes it) reaches the low
+  // mark, or nothing removable is left.
+  const calls = toolCallIndex(messages);
+  const traitsOf = options.traitsOf ?? builtinToolTraits;
+  const oldRecap = priorRecap ? priorRecap.length + RECAP_HEADER_CHARS : 0;
+  let lineChars = 0;
+  let folded = 0;
   let cutEnd = groupStarts[1] ?? messages.length;
   let estimate = beforeTokens;
   for (let g = 0; g < removable; g++) {
     const from = groupStarts[g]!;
     const to = groupStarts[g + 1] ?? messages.length;
-    estimate -= estimatePromptTokens(messages.slice(from, to));
-    estimate += 60 * messages.slice(from, to).filter((m) => m.role === 'tool').length / CHARS_PER_TOKEN;
+    folded += estimatePromptTokens(messages.slice(from, to));
+    lineChars += recapLinesChars(messages, from, to, calls, traitsOf, putBlob !== undefined);
+    const newRecap = Math.min(priorRecap.length + lineChars, RECAP_MAX_CHARS + RECAP_POINTER_CHARS) + RECAP_HEADER_CHARS;
+    estimate = beforeTokens - folded + (newRecap - oldRecap) / CHARS_PER_TOKEN;
     cutEnd = to;
     if (estimate <= lowMark) break;
   }
@@ -575,9 +568,10 @@ function residueChars(messages: ChatCompletionMessageParam[], from: number, to =
 
 /**
  * Fold old steps that hold nothing resident any more (their results are all
- * cards, stubs or small) into the recap, once this run's residue (cards and
- * old call arguments) passes `inRunResidueFoldTokens`. Unlike the size mark,
- * this cannot remove working-set content: a step that still has a resident
+ * cards, stubs or small) into the recap. The boundary calls it (the prompt
+ * changes at that step anyway); it is the first removal of a pass at the
+ * high mark, because it loses nothing but cards and old call arguments.
+ * Unlike the recap fold, this cannot remove working-set content: a step that still has a resident
  * result, a sub-agent report, or live state (plan) stays where it is, and
  * the card-only steps before and after it fold. The newest
  * `inRunKeepToolResults` steps stay. Whole steps only, so tool_call pairing
@@ -600,15 +594,13 @@ export async function foldResidue(
     /** Stores a recap that outgrows its bound, so its oldest lines stay recallable. */
     putBlob?: (text: string) => Promise<string>;
     /**
-     * Fold only when it frees more than the recap it writes. Set for the
-     * boundary's ride-along fold (mark 0): a tiny fold there would only grow
-     * the prompt. A fold at the mark goes ahead regardless: the recap is
-     * bounded (its overflow is stored whole), the residue is not.
+     * Fold only when it frees more than the recap it writes: a tiny fold
+     * would only grow the prompt.
      */
     requireSaving?: boolean;
   } = {},
 ): Promise<InRunCompactionResult | null> {
-  if (residueChars(messages, runStart) / CHARS_PER_TOKEN < budget.inRunResidueFoldTokens) return null;
+  if (residueChars(messages, runStart) === 0) return null;
   const { start, priorRecap } = recapStart(messages, runStart);
   const groupStarts: number[] = [];
   for (let i = start; i < messages.length; i++) {
@@ -636,18 +628,15 @@ export async function foldResidue(
     ranges.push([from, to]);
     foldedResidue += residueChars(messages, from, to);
   }
-  // Worth a change to the cached prompt only when it clears a real share of the mark.
-  if (ranges.length === 0 || foldedResidue / CHARS_PER_TOKEN < budget.inRunResidueFoldTokens / 2) {
-    return null;
-  }
+  if (ranges.length === 0) return null;
   // A ride-along fold must free more than the recap it writes: one recap
   // line per tool row, plus the recap's header when there is no recap yet.
   if (options.requireSaving) {
-    const rows = ranges.reduce(
-      (sum, [from, to]) => sum + messages.slice(from, to).filter((message) => message.role === 'tool').length,
+    const lines = ranges.reduce(
+      (sum, [from, to]) => sum + recapLinesChars(messages, from, to, calls, traitsOf, options.putBlob !== undefined),
       0,
     );
-    if (foldedResidue <= (priorRecap ? 0 : RECAP_HEADER_CHARS) + rows * RECAP_LINE_CHARS) return null;
+    if (foldedResidue <= (priorRecap ? 0 : RECAP_HEADER_CHARS) + lines) return null;
   }
   const beforeTokens = estimatePromptTokens(messages, tools);
   const toolCallIds = await foldIntoRecap(
@@ -662,6 +651,44 @@ export async function foldResidue(
     traitsOf,
   );
   return { beforeTokens, afterTokens: estimatePromptTokens(messages, tools), toolCallIds, prefixHeavy: false };
+}
+
+/**
+ * Chars of the recap lines messages[from, to) become, exactly as
+ * foldIntoRecap writes them (steps sized at four digits; a stored body's sha
+ * counted at its fixed length). One measure for both folds (P2).
+ */
+function recapLinesChars(
+  messages: ChatCompletionMessageParam[],
+  from: number,
+  to: number,
+  calls: Map<string, ToolCallInfo>,
+  traitsOf: TraitsOf,
+  storing: boolean,
+): number {
+  let chars = 0;
+  for (let i = from; i < to; i++) {
+    const message = messages[i];
+    if (!message) continue;
+    if (message.role === 'assistant') {
+      const text = clip(textOf(message.content), 300);
+      if (text) chars += STEP_PREFIX_CHARS + 'Note: '.length + text.length + 1;
+    } else if (message.role === 'tool' && typeof message.content === 'string') {
+      const info = calls.get(message.tool_call_id);
+      const traits = info ? traitsOf(info.name) : undefined;
+      const sha = storing && keepsBody(traits, message.content) ? STORED_SHA_SIZE : undefined;
+      chars += STEP_PREFIX_CHARS + outcomeLine(info, traits, message.content, sha).length + 1;
+    }
+  }
+  return chars;
+}
+
+/** A sha-sized stand-in, so a line that will carry a stored body's sha is measured at its real length. */
+const STORED_SHA_SIZE = '0'.repeat(64);
+
+/** A folded result whose body is stored so its sha stays recallable (edit hunks and cards are not). */
+function keepsBody(traits: ToolTraits | undefined, content: string): boolean {
+  return traits?.effect !== 'change' && content.length >= MIN_EVICT_CHARS && isResident(content);
 }
 
 /**
@@ -710,11 +737,7 @@ async function foldIntoRecap(
         const traits = info ? traitsOf(info.name) : undefined;
         // Edit hunks are not worth keeping (the file is the source of truth);
         // cards already carry their own sha.
-        const keepBody =
-          putBlob !== undefined &&
-          traits?.effect !== 'change' &&
-          message.content.length >= MIN_EVICT_CHARS &&
-          isResident(message.content);
+        const keepBody = putBlob !== undefined && keepsBody(traits, message.content);
         const storedSha = keepBody ? await putBlob(message.content) : undefined;
         lines.push(`[step ${step}] ${outcomeLine(info, traits, message.content, storedSha)}`);
         toolCallIds.push(message.tool_call_id);

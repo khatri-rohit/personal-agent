@@ -107,6 +107,7 @@ async function finalizeAnswer(
     hasToolCalls: false,
     contentPreview: content ? preview(content) : undefined,
     ...(turn.usage ? { usage: turn.usage } : {}),
+    ...(turn.providerUsage ? { providerUsage: turn.providerUsage } : {}),
     durationMs,
     ...(usageEstimated ? { usageEstimated } : {}),
     final: true,

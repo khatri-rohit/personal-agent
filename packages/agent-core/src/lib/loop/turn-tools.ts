@@ -21,7 +21,7 @@ import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
 import type { Tool } from '../tools/types';
 import { outcomeKey, toolCallKey } from './call-identity';
 import { manageResidency } from './residency-pass';
-import { EVIDENCE_WORDS, repeatAction, reportOnlyCall } from '../policy';
+import { EVIDENCE_WORDS, readStormAction, repeatAction, reportOnlyCall } from '../policy';
 import { tracePolicyDecision } from './policy-trace';
 import {
   emitTurnCompleted,
@@ -78,6 +78,11 @@ function reportOnly(s: RunState, toolName: string): boolean {
     maxToolCalls: s.limits.maxToolCalls,
     used: s.totalToolCalls,
   });
+}
+
+/** Answer to a read of one file past its per-path limit: points at what is already above or recallable. */
+function readStormAnswered(path: string, limit: number): string {
+  return `Not read again: ${path} was already read ${limit} times in this run. Its latest content is above, or in an (evicted) card whose sha \`recall\` restores. Record what you need with record_finding, or read a different file.`;
 }
 
 /** Answer to a repeated read or fetch: points at the result already made. */
@@ -416,11 +421,28 @@ async function admitToolCall(
   const traits = s.traitsOf(toolName);
   const isCommand = traits?.effect === 'command';
   const readPath = traits?.lineRange ? (traits.file?.(args) ?? null) : null;
-  const stormLimit =
-    (readPath !== null ? guard.readStorm(readPath) : null) ??
-    (isCommand ? guard.terminalStorm() : null);
-  if (stormLimit) {
-    noteLimit(s, stormLimit);
+  if (readPath !== null) {
+    // Paging one file: past the limit the read is answered, not run (P5);
+    // only a loop past twice the limit stops the run.
+    const attempts = guard.readAttempt(readPath);
+    const action = readStormAction({ attempts, limit: GUARD_LIMITS.readsPerPath });
+    if (action === 'answer') {
+      await record.refuse(toolCall, readStormAnswered(readPath, GUARD_LIMITS.readsPerPath));
+      tracePolicyDecision(s, 'guard', [`read_storm_answered:${toolName}`], 'read of one file past the per-path limit', {
+        path: readPath,
+        reads: attempts - 1,
+        limit: GUARD_LIMITS.readsPerPath,
+      });
+      return { kind: 'filled' };
+    }
+    if (action === 'halt') {
+      noteLimit(s, guard.readStormLimit());
+      return { kind: 'halt', reason: 'limit', toolCall };
+    }
+  }
+  const terminalLimit = isCommand ? guard.terminalStorm() : null;
+  if (terminalLimit) {
+    noteLimit(s, terminalLimit);
     return { kind: 'halt', reason: 'limit', toolCall };
   }
 
@@ -459,7 +481,7 @@ async function admitToolCall(
   }
 
   s.totalToolCalls += 1;
-  guard.admitted(isCommand, readPath);
+  guard.admitted(isCommand);
 
   return {
     kind: 'ready',

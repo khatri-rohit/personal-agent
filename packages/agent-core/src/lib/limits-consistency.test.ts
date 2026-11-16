@@ -18,6 +18,7 @@ import {
   FINDING_EVIDENCE_MAX_CHARS,
   FINDINGS_MAX,
   GREP_WINDOW,
+  inRunMarks,
   liveResultCapChars,
   MAX_CONCURRENT_SUBAGENTS,
   MIN_CONTEXT_WINDOW_TOKENS,
@@ -59,9 +60,12 @@ describe('I8: one value per quantity', () => {
     expect(liveResultCapChars('grep', generic)).toBeGreaterThanOrEqual(GREP_WINDOW.maxChars);
   });
 
-  it('one whole read window fits under the resident cap, and a removal pass frees less than the cap', () => {
-    expect(READ_WINDOW.maxChars / CHARS_PER_TOKEN).toBeLessThanOrEqual(DEFAULT_CONTEXT_BUDGET.inRunResidentToolTokens);
-    expect(DEFAULT_CONTEXT_BUDGET.inRunClearAtLeastTokens).toBeLessThan(DEFAULT_CONTEXT_BUDGET.inRunResidentToolTokens);
+  it('on every window from 64k up, the in-run low mark holds a whole read window (a pass never strands one read)', () => {
+    for (const window of [64_000, 128_000, 200_000, DEFAULT_CONTEXT_WINDOW_TOKENS, 1_000_000]) {
+      expect(inRunMarks(contextBudgetForWindow(window)).low, `window ${window}`).toBeGreaterThanOrEqual(
+        READ_WINDOW.maxChars / CHARS_PER_TOKEN,
+      );
+    }
   });
 
   it('the digest the parent reads holds the whole report the child is told to write', () => {
@@ -128,20 +132,30 @@ describe('I8: one value per quantity', () => {
     }
   });
 
-  it('the residue fold and the resident low mark sit inside their caps', () => {
-    expect(DEFAULT_CONTEXT_BUDGET.inRunResidentLowRatio).toBeGreaterThan(0);
-    expect(DEFAULT_CONTEXT_BUDGET.inRunResidentLowRatio).toBeLessThan(1);
-    // Folding must start well before the size mark would.
-    const input = DEFAULT_CONTEXT_BUDGET.windowTokens - DEFAULT_CONTEXT_BUDGET.outputReserveTokens;
-    expect(DEFAULT_CONTEXT_BUDGET.inRunResidueFoldTokens).toBeLessThan(input * DEFAULT_CONTEXT_BUDGET.inRunCompactRatio);
+  it('in-run marks are ordered on every window: 0 < low < high < input', () => {
+    for (const window of [MIN_CONTEXT_WINDOW_TOKENS, 64_000, 128_000, DEFAULT_CONTEXT_WINDOW_TOKENS, 1_000_000]) {
+      const budget = contextBudgetForWindow(window);
+      const { high, low } = inRunMarks(budget);
+      expect(low, `window ${window}`).toBeGreaterThan(0);
+      expect(low, `window ${window}`).toBeLessThan(high);
+      expect(high, `window ${window}`).toBeLessThan(window - budget.outputReserveTokens);
+    }
   });
 
-  it('the overflow guard sits above the ceiling a run may start at (no per-step trimming on a heavy conversation)', () => {
-    // A run may start with its conversation up to compactAtRatio (the host
-    // compacts above it); the guard folds down to that same mark, so the gap
-    // between them is real growth the run itself has to add.
-    expect(DEFAULT_CONTEXT_BUDGET.compactAtRatio).toBeLessThan(DEFAULT_CONTEXT_BUDGET.inRunCompactRatio);
-    expect(DEFAULT_CONTEXT_BUDGET.inRunCompactRatio).toBeLessThan(1);
+  it('the in-run high mark scales with the window, unless an absolute ceiling is set', () => {
+    const at260k = inRunMarks(contextBudgetForWindow(DEFAULT_CONTEXT_WINDOW_TOKENS)).high;
+    const at1m = inRunMarks(contextBudgetForWindow(1_000_000)).high;
+    expect(at1m).toBeGreaterThan(at260k);
+    const capped = { ...DEFAULT_CONTEXT_BUDGET, inRunHighTokens: 100_000 };
+    expect(inRunMarks(contextBudgetForWindow(1_000_000, capped)).high).toBe(100_000);
+    expect(inRunMarks(contextBudgetForWindow(MIN_CONTEXT_WINDOW_TOKENS, capped)).high).toBeLessThan(100_000);
+  });
+
+  it('a run starts below the in-run low mark on every window (no fold on its first steps)', () => {
+    for (const window of [MIN_CONTEXT_WINDOW_TOKENS, 64_000, 128_000, DEFAULT_CONTEXT_WINDOW_TOKENS, 1_000_000]) {
+      const budget = contextBudgetForWindow(window);
+      expect(compactionMarks(budget).at, `window ${window}`).toBeLessThan(inRunMarks(budget).low);
+    }
   });
 
   it('between-run marks are ordered on every window: carry-over ≤ compaction target < compaction trigger ≤ the window share', () => {

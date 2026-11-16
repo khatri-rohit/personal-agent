@@ -18,7 +18,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   childAllocation,
-  DEFAULT_CONTEXT_BUDGET,
+  compactionMarks,
+  contextBudgetForWindow,
+  inRunMarks,
   type ModelTurn,
   type PendingToolCall,
   type TraceEvent,
@@ -215,6 +217,15 @@ function reactiveModel(behaviour: Behaviour): ModelCallFn {
 
 type Sim = { trace: TraceEvent[]; steps: number };
 
+/**
+ * The budget the shapes run on: the shipped derivation for a 96k window.
+ * The fake workspaces (80k–120k tokens of files) cross its in-run high
+ * mark, so the passes the invariants measure actually happen; on the 260k
+ * default most of these runs would never need one.
+ */
+const SIM_BUDGET = contextBudgetForWindow(96_000);
+const SIM_MARKS = inRunMarks(SIM_BUDGET);
+
 async function simulate(
   behaviour: Behaviour,
   ws: Workspace,
@@ -233,17 +244,17 @@ async function simulate(
     limits: { maxIterations: 120, toolTimeoutMs: 5_000, maxPromptTokens: 50_000_000 },
     trace: (event) => trace.push(event),
     putBlob: async () => 'a'.repeat(64),
+    contextBudget: SIM_BUDGET,
     ...config,
   });
   return { trace, steps: trace.filter((event) => event.type === 'llm_response').length };
 }
 
-/** An earlier turn of about `share` of the default input budget (a heavy conversation). */
-function priorConversation(share: number): ChatCompletionMessageParam[] {
-  const input = DEFAULT_CONTEXT_BUDGET.windowTokens - DEFAULT_CONTEXT_BUDGET.outputReserveTokens;
+/** An earlier turn of about `tokens` (a heavy conversation). */
+function priorConversation(tokens: number): ChatCompletionMessageParam[] {
   return [
     { role: 'user', content: 'an earlier question' },
-    { role: 'assistant', content: 'earlier answer. '.repeat(Math.floor((input * share * 4) / 16)) },
+    { role: 'assistant', content: 'earlier answer. '.repeat(Math.floor((tokens * 4) / 16)) },
   ];
 }
 
@@ -258,7 +269,7 @@ const SHAPES = {
   unrecorded: () => simulate({ facts: 16, batch: 2 }, workspace(16, 20_000)),
   /** A long research run over many small files: residue builds up and is folded. */
   long: () => simulate({ facts: 120, batch: 3, record: true }, workspace(120, 4_000)),
-  /** Many small files read one at a time: cold results, not the cap. */
+  /** Many small files read one at a time: many short steps, few removals. */
   serial: () => simulate({ facts: 14, batch: 1 }, workspace(14, 8_000)),
   /** A delegate report first, then the parent's own reads. */
   delegated: () => simulate({ facts: 12, batch: 2, delegated: 6, record: true }, workspace(12, 20_000)),
@@ -272,12 +283,12 @@ const SHAPES = {
       workspace(4, 30_000),
     ),
   /**
-   * The research run on a thread whose earlier turns fill 60% of the window
-   * (under the ceiling a run may start at, compactAtRatio): the run must
-   * behave as on a fresh thread, with no per-step folding.
+   * The research run on a thread whose earlier turns are just under the
+   * ceiling a run may start at (compactionMarks.at, below the in-run low
+   * mark): the run must behave as on a fresh thread, with no per-step folding.
    */
   conversation: () =>
-    simulate({ facts: 16, batch: 2, record: true }, workspace(16, 20_000), {}, priorConversation(0.6)),
+    simulate({ facts: 16, batch: 2, record: true }, workspace(16, 20_000), {}, priorConversation(0.9 * compactionMarks(SIM_BUDGET).at)),
   /** Two large files still in view, both edited and re-read: the old reads are superseded. */
   rework: () => simulate({ facts: 2, batch: 2, edit: ['src/f1.ts', 'src/f2.ts'] }, workspace(2, 30_000)),
 };
@@ -322,6 +333,8 @@ function sameRangeReReads(sim: Sim): number {
 const REMOVAL_EVERY_STEPS = 4;
 /** I2: residue (cards + old call arguments) stays under this share of the prompt. */
 const RESIDUE_MAX_SHARE = 0.25;
+/** I2: residue under this many tokens is never a concern, whatever its share of a small prompt. */
+const RESIDUE_FLOOR_TOKENS = 6_000;
 /** I3: per step, the prompt grows by at most the new content plus this many tokens. */
 const GROWTH_SLACK_TOKENS = 600;
 
@@ -343,14 +356,13 @@ describe('harness invariants over a reacting model', () => {
     }
   });
 
-  it('I1: a pass for the cap goes down to the low mark (no trimming to the cap)', async () => {
-    const budget = DEFAULT_CONTEXT_BUDGET;
-    const low = budget.inRunResidentToolTokens * budget.inRunResidentLowRatio;
+  it('I1: a pass at the high mark goes down to the low mark (no trimming to the mark)', async () => {
+    const { low } = SIM_MARKS;
     let checked = 0;
     for (const name of ['research', 'unrecorded', 'change'] as ShapeName[]) {
       const sim = await run(name);
       const shapes = of(sim, 'context_shape');
-      // A cap pass traces cited results apart from the rest ('cited' then 'budget').
+      // A pass at the mark traces cited results apart from the rest ('cited', 'budget').
       const passes = of(sim, 'context_evicted').filter((event) => event.reason === 'budget' || event.reason === 'cited');
       checked += passes.length;
       for (const pass of passes) {
@@ -360,17 +372,17 @@ describe('harness invariants over a reacting model', () => {
         const pinned = of(sim, 'tool_complete')
           .filter((event) => event.iteration === pass.iteration)
           .reduce((sum, event) => sum + Math.ceil((event.resultChars ?? 0) / 4), 0);
-        expect(next.residentToolTokens, `${name} after step ${pass.iteration}`).toBeLessThanOrEqual(low + pinned + 200);
+        expect(next.promptTokens, `${name} after step ${pass.iteration}`).toBeLessThanOrEqual(low + pinned + GROWTH_SLACK_TOKENS);
       }
     }
-    // The cap is exercised somewhere (without findings to stand in for reads).
+    // The mark is exercised somewhere.
     expect(checked).toBeGreaterThan(0);
   });
 
-  it('I2: residue never grows past its fold mark (or a quarter of the prompt)', async () => {
+  it('I2: residue stays bounded (a small floor, or a quarter of the prompt)', async () => {
     // A share alone misleads when the prompt is small because findings
     // stand in for reads; the property is that residue stays bounded.
-    const mark = DEFAULT_CONTEXT_BUDGET.inRunResidueFoldTokens;
+    const mark = RESIDUE_FLOOR_TOKENS;
     for (const name of ['research', 'unrecorded', 'serial', 'delegated', 'long'] as ShapeName[]) {
       for (const shape of of(await run(name), 'context_shape')) {
         expect(shape.residueTokens, `${name} step ${shape.iteration}`).toBeLessThanOrEqual(
@@ -476,14 +488,11 @@ describe('harness invariants over a reacting model', () => {
 
   /**
    * Mechanisms that must each fire on at least one shape.
-   * `context_evicted:cited` is not listed: a cited result now leaves only in
-   * a pass for the resident cap (first in its order), and no shape here
-   * passes the cap while it holds cited reads (the recording shapes stay
-   * under it; cold passes clear first). residency.test.ts covers that order.
+   * `context_evicted:cited` is not listed: a cited file view leaves only in
+   * a pass at the high mark, after searches; residency.test.ts covers it.
    */
   const REACHABLE = [
     'context_evicted:budget',
-    'context_evicted:cold',
     'context_evicted:superseded',
     'context_compacted_inrun:milestone',
     'context_compacted_inrun:residue',
@@ -511,22 +520,26 @@ describe('harness invariants over a reacting model', () => {
     expect(REACHABLE.filter((mechanism) => !fired.has(mechanism))).toEqual([]);
   });
 
-  // Phase 6: the size mark is the overflow guard at the window's edge. A
-  // conversation under the ceiling never trips it; one over the ceiling (the
-  // host's pre-run compaction did not run) trips it, and folding down to the
-  // ceiling leaves real room, so it does not fire again every step.
-  it('I1/I7: the overflow guard never fires under the ceiling, and fires sparingly over it', async () => {
+  // A conversation under the start ceiling never needs the recap fold. One
+  // that starts over the high mark (the host's pre-run compaction could not
+  // run) must not make the run trim every step: when a pass cannot reach the
+  // low mark, the marks lift by the shortfall and the next pass waits for real
+  // growth. (The recap fold itself, the last resort when results cannot be
+  // removed, is covered in residency.test.ts.)
+  it('I1: a run that starts over the high mark completes and still removes sparingly', async () => {
     const sizeFolds = (sim: Sim) =>
       of(sim, 'context_compacted_inrun').filter((event) => event.reason === undefined).length;
     expect(sizeFolds(await run('conversation'))).toBe(0);
-    const over = await simulate({ facts: 16, batch: 2, record: true }, workspace(16, 20_000), {}, priorConversation(0.88));
+    const over = await simulate({ facts: 16, batch: 2, record: true }, workspace(16, 20_000), {}, priorConversation(1.05 * SIM_MARKS.high));
     expect(of(over, 'run_finish')[0]?.status).toBe('completed');
-    const folds = sizeFolds(over);
-    expect(folds).toBeGreaterThan(0);
-    expect(folds).toBeLessThanOrEqual(Math.ceil(over.steps / REMOVAL_EVERY_STEPS));
+    expect(sizeFolds(over)).toBeLessThanOrEqual(Math.ceil(over.steps / REMOVAL_EVERY_STEPS));
+    const removalSteps = new Set(of(over, 'context_evicted').map((event) => event.iteration)).size;
+    expect(removalSteps).toBeGreaterThan(0);
+    expect(removalSteps).toBeLessThanOrEqual(Math.ceil(over.steps / REMOVAL_EVERY_STEPS));
   });
 
-  it('uses the real context budget (results here are the shipped behaviour)', () => {
-    expect(DEFAULT_CONTEXT_BUDGET.inRunResidentToolTokens).toBeGreaterThan(0);
+  it('uses a real context budget (the shipped derivation for its window)', () => {
+    expect(SIM_BUDGET).toEqual(contextBudgetForWindow(SIM_BUDGET.windowTokens));
+    expect(SIM_MARKS.low).toBeLessThan(SIM_MARKS.high);
   });
 });

@@ -103,6 +103,14 @@ export type RunState = {
   lastLimitReason: string | undefined;
   advisorHinted: boolean;
   prefixHeavy: boolean;
+  /**
+   * Tokens the in-run marks are lifted by, after a pass could not reach the
+   * low mark (prior turns or pinned results it may not remove). The next
+   * pass then waits for the same real growth as any other (I1), instead of
+   * removing each new result one step after it arrives. Back to 0 once the
+   * prompt is under the unlifted low mark.
+   */
+  markLift: number;
   /** Set when a tool (sub-agent `report`) asks to end the run with this answer. */
   stopContent: string | undefined;
   /** Effort escalation fired: later calls use one rung above the baseline. */
@@ -243,6 +251,7 @@ export function createRunState(
     lastLimitReason: undefined,
     advisorHinted: false,
     prefixHeavy: false,
+    markLift: 0,
     stopContent: undefined,
     escalatedAt: null,
     stopChecked: false,

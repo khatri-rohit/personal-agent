@@ -145,8 +145,10 @@ describe('loop replay', () => {
       {
         contextBudget: {
           ...DEFAULT_CONTEXT_BUDGET,
-          // Small marks so this short run's own context counts as large.
-          inRunClearAtLeastTokens: 300,
+          // A milestone folds once the run's own steps reach a tenth of the
+          // high mark: 2k here, which this short run reaches, while its prompt
+          // stays under the mark (no pass at the mark in this replay).
+          inRunHighTokens: 20_000,
           inRunKeepToolResults: 1,
         },
       },
@@ -161,11 +163,10 @@ describe('loop replay', () => {
       {
         contextBudget: {
           ...DEFAULT_CONTEXT_BUDGET,
-          // Four ~1k-token reads against a 1.5k-token resident cap: the
-          // least recently touched go to cards at once.
-          inRunResidentToolTokens: 1_500,
+          // Four ~1k-token reads against a small high mark on the whole
+          // prompt: past it, the least recently touched go to cards in one pass.
+          inRunHighTokens: 2_500,
           inRunKeepToolResults: 1,
-          inRunClearAtLeastTokens: 500,
         },
       },
     );

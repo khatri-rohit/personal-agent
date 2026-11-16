@@ -412,6 +412,7 @@ async function runLoopCore(
         hasToolCalls: Boolean(turn.toolCalls.length),
         contentPreview: turn.content ? preview(turn.content) : undefined,
         ...(turn.usage ? { usage: turn.usage } : {}),
+        ...(turn.providerUsage ? { providerUsage: turn.providerUsage } : {}),
         durationMs,
         ...(usageEstimated ? { usageEstimated } : {}),
         ...(recorder ? { output: recorder.output(turn) } : {}),
