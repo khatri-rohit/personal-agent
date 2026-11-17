@@ -82,7 +82,7 @@ function reportOnly(s: RunState, toolName: string): boolean {
 
 /** Answer to a read of one file past its per-path limit: points at what is already above or recallable. */
 function readStormAnswered(path: string, limit: number): string {
-  return `Not read again: ${path} was already read ${limit} times in this run. Its latest content is above, or in an (evicted) card whose sha \`recall\` restores. Record what you need with record_finding, or read a different file.`;
+  return `Not read again: ${path} was already read ${limit} times in this run with no edit to it since. Its latest content is above, or in an (evicted) card whose sha \`recall\` restores. Record what you need with record_finding, or read a different file.`;
 }
 
 /** Answer to a repeated read or fetch: points at the result already made. */
@@ -416,10 +416,8 @@ async function admitToolCall(
     return { kind: 'filled' };
   }
 
-  // Storm guards by what the tool is: paging one file's content, or
-  // flooding the shell.
+  // Storm guard by what the tool is: paging one file's content.
   const traits = s.traitsOf(toolName);
-  const isCommand = traits?.effect === 'command';
   const readPath = traits?.lineRange ? (traits.file?.(args) ?? null) : null;
   if (readPath !== null) {
     // Paging one file: past the limit the read is answered, not run (P5);
@@ -440,12 +438,6 @@ async function admitToolCall(
       return { kind: 'halt', reason: 'limit', toolCall };
     }
   }
-  const terminalLimit = isCommand ? guard.terminalStorm() : null;
-  if (terminalLimit) {
-    noteLimit(s, terminalLimit);
-    return { kind: 'halt', reason: 'limit', toolCall };
-  }
-
   if (
     limits.maxToolCalls !== undefined &&
     s.totalToolCalls >= limits.maxToolCalls
@@ -481,7 +473,6 @@ async function admitToolCall(
   }
 
   s.totalToolCalls += 1;
-  guard.admitted(isCommand);
 
   return {
     kind: 'ready',
@@ -597,7 +588,8 @@ async function settleReturned(
   // Progress itself (stall, effort floor) is the task state's evidence,
   // which the trace above already fed; steering reads it from there.
   if (changeSucceeded(s, toolName, result)) {
-    s.guard.editSucceeded();
+    // The edited file's read count starts again: a read of it must run.
+    s.guard.editSucceeded(s.traitsOf(toolName)?.file?.(args) ?? null);
   }
   return 'ok';
 }

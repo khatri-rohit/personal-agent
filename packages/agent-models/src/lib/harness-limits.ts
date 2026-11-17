@@ -199,10 +199,11 @@ export const EFFORT_IDLE_FLOOR_STEPS = 3;
 export const GUARD_LIMITS = {
   /** Invented tool names in a row before the run halts. */
   unknownToolStreak: 2,
-  /** read_file admits per path per run (stops offset-paging storms). */
+  /**
+   * Reads of one path since its last edit that run; as many again are
+   * answered with a pointer, then the run halts (`readStormAction`).
+   */
   readsPerPath: 30,
-  /** run_terminal admits per run (migrations run 40+ builds). */
-  terminalCalls: 60,
   /** Identical edit or command outcome (call + result) before the run halts. */
   identicalOutcomes: 3,
   /** Turns of only-refused calls in a report-only child before it ends. */

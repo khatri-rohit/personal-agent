@@ -105,6 +105,20 @@ describe('manageWorkingSet', () => {
     expect(contentOf(messages, 'c')).toMatch(/^\[lines/);
   });
 
+  it('keeps the newest steps whatever their rank: a recent command output outlasts an old file view', async () => {
+    const calls: Call[] = [
+      { id: 'a', name: 'read_file', args: { path: 'a.ts' }, result: read(1, 50, 50, 8_000), iteration: 1 },
+      { id: 't', name: 'run_terminal', args: { command: 'npm test' }, result: `cwd: /w\nexit 1\n${'e'.repeat(8_000)}`, iteration: 9 },
+      { id: 'c', name: 'read_file', args: { path: 'c.ts' }, result: read(1, 50, 50, 2_000), iteration: 10 },
+    ];
+    const messages = transcript(calls);
+    // The command output ranks before file views, but it is one step old.
+    const keepTwo = { ...marks(4_000, 0.9), inRunKeepToolResults: 2 };
+    const result = await manageWorkingSet(messages, 1, keepTwo, [], blob, pathOf, view(calls, 10));
+    expect(result?.byReason).toEqual({ budget: ['a'] });
+    expect(contentOf(messages, 't')).toMatch(/^cwd:/);
+  });
+
   it('a later refused command does not supersede a real run; a real re-run does', async () => {
     const ran = `cwd: /w\nexit 1\n${'e'.repeat(3_000)}`;
     const calls: Call[] = [

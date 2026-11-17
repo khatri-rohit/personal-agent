@@ -133,8 +133,13 @@ export async function manageResidency(s: RunState): Promise<void> {
     // The pass could not reach the low mark (prior turns, or results it may
     // not remove): lift both marks by the shortfall, so the next pass waits
     // for the same real growth as any other instead of firing every step.
+    // The lifted high mark stays inside the input budget: at that ceiling a
+    // pass every step is the lesser cost next to a prompt the window rejects.
     const after = estimatePromptTokens(s.messages, s.tools.definitions);
-    if (after > marks.low) s.markLift = after - base.low;
+    if (after > marks.low) {
+      const input = Math.max(1, s.contextBudget.windowTokens - s.contextBudget.outputReserveTokens);
+      s.markLift = Math.min(after - base.low, Math.max(0, input * LIFTED_HIGH_CEILING - base.high));
+    }
   }
 
   const findings = s.flags.stateCard ? s.task.snapshot().evidence.findings : [];
@@ -264,6 +269,9 @@ function atVerifiedMilestone(s: RunState): boolean {
   const ownTokens = estimatePromptTokens(s.messages.slice(s.runStart));
   return ownTokens >= MILESTONE_SHARE_OF_HIGH * inRunMarks(s.contextBudget).high;
 }
+
+/** Share of the input budget a lifted high mark may reach (`RunState.markLift`). */
+const LIFTED_HIGH_CEILING = 0.95;
 
 /** A milestone folds once the run's own steps reach this share of the high mark (smaller is not worth a prefix break). */
 const MILESTONE_SHARE_OF_HIGH = 0.1;

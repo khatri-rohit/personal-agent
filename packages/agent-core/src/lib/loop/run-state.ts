@@ -107,7 +107,8 @@ export type RunState = {
    * Tokens the in-run marks are lifted by, after a pass could not reach the
    * low mark (prior turns or pinned results it may not remove). The next
    * pass then waits for the same real growth as any other (I1), instead of
-   * removing each new result one step after it arrives. Back to 0 once the
+   * removing each new result one step after it arrives. Capped so the lifted
+   * high mark stays inside the input budget. Back to 0 once the
    * prompt is under the unlifted low mark.
    */
   markLift: number;

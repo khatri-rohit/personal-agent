@@ -166,7 +166,7 @@ type Candidate = {
   cited: boolean;
   /** The model read this result's file back after a removal. */
   restored: boolean;
-  /** Must stay: being changed, or this iteration's result. */
+  /** Must stay: being changed, or a result of the newest steps. */
   pinned: boolean;
 };
 
@@ -202,8 +202,8 @@ function workingSetCard(candidate: Candidate, content: string, sha: string, reas
  *    last: it paid a step to get them, so they are in use.
  * A removed file view a recorded finding cites is traced `cited` (the finding
  * stands for it), any other `budget`.
- * Never removed: a file edited since the last check, this iteration's
- * results, results a tool marks `never` (live state: the plan, todos, a
+ * Never removed: a file edited since the last check, the results of the
+ * newest `inRunKeepToolResults` steps, results a tool marks `never` (live state: the plan, todos, a
  * loaded skill), and sub-agent reports (and recalls of them), which would
  * cost a child run to get back. Edits never supersede reads (several edits
  * from one read are normal). Results from earlier turns are only superseded
@@ -234,6 +234,9 @@ export async function manageWorkingSet(
   const laterReads = new Map<string, Array<{ from: number; to: number }>>();
   const laterCalls = new Set<string>();
   const candidates: Candidate[] = [];
+  // The newest steps stay whatever their rank, as in the folds: the model is
+  // acting on them (the test output or search it just got).
+  const keepSteps = Math.max(1, budget.inRunKeepToolResults);
 
   // Newest first: supersession compares each result with what came after it.
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -275,7 +278,7 @@ export async function manageWorkingSet(
 
     const own = view.callIteration(message.tool_call_id) ?? view.iteration;
     const touch = path ? Math.max(own, view.lastTouch(path) ?? own) : own;
-    const pinned = (path !== null && view.isUnchecked(path)) || own >= view.iteration;
+    const pinned = (path !== null && view.isUnchecked(path)) || own > view.iteration - keepSteps;
     candidates.push({
       index: i,
       toolCallId: message.tool_call_id,

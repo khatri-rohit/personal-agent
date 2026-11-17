@@ -2,21 +2,20 @@ import { GUARD_LIMITS, limitMessage } from '@agent/agent-models';
 
 const MAX_UNKNOWN_TOOL_STREAK = GUARD_LIMITS.unknownToolStreak;
 const MAX_READ_FILE_PER_PATH = GUARD_LIMITS.readsPerPath;
-const MAX_TERMINAL_CALLS = GUARD_LIMITS.terminalCalls;
 const MAX_IDENTICAL_OUTCOMES = GUARD_LIMITS.identicalOutcomes;
 
 /**
  * Per-run memory of what the model already tried, so a run that is going in
  * circles stops instead of spending its budget: invented tool names, paging
- * one file or flooding the shell, repeating the exact same call, or getting
- * the exact same outcome again. Limit methods return a `limit.*` reason when
+ * one file, repeating the exact same call, or getting the exact same outcome
+ * again. How many commands a run makes is not a sign of a loop (a migration
+ * runs many builds): the tool-call, token and wall limits bound it. Limit methods return a `limit.*` reason when
  * a cap is hit, else null.
  */
 export class RepetitionGuard {
   private unknownToolStreak = 0;
   /** Reads asked for per path (answered or not), for `readStormAction`. */
   private readonly readsByPath = new Map<string, number>();
-  private terminalCalls = 0;
   private readonly callCounts = new Map<string, number>();
   /** Call keys of tools whose result depends on the workspace (their traits say so). */
   private readonly workspaceReadKeys = new Set<string>();
@@ -56,14 +55,6 @@ export class RepetitionGuard {
     );
   }
 
-  terminalStorm(): string | null {
-    if (this.terminalCalls < MAX_TERMINAL_CALLS) return null;
-    return limitMessage(
-      'limit.terminal',
-      `run_terminal storm blocked (${MAX_TERMINAL_CALLS} per run)`,
-    );
-  }
-
   /**
    * Count one attempt of this exact call; returns how many times it has been
    * made. `workspaceRead`: the tool's result depends on the workspace, so a
@@ -74,11 +65,6 @@ export class RepetitionGuard {
     this.callCounts.set(callKey, count);
     if (workspaceRead) this.workspaceReadKeys.add(callKey);
     return count;
-  }
-
-  /** A call passed admission and will run. */
-  admitted(command: boolean): void {
-    if (command) this.terminalCalls += 1;
   }
 
   /** A retired skill body may be loaded again: that is not a repeat. */
@@ -106,8 +92,11 @@ export class RepetitionGuard {
    * A successful edit makes earlier build/test exits stale, and earlier
    * workspace reads and searches may now return something else: start
    * counting both fresh, so a re-read after an edit is never a "repeat".
+   * `path`: the edited file. Its read count starts again too: its content
+   * changed, so no earlier read shows it and a new read must run.
    */
-  editSucceeded(): void {
+  editSucceeded(path: string | null = null): void {
+    if (path !== null) this.readsByPath.delete(path);
     for (const key of this.execOutcomeKeys) this.outcomeCounts.delete(key);
     this.execOutcomeKeys.clear();
     for (const key of this.workspaceReadKeys) this.callCounts.delete(key);
