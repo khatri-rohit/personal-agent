@@ -6,12 +6,8 @@ import type {
 import {
   CHARS_PER_TOKEN,
   ChoiceSkipped,
-  isAskStrippedTool,
-  isReadOnlyPosture,
   CARD_MARKS,
-  GUARD_LIMITS,
   limitMessage,
-  REPORT_MAX_CHARS,
   type ModelTurn,
   type ToolContext,
   type ToolStage,
@@ -19,19 +15,19 @@ import {
 
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
 import type { Tool } from '../tools/types';
-import { outcomeKey, toolCallKey } from './call-identity';
+import { REPEAT_BLOCKED, type AdmissionRun, type Verdict } from './admission';
 import { manageResidency } from './residency-pass';
-import { EVIDENCE_WORDS, readStormAction, repeatAction, reportOnlyCall } from '../policy';
 import { tracePolicyDecision } from './policy-trace';
 import {
   emitTurnCompleted,
   noteLimit,
+  pushHarnessNote,
   toolArgsPreview,
   toolStage,
   type CoreResult,
   type RunState,
 } from './run-state';
-import { maybeSteerProgress, maybeSuggestAdvisor, maybeWarnBudget } from './steering-notes';
+import { advisorNote, budgetNote, progressNote } from './steering-notes';
 import { throwIfAborted, withTimeout } from './timeout';
 import { preview } from './tool-call-record';
 import {
@@ -58,37 +54,6 @@ const SKIP_LIMIT_REACHED = limitMessage(
   'limit.tools',
   'Skipped: tool call limit reached.',
 );
-const REPEAT_BLOCKED = limitMessage(
-  'limit.repeat',
-  'This exact tool call has already been attempted multiple times. Do not repeat it.',
-);
-
-/** Refusal once only the reserved `report` call is left in a sub-agent's budget. */
-const REPORT_ONLY_REFUSAL =
-  `Tool budget used: only \`report\` is available now. Call report with what you found (path:line evidence) and what is still open, in under ${REPORT_MAX_CHARS.toLocaleString('en-US')} characters.`;
-
-/** Turns in a row that only drew report-only refusals before the run ends on limit.tools. */
-const MAX_REPORT_ONLY_TURNS = GUARD_LIMITS.reportOnlyTurns;
-
-/** policy/guards reportOnlyCall over this run's state. */
-function reportOnly(s: RunState, toolName: string): boolean {
-  return reportOnlyCall({
-    toolName,
-    hasReport: s.tools.byName.has('report'),
-    maxToolCalls: s.limits.maxToolCalls,
-    used: s.totalToolCalls,
-  });
-}
-
-/** Answer to a read of one file past its per-path limit: points at what is already above or recallable. */
-function readStormAnswered(path: string, limit: number): string {
-  return `Not read again: ${path} was already read ${limit} times in this run with no edit to it since. Its latest content is above, or in an (evicted) card whose sha \`recall\` restores. Record what you need with record_finding, or read a different file.`;
-}
-
-/** Answer to a repeated read or fetch: points at the result already made. */
-function repeatAnswered(earlier: number): string {
-  return `Not run again: this exact call already ran ${earlier} time(s) in this run with the same arguments, and its result has not changed. Use the earlier result: it is above, or an (evicted) card whose sha \`recall\` restores. Ask something different if you need more.`;
-}
 
 type ReadyToolCall = {
   toolCall: ChatCompletionMessageToolCall;
@@ -99,7 +64,7 @@ type ReadyToolCall = {
 
 type AdmitResult =
   | { kind: 'ready'; call: ReadyToolCall }
-  | { kind: 'filled'; reportOnly?: true }
+  | { kind: 'filled' }
   | {
       kind: 'halt';
       reason: 'limit' | 'repeat';
@@ -342,153 +307,49 @@ function buildToolContext(s: RunState, toolCallId?: string): ToolContext {
   };
 }
 
+/** What admission reads from this run when a call arrives. */
+function admissionRun(s: RunState): AdmissionRun {
+  return {
+    byName: s.tools.byName,
+    posture: s.posture,
+    toolCalls: s.totalToolCalls,
+    maxPromptTokens: s.limits.maxPromptTokens,
+    canDelegate: s.can.delegate,
+    research: s.steering,
+    toolAdmit: (tool, args) => tool.admit?.(args, buildToolContext(s)),
+  };
+}
+
+/** Ask admission about one call and apply its verdict; this module owns no admission rule. */
 async function admitToolCall(
   s: RunState,
   toolCall: ChatCompletionMessageToolCall,
 ): Promise<AdmitResult> {
-  const { record, guard, steering, limits, tools } = s;
-  // Rejects always get a tool row (I1) but do not burn maxToolCalls (D10).
-  if (toolCall.type !== 'function') {
-    await record.refuse(toolCall, 'Unsupported tool call type.');
-    return { kind: 'filled' };
-  }
-
-  const toolName = toolCall.function.name;
-  const tool = tools.byName.get(toolName);
-
-  if (!tool) {
-    await record.refuse(toolCall, `Tool "${toolName}" does not exist.`);
-    const streakLimit = guard.unknownTool();
-    if (streakLimit) {
-      noteLimit(s, streakLimit);
-      return { kind: 'halt', reason: 'limit', toolCall };
-    }
-    return { kind: 'filled' };
-  }
-
-  guard.knownTool();
-
-  if (reportOnly(s, toolName)) {
-    await record.refuse(toolCall, REPORT_ONLY_REFUSAL);
-    tracePolicyDecision(s, 'guard', [`report_only:${toolName}`], 'only the reserved report call is left', {
-      toolCalls: s.totalToolCalls,
-    });
-    return { kind: 'filled', reportOnly: true };
-  }
-
-  if (isReadOnlyPosture(s.posture) && isAskStrippedTool(toolName)) {
-    await record.refuse(
-      toolCall,
-      s.posture === 'plan'
-        ? 'Blocked: this run is Plan (read-only). Finish the plan; the user switches to Agent to carry it out.'
-        : 'Blocked: this run is Ask (read-only). Switch the composer to Agent to edit files or run commands.',
-    );
-    return { kind: 'filled' };
-  }
-
-  let args: Record<string, unknown>;
-  try {
-    args = JSON.parse(toolCall.function.arguments);
-  } catch {
-    await record.refuse(toolCall, 'Invalid tool arguments. Expected valid JSON.');
-    return { kind: 'filled' };
-  }
-
-  const refusal = tool.admit?.(args, buildToolContext(s));
-  if (refusal) {
-    await record.refuse(toolCall, refusal);
-    return { kind: 'filled' };
-  }
-
-  // Research gate (policy/progress): past the gate mark with no new
-  // evidence, the run's own web tools close until the next evidence. A
-  // refusal row, not a halt: reads, edits and delegate(explore) still work.
-  if (tool.research && steering.researchGated()) {
-    const idle = steering.idleTokens();
-    const delegate = s.can.delegate
-      ? ' If one specific fact is still missing, delegate(explore) with that question.'
-      : '';
-    if (steering.noteGated()) {
-      s.trace({
-        type: 'research_gate',
-        runId: s.runId,
-        iteration: s.iterations,
-        toolName,
-        idleTokens: idle,
-      });
-    }
-    await record.refuse(
-      toolCall,
-      limitMessage(
-        'limit.research',
-        `Web research is paused for this run: ${Math.round((idle / limits.maxPromptTokens!) * 100)}% of the budget went to steps with no new evidence (${EVIDENCE_WORDS}). It reopens after the next one. Use what you have.${delegate}`,
-      ),
-    );
-    return { kind: 'filled' };
-  }
-
-  // Storm guard by what the tool is: paging one file's content.
-  const traits = s.traitsOf(toolName);
-  const readPath = traits?.lineRange ? (traits.file?.(args) ?? null) : null;
-  if (readPath !== null) {
-    // Paging one file: past the limit the read is answered, not run (P5);
-    // only a loop past twice the limit stops the run.
-    const attempts = guard.readAttempt(readPath);
-    const action = readStormAction({ attempts, limit: GUARD_LIMITS.readsPerPath });
-    if (action === 'answer') {
-      await record.refuse(toolCall, readStormAnswered(readPath, GUARD_LIMITS.readsPerPath));
-      tracePolicyDecision(s, 'guard', [`read_storm_answered:${toolName}`], 'read of one file past the per-path limit', {
-        path: readPath,
-        reads: attempts - 1,
-        limit: GUARD_LIMITS.readsPerPath,
-      });
+  const verdict: Verdict = s.admission.admit(toolCall, admissionRun(s));
+  switch (verdict.kind) {
+    case 'run':
+      s.totalToolCalls += 1;
+      return { kind: 'ready', call: { toolCall, toolName: verdict.toolName, tool: verdict.tool, args: verdict.args } };
+    case 'answer':
+      if (verdict.gated) {
+        s.trace({
+          type: 'research_gate',
+          runId: s.runId,
+          iteration: s.iterations,
+          toolName: verdict.gated.toolName,
+          idleTokens: verdict.gated.idleTokens,
+        });
+      }
+      await s.record.refuse(toolCall, verdict.text);
+      if (verdict.decision) {
+        tracePolicyDecision(s, 'guard', verdict.decision.ids, verdict.decision.reason, verdict.decision.inputs);
+      }
       return { kind: 'filled' };
-    }
-    if (action === 'halt') {
-      noteLimit(s, guard.readStormLimit());
-      return { kind: 'halt', reason: 'limit', toolCall };
-    }
+    case 'halt':
+      if (verdict.refusal !== undefined) await s.record.refuse(toolCall, verdict.refusal);
+      noteLimit(s, verdict.limit);
+      return { kind: 'halt', reason: verdict.reason, toolCall };
   }
-  if (
-    limits.maxToolCalls !== undefined &&
-    s.totalToolCalls >= limits.maxToolCalls
-  ) {
-    noteLimit(
-      s,
-      limitMessage(
-        'limit.tools',
-        `max tool calls exceeded (${limits.maxToolCalls})`,
-      ),
-    );
-    return { kind: 'halt', reason: 'limit', toolCall };
-  }
-
-  const repeatCount = guard.countCall(toolCallKey(toolName, args), traits?.dependsOn === 'workspace');
-
-  // Exact repeats: policy/guards repeatAction (run, answer from earlier, or halt).
-  const repeat = repeatAction({ count: repeatCount, limit: limits.maxRepeatedToolCalls, stage: toolStage(tool) });
-  if (repeat === 'answer') {
-    await record.refuse(toolCall, repeatAnswered(repeatCount - 1));
-    tracePolicyDecision(s, 'guard', [`repeat_answered:${toolName}`], 'identical call past the repeat limit', {
-      repeats: repeatCount - 1,
-      limit: limits.maxRepeatedToolCalls,
-    });
-    return { kind: 'filled' };
-  }
-  if (repeat === 'halt') {
-    noteLimit(
-      s,
-      limitMessage('limit.repeat', `repeated tool call blocked: ${toolName}`),
-    );
-    return { kind: 'halt', reason: 'repeat', toolCall };
-  }
-
-  s.totalToolCalls += 1;
-
-  return {
-    kind: 'ready',
-    call: { toolCall, toolName, tool, args },
-  };
 }
 
 async function finishHalt(
@@ -569,38 +430,21 @@ async function settleReturned(
     preview(result, RESULT_PREVIEW_MAX),
     webTrust ? { webTrust } : {},
   );
-  // Mutate + exec: same call + same result = stuck (e.g. write theater,
-  // or run_terminal producing the same exit code with no edit between).
-  const stage = toolStage(tool);
-  if (stage === 'mutate' || stage === 'exec') {
-    const traits = s.traitsOf(toolName);
-    const outcome = s.guard.recordOutcome(
-      outcomeKey(toolName, args, result, {
-        ...(traits?.effect ? { effect: traits.effect } : {}),
-        file: traits?.file?.(args) ?? null,
-      }),
-      stage === 'exec',
-    );
-    if (outcome.nearStuck) maybeSuggestAdvisor(s);
-    if (outcome.stuck) {
-      noteLimit(
-        s,
-        limitMessage(
-          'limit.outcome',
-          `repeated identical tool outcome blocked: ${toolName}`,
-        ),
-      );
-      return 'halted';
-    }
-  }
-  // A successful edit_file is progress: prior exec outcomes (build/lint
-  // exits) are now stale. Clear them so the next verification cycle starts
-  // fresh instead of accumulating toward a false stuck-ness halt.
+  // The stuck guard and a change's fresh start are admission's (loop/admission.ts).
   // Progress itself (stall, effort floor) is the task state's evidence,
   // which the trace above already fed; steering reads it from there.
-  if (changeSucceeded(s, toolName, result)) {
-    // The edited file's read count starts again: a read of it must run.
-    s.guard.editSucceeded(s.traitsOf(toolName)?.file?.(args) ?? null);
+  const settled = s.admission.settled({
+    toolName,
+    tool,
+    args,
+    result,
+    changed: changeSucceeded(s, toolName, result),
+  });
+  const advice = settled.nearStuck ? advisorNote(s) : null;
+  if (advice !== null) pushHarnessNote(s, advice);
+  if (settled.halt !== null) {
+    noteLimit(s, settled.halt);
+    return 'halted';
   }
   return 'ok';
 }
@@ -750,7 +594,6 @@ export async function runToolTurn(
   const ready: ReadyToolCall[] = [];
   let halt: Extract<AdmitResult, { kind: 'halt' }> | null = null;
   let haltIndex = 0;
-  let reportOnlyRefused = 0;
   s.steering.startTurn();
   for (let index = 0; index < turn.toolCalls.length; index++) {
     if (s.signal?.aborted) {
@@ -770,22 +613,14 @@ export async function runToolTurn(
       haltIndex = index;
       break;
     }
-    if (admitted.kind === 'filled') {
-      if (admitted.reportOnly) reportOnlyRefused += 1;
-      continue;
-    }
+    if (admitted.kind === 'filled') continue;
     ready.push(admitted.call);
   }
 
-  // A child that keeps calling other tools after the report-only refusal
-  // would spin until its iteration cap; end it on the tool limit instead.
-  s.reportOnlyTurns =
-    halt === null && ready.length === 0 && reportOnlyRefused > 0 ? s.reportOnlyTurns + 1 : 0;
-  if (s.reportOnlyTurns >= MAX_REPORT_ONLY_TURNS) {
-    noteLimit(
-      s,
-      limitMessage('limit.tools', `max tool calls exceeded (${s.limits.maxToolCalls})`),
-    );
+  // A child that only draws report-only refusals ends on the tool limit.
+  const reportOnlyLimit = s.admission.endTurn(halt !== null);
+  if (reportOnlyLimit !== null) {
+    noteLimit(s, reportOnlyLimit);
     return await completeAfterLimit(s);
   }
 
@@ -863,8 +698,9 @@ export async function runToolTurn(
   }
 
   await manageResidency(s);
-  maybeSteerProgress(s);
-  maybeWarnBudget(s);
+  for (const note of [progressNote(s), budgetNote(s)]) {
+    if (note !== null) pushHarnessNote(s, note);
+  }
   emitTurnCompleted(s, s.iterations, turn.usage);
   return null;
 }

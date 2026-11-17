@@ -1,4 +1,7 @@
+import type { ToolStage } from '@agent/agent-models';
+
 import { pathFromToolArgs } from '../loop/call-identity';
+import type { Tool } from './types';
 
 /**
  * How the harness treats a tool's calls: what the task state counts them as
@@ -187,4 +190,9 @@ export function runCapabilities(toolNames: Iterable<string>, traitsOf: TraitsOf)
     record: effects.has('record'),
     delegate: effects.has('subagent'),
   };
+}
+
+/** A tool without a declared stage (e.g. a future MCP tool) is scheduled as mutate, the strictest class. */
+export function toolStage(tool: Pick<Tool, 'stage'>): ToolStage {
+  return tool.stage ?? 'mutate';
 }

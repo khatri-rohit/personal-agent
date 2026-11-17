@@ -4,8 +4,37 @@ import { CARD_HEADER, harnessMessage } from '../context/message-origin';
 import { residentReadPaths } from '../context/residency';
 import { cardDue, cardItems, classPace, EVIDENCE_WORDS } from '../policy';
 import { recordSection } from '../state/record-view';
+import type { AgentLimits } from './limits';
 import { tracePolicyDecision } from './policy-trace';
+import type { ProgressSteering } from './progress-steering';
+import type { RunBudget } from './run-budget';
 import type { RunState } from './run-state';
+
+/**
+ * What the card reads from the run: all it may see. It writes one field,
+ * consuming the one-shot `advisories` it shows.
+ */
+export type CardView = Pick<
+  RunState,
+  | 'task'
+  | 'iterations'
+  | 'can'
+  | 'messages'
+  | 'traitsOf'
+  | 'posture'
+  | 'serialReadTurns'
+  | 'recordBlobSha'
+  | 'recordedThrough'
+  | 'contextBudget'
+  | 'flags'
+  | 'advisories'
+  | 'runId'
+  | 'trace'
+> & {
+  readonly steering: Pick<ProgressSteering, 'stalled'>;
+  readonly budget: Pick<RunBudget, 'spent' | 'snapshot' | 'nearLimit'>;
+  readonly limits: Pick<AgentLimits, 'maxPromptTokens'>;
+};
 
 /**
  * The harness card: one ephemeral message appended to each model call,
@@ -40,7 +69,7 @@ function tokensK(tokens: number): string {
 export { recordCardChars, recordOverflowText, recordSection } from '../state/record-view';
 
 /** Text of the card for this call, or null when it has nothing to say. */
-export function buildStateCard(s: RunState, perCallTokens: number): string | null {
+export function buildStateCard(s: CardView, perCallTokens: number): string | null {
   return composeStateCard(s, perCallTokens)?.text ?? null;
 }
 
@@ -50,7 +79,7 @@ export function buildStateCard(s: RunState, perCallTokens: number): string | nul
  * whether advice changes behaviour).
  */
 export function composeStateCard(
-  s: RunState,
+  s: CardView,
   perCallTokens: number,
 ): { text: string; ids: string[] } | null {
   const ids: string[] = [];
@@ -217,7 +246,7 @@ export function composeStateCard(
 
 /** The messages one model call sends: the live prompt plus this step's card. */
 export function withStateCard(
-  s: RunState,
+  s: CardView,
   messages: ChatCompletionMessageParam[],
   perCallTokens: number,
 ): ChatCompletionMessageParam[] {

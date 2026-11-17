@@ -14,7 +14,6 @@ import {
   type RunUsage,
   type TokenUsage,
   type ToolOrigin,
-  type ToolStage,
   type TraceEvent,
   type WebTrust,
 } from '@agent/agent-models';
@@ -28,8 +27,8 @@ import type { Tool, ToolRegistry } from '../tools/types';
 import { createCallRecorder, type CallRecorder } from './call-record';
 import { resolveLimits, type AgentLimits } from './limits';
 import { progressScope } from '../policy';
+import { Admission } from './admission';
 import { ProgressSteering } from './progress-steering';
-import { RepetitionGuard } from './repetition-guard';
 import { RunBudget } from './run-budget';
 import { preview, ToolCallRecord } from './tool-call-record';
 import { toLedgerRecord } from './to-ledger-record';
@@ -85,7 +84,8 @@ export type RunState = {
   readonly emit: ((event: AgentEventWithoutSeq) => void) | undefined;
   readonly budget: RunBudget;
   readonly steering: ProgressSteering;
-  readonly guard: RepetitionGuard;
+  /** Whether each tool call runs, is answered instead, or ends the run (loop/admission.ts). */
+  readonly admission: Admission;
   readonly webSources: WebSourceStore;
   readonly recorder: CallRecorder | null;
   readonly record: ToolCallRecord;
@@ -123,8 +123,6 @@ export type RunState = {
   serialReadTurns: number;
   /** This turn's single read result carries the serial-reads note. */
   serialReadNoteDue: boolean;
-  /** Consecutive turns whose calls were all refused because only `report` was left. */
-  reportOnlyTurns: number;
   /** One-shot advice for the next harness card (consumed when the card is built). */
   readonly advisories: string[];
   /** Fingerprints of the previous call's messages, for the prefix-stability measure. */
@@ -231,7 +229,11 @@ export function createRunState(
     emit,
     budget,
     steering,
-    guard: new RepetitionGuard(),
+    admission: new Admission({
+      traitsOf,
+      maxToolCalls: limits.maxToolCalls,
+      maxRepeatedToolCalls: limits.maxRepeatedToolCalls,
+    }),
     webSources,
     recorder:
       config.recordCalls && config.putBlob ? createCallRecorder(config.putBlob) : null,
@@ -258,7 +260,6 @@ export function createRunState(
     stopChecked: false,
     serialReadTurns: 0,
     serialReadNoteDue: false,
-    reportOnlyTurns: 0,
     advisories: [],
     promptKeys: [],
     recordBlobSha: undefined,
@@ -268,10 +269,7 @@ export function createRunState(
   return state;
 }
 
-/** A tool without a declared stage (e.g. a future MCP tool) is scheduled as mutate, the strictest class. */
-export function toolStage(tool: Tool): ToolStage {
-  return tool.stage ?? 'mutate';
-}
+export { toolStage } from '../tools/traits';
 
 /** The tool's own compact view of its arguments, so UI labels are not poisoned by truncated text. */
 export function toolArgsPreview(tool: Tool | undefined, args: unknown): string {

@@ -79,7 +79,9 @@ Eval reads these files. It does not re-derive what core already put in the trace
 
 - `loop.ts` — iteration: model turn → tools → budget/limits → finish. Replay snapshots in `__replay__/` pin event/trace order.
 - `limits.ts`, `run-budget.ts` — iteration, tool-call, token, and wall caps.
-- `repetition-guard.ts`, `progress-steering.ts` — stall / research-gate (absolute marks 750k / 1.25M).
+- `admission.ts` — whether a tool call runs, is answered instead, or ends the run (unknown tools, read storms, repeats, identical outcomes, report-only reserve, posture, research gate); returns a verdict `turn-tools.ts` applies.
+- `progress-steering.ts` — stall / research-gate (absolute marks 750k / 1.25M).
+- Loop passes take a declared view of `RunState` (`CardView`, `NotesView`, `ResidencyView`), not the whole state.
 - `model-call.ts`, `call-record.ts` — streaming call; optional content-addressed recording of exactly what the model saw.
 - `to-ledger-record.ts` — loop output → ledger row.
 

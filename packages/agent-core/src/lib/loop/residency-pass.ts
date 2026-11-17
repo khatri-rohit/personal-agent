@@ -17,6 +17,36 @@ import type { RunState } from './run-state';
 import { recordOverflowText } from './state-card';
 
 /**
+ * What the pass reads from the run, and the fields it writes: the prompt
+ * (`messages`, its job), the residency counters `markLift`, `prefixHeavy`,
+ * `recordedThrough`, `recordBlobSha` and `recordBlobKey`, and the removed
+ * calls it tells read dedupe, skill loads and admission about.
+ */
+export type ResidencyView = Pick<
+  RunState,
+  | 'messages'
+  | 'runStart'
+  | 'iterations'
+  | 'contextBudget'
+  | 'flags'
+  | 'traitsOf'
+  | 'task'
+  | 'runId'
+  | 'trace'
+  | 'readDedupe'
+  | 'skillLoads'
+  | 'markLift'
+  | 'prefixHeavy'
+  | 'recordedThrough'
+  | 'recordBlobSha'
+  | 'recordBlobKey'
+> & {
+  readonly tools: Pick<RunState['tools'], 'definitions'>;
+  readonly webSources: Pick<RunState['webSources'], 'putBlob'>;
+  readonly admission: Pick<RunState['admission'], 'forgetSkillLoads'>;
+};
+
+/**
  * The prompt projection after a tool turn (v2 phase 7). Between boundaries
  * the prompt only grows (new steps are appended); at a boundary it is
  * reshaped once, by every mechanism together, so the cached prefix breaks
@@ -36,7 +66,7 @@ import { recordOverflowText } from './state-card';
  * mark (card-only steps, then results by value, then the recap fold); then,
  * at a boundary, the ride-along round and the record message.
  */
-export async function manageResidency(s: RunState): Promise<void> {
+export async function manageResidency(s: ResidencyView): Promise<void> {
   const triggers: string[] = [];
   // A result cut here is no longer in the prompt in full: read dedupe must
   // not answer an identical call with "identical to the earlier result above".
@@ -52,7 +82,7 @@ export async function manageResidency(s: RunState): Promise<void> {
     s.contextBudget.skillResidentIterations,
   )) {
     // A reload after retirement is legitimate, not a repeat.
-    s.guard.forgetSkillLoads();
+    s.admission.forgetSkillLoads();
     s.trace({
       type: 'skill_evicted',
       runId: s.runId,
@@ -184,7 +214,7 @@ export async function manageResidency(s: RunState): Promise<void> {
 
 /** One working-set pass (`freeOnly`: superseded copies only; `marks`: this run's marks); true when it removed anything. */
 async function workingSetPass(
-  s: RunState,
+  s: ResidencyView,
   putBlob: (text: string) => Promise<string>,
   options: { freeOnly?: boolean; marks?: { high: number; low: number } } = {},
 ): Promise<boolean> {
@@ -231,7 +261,7 @@ async function workingSetPass(
  * state; this makes the ones the card cannot show reachable at 0 calls'
  * search cost (one recall).
  */
-async function storeRecordOverflow(s: RunState, putBlob: (text: string) => Promise<string>): Promise<void> {
+async function storeRecordOverflow(s: ResidencyView, putBlob: (text: string) => Promise<string>): Promise<void> {
   if (!s.flags.stateCard) return;
   const full = recordOverflowText(s.task.snapshot().evidence.findings, s.contextBudget.recordCardTokens);
   if (full === null) return;
@@ -242,7 +272,7 @@ async function storeRecordOverflow(s: RunState, putBlob: (text: string) => Promi
 }
 
 /** Forget what a fold removed and trace it. `reason` undefined = the recap fold at the high mark. */
-function traceFold(s: RunState, fold: InRunCompactionResult, reason: 'milestone' | 'residue' | undefined): void {
+function traceFold(s: ResidencyView, fold: InRunCompactionResult, reason: 'milestone' | 'residue' | undefined): void {
   s.readDedupe.forget(fold.toolCallIds);
   for (const id of fold.toolCallIds) s.skillLoads.delete(id);
   s.trace({
@@ -261,7 +291,7 @@ function traceFold(s: RunState, fold: InRunCompactionResult, reason: 'milestone'
  * run's own context is big enough that folding it pays for the one-time
  * change to the cached prefix.
  */
-function atVerifiedMilestone(s: RunState): boolean {
+function atVerifiedMilestone(s: ResidencyView): boolean {
   const check = s.task.snapshot().evidence.lastCheck;
   if (!check || check.iteration !== s.iterations || check.exitCode !== 0 || !check.afterEdit) {
     return false;
