@@ -17,8 +17,10 @@ import {
   noteLimit,
   pushHarnessNote,
   type CoreResult,
+  type LoopConfig,
   type RunState,
 } from './run-state';
+import type { RunBudget } from './run-budget';
 import { changeGate, planGate } from '../policy';
 import { measureContextShape } from './context-shape';
 import { tracePolicyDecision } from './policy-trace';
@@ -43,8 +45,65 @@ const DEFERRED_CHOICE_INSTRUCTION =
 const STOP_CHECK_NOTE =
   'Your answer reports success, but no check (build, typecheck, test or lint) has run since your last edit. Run the project check now, or say plainly what is not verified.';
 
+/**
+ * What ending a run reads and writes. It writes the prompt (the final turn,
+ * gate notes), `lastLimitReason`, `promptKeys`, and the gate counters
+ * `stopChecked` and `planWorkNudges`.
+ */
+export type FinishView = Pick<
+  RunState,
+  | 'messages'
+  | 'runStart'
+  | 'runStartedAt'
+  | 'runId'
+  | 'iterations'
+  | 'totalToolCalls'
+  | 'lastLimitReason'
+  | 'promptKeys'
+  | 'stopChecked'
+  | 'planWorkNudges'
+  | 'posture'
+  | 'flags'
+  | 'contextBudget'
+  | 'tools'
+  | 'modelCall'
+  | 'signal'
+  | 'recorder'
+  | 'trace'
+  | 'emit'
+> & {
+  readonly config: Pick<LoopConfig, 'model' | 'onMessage' | 'contextReport' | 'hasOpenPlanWork' | 'isPlanScoped'>;
+  readonly budget: Pick<RunBudget, 'chargeOwn'>;
+  readonly task: Pick<RunState['task'], 'unchecked'>;
+  readonly can: Pick<RunState['can'], 'check'>;
+};
+
+/**
+ * The run's last step: the turn-completed and run-completed events and the
+ * result, alike on every path. An incomplete run carries the limit noted
+ * last; a completed one carries none.
+ */
+function endRun(
+  s: FinishView,
+  content: string,
+  status: 'completed' | 'incomplete',
+  usage?: TokenUsage,
+): CoreResult {
+  emitTurnCompleted(s, s.iterations, usage);
+  const limit = status === 'incomplete' && s.lastLimitReason ? { limitReason: s.lastLimitReason } : {};
+  s.emit?.({
+    type: 'run.completed',
+    runId: s.runId,
+    iterations: s.iterations,
+    toolCalls: s.totalToolCalls,
+    ...(status === 'incomplete' ? { incomplete: true } : {}),
+    ...limit,
+  });
+  return { runId: s.runId, content, iterations: s.iterations, toolCalls: s.totalToolCalls, status, ...limit };
+}
+
 /** The change done gate (policy/finish changeGate) over this run's state. */
-function needsStopCheck(s: RunState, answer: string): boolean {
+function needsStopCheck(s: FinishView, answer: string): boolean {
   return changeGate({
     enabled: s.flags.stopCheck,
     alreadySent: s.stopChecked,
@@ -57,7 +116,7 @@ function needsStopCheck(s: RunState, answer: string): boolean {
 
 /** Tools-off final answer with a fresh message lifecycle (never reuse the tool-turn id). */
 async function finalizeAnswer(
-  s: RunState,
+  s: FinishView,
   instruction: string,
 ): Promise<{ content: string; usage?: TokenUsage }> {
   const { runId, emit, recorder } = s;
@@ -139,78 +198,33 @@ async function finalizeAnswer(
  * fail or spend the last of the allowance. The ledger and plan carry the
  * state; the next run continues from them.
  */
-export function finishPaused(s: RunState, reason: string): CoreResult {
+export function finishPaused(s: FinishView, reason: string): CoreResult {
   noteLimit(s, limitMessage('limit.capacity', reason));
-  emitTurnCompleted(s, s.iterations);
-  s.emit?.({
-    type: 'run.completed',
-    runId: s.runId,
-    iterations: s.iterations,
-    toolCalls: s.totalToolCalls,
-    incomplete: true,
-    ...(s.lastLimitReason ? { limitReason: s.lastLimitReason } : {}),
-  });
-  return {
-    runId: s.runId,
-    content: lastAssistantContent(s),
-    iterations: s.iterations,
-    toolCalls: s.totalToolCalls,
-    status: 'incomplete',
-    ...(s.lastLimitReason ? { limitReason: s.lastLimitReason } : {}),
-  };
+  return endRun(s, lastAssistantContent(s), 'incomplete');
 }
 
-export async function completeAfterLimit(s: RunState): Promise<CoreResult> {
+export async function completeAfterLimit(s: FinishView): Promise<CoreResult> {
   stubLiveToolResults(s.messages, s.contextBudget, s.runStart, s.flags);
   const final = await finalizeAnswer(
     s,
     s.tools.byName.has('report') ? REPORT_LIMIT_HANDOFF_INSTRUCTION : LIMIT_HANDOFF_INSTRUCTION,
   );
-  emitTurnCompleted(s, s.iterations, final.usage);
-  s.emit?.({
-    type: 'run.completed',
-    runId: s.runId,
-    iterations: s.iterations,
-    toolCalls: s.totalToolCalls,
-    incomplete: true,
-    ...(s.lastLimitReason ? { limitReason: s.lastLimitReason } : {}),
-  });
-  return {
-    runId: s.runId,
-    content: final.content,
-    iterations: s.iterations,
-    toolCalls: s.totalToolCalls,
-    status: 'incomplete',
-    ...(s.lastLimitReason ? { limitReason: s.lastLimitReason } : {}),
-  };
+  return endRun(s, final.content, 'incomplete', final.usage);
 }
 
 /**
  * The user skipped an offer_choice: they will decide later, so the run
  * ends with a tools-off summary of the open choice, not as incomplete.
  */
-export async function completeAfterDeferredChoice(s: RunState): Promise<CoreResult> {
+export async function completeAfterDeferredChoice(s: FinishView): Promise<CoreResult> {
   stubLiveToolResults(s.messages, s.contextBudget, s.runStart, s.flags);
   const final = await finalizeAnswer(s, DEFERRED_CHOICE_INSTRUCTION);
-  emitTurnCompleted(s, s.iterations, final.usage);
-  s.emit?.({
-    type: 'run.completed',
-    runId: s.runId,
-    iterations: s.iterations,
-    toolCalls: s.totalToolCalls,
-  });
-  return {
-    runId: s.runId,
-    content: final.content,
-    iterations: s.iterations,
-    toolCalls: s.totalToolCalls,
-    status: 'completed',
-  };
+  return endRun(s, final.content, 'completed', final.usage);
 }
 
 /** A tool (sub-agent `report`) asked to end the run with this answer. */
 export async function finishRequestedStop(
-  s: RunState,
+  s: FinishView,
   content: string,
   lastUsage?: TokenUsage,
 ): Promise<CoreResult> {
@@ -219,20 +233,7 @@ export async function finishRequestedStop(
     { role: 'assistant', content },
     { runDurationMs: Date.now() - s.runStartedAt },
   );
-  emitTurnCompleted(s, s.iterations, lastUsage);
-  s.emit?.({
-    type: 'run.completed',
-    runId: s.runId,
-    iterations: s.iterations,
-    toolCalls: s.totalToolCalls,
-  });
-  return {
-    runId: s.runId,
-    content,
-    iterations: s.iterations,
-    toolCalls: s.totalToolCalls,
-    status: 'completed',
-  };
+  return endRun(s, content, 'completed', lastUsage);
 }
 
 /**
@@ -240,7 +241,7 @@ export async function finishRequestedStop(
  * loop should take another turn (one nudge while plan todos are open).
  */
 export async function settleFinalAnswer(
-  s: RunState,
+  s: FinishView,
   turn: ModelTurn,
   messageId: string,
   durationMs: number,
@@ -290,65 +291,11 @@ export async function settleFinalAnswer(
 
     if (plan === 'stop') {
       noteLimit(s, limitMessage('limit.plan', 'Open plan todos remain'));
-      emitTurnCompleted(s, s.iterations, turn.usage);
-      emit?.({
-        type: 'run.completed',
-        runId,
-        iterations: s.iterations,
-        toolCalls: s.totalToolCalls,
-        incomplete: true,
-        ...(s.lastLimitReason ? { limitReason: s.lastLimitReason } : {}),
-      });
-      return {
-        runId,
-        content: result,
-        iterations: s.iterations,
-        toolCalls: s.totalToolCalls,
-        status: 'incomplete',
-        ...(s.lastLimitReason ? { limitReason: s.lastLimitReason } : {}),
-      };
+      return endRun(s, result, 'incomplete', turn.usage);
     }
-
-    emitTurnCompleted(s, s.iterations, turn.usage);
-    emit?.({
-      type: 'run.completed',
-      runId,
-      iterations: s.iterations,
-      toolCalls: s.totalToolCalls,
-    });
-
-    return {
-      runId,
-      content: result,
-      iterations: s.iterations,
-      toolCalls: s.totalToolCalls,
-      status: 'completed',
-    };
+    return endRun(s, result, 'completed', turn.usage);
   }
 
-  noteLimit(
-    s,
-    limitMessage(
-      'limit.finish',
-      `unexpected finish reason: ${turn.finishReason}`,
-    ),
-  );
-  emitTurnCompleted(s, s.iterations, turn.usage);
-  emit?.({
-    type: 'run.completed',
-    runId,
-    iterations: s.iterations,
-    toolCalls: s.totalToolCalls,
-    incomplete: true,
-    ...(s.lastLimitReason ? { limitReason: s.lastLimitReason } : {}),
-  });
-
-  return {
-    runId,
-    content: turn.content ?? '',
-    iterations: s.iterations,
-    toolCalls: s.totalToolCalls,
-    status: 'incomplete',
-    ...(s.lastLimitReason ? { limitReason: s.lastLimitReason } : {}),
-  };
+  noteLimit(s, limitMessage('limit.finish', `unexpected finish reason: ${turn.finishReason}`));
+  return endRun(s, turn.content ?? '', 'incomplete', turn.usage);
 }

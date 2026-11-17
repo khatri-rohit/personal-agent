@@ -81,7 +81,7 @@ Eval reads these files. It does not re-derive what core already put in the trace
 - `limits.ts`, `run-budget.ts` — iteration, tool-call, token, and wall caps.
 - `admission.ts` — whether a tool call runs, is answered instead, or ends the run (unknown tools, read storms, repeats, identical outcomes, report-only reserve, posture, research gate); returns a verdict `turn-tools.ts` applies.
 - `progress-steering.ts` — stall / research-gate (absolute marks 750k / 1.25M).
-- Loop passes take a declared view of `RunState` (`CardView`, `NotesView`, `ResidencyView`), not the whole state.
+- Loop passes take a declared view of `RunState` (`CardView`, `NotesView`, `ResidencyView`, `FinishView`, and the `run-state.ts` helpers), not the whole state; only the orchestrators (`loop.ts` `runLoopCore`, `turn-tools.ts`) hold all of it. Every run ends through `turn-finish.ts` `endRun`.
 - `model-call.ts`, `call-record.ts` — streaming call; optional content-addressed recording of exactly what the model saw.
 - `to-ledger-record.ts` — loop output → ledger row.
 

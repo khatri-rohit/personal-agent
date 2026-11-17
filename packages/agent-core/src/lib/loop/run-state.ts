@@ -295,9 +295,12 @@ function argsPreviewOf(
   return toolArgsPreview(tools.byName.get(toolCall.function.name), args);
 }
 
+/** What appending a durable turn reads and writes. */
+export type DurableView = Pick<RunState, 'messages'> & { readonly config: Pick<LoopConfig, 'onMessage'> };
+
 /** A durable turn: joins the live prompt and the host ledger. */
 export async function appendDurable(
-  s: RunState,
+  s: DurableView,
   message: ChatCompletionMessageParam,
   meta?: LedgerAppendMeta,
 ): Promise<void> {
@@ -307,7 +310,10 @@ export async function appendDurable(
   }
 }
 
-export function noteLimit(s: RunState, reason: string): void {
+/** What noting a limit writes (`lastLimitReason`) and where it reports it. */
+export type LimitView = Pick<RunState, 'lastLimitReason' | 'trace' | 'emit' | 'runId' | 'iterations'>;
+
+export function noteLimit(s: LimitView, reason: string): void {
   s.lastLimitReason = reason;
   s.trace({
     type: 'limit',
@@ -318,7 +324,12 @@ export function noteLimit(s: RunState, reason: string): void {
   s.emit?.({ type: 'limit.hit', runId: s.runId, reason });
 }
 
-export function emitTurnCompleted(s: RunState, iteration: number, usage?: TokenUsage): void {
+/** What a turn's completion event reads. */
+export type TurnCompletedView = Pick<RunState, 'messages' | 'tools' | 'emit' | 'runId'> & {
+  readonly config: Pick<LoopConfig, 'contextReport'>;
+};
+
+export function emitTurnCompleted(s: TurnCompletedView, iteration: number, usage?: TokenUsage): void {
   const contextReport = s.config.contextReport
     ? refreshContextReport(s.config.contextReport, s.messages, s.tools, usage)
     : undefined;
@@ -331,16 +342,15 @@ export function emitTurnCompleted(s: RunState, iteration: number, usage?: TokenU
   });
 }
 
-
 /**
  * Loop control the model must read as the harness speaking, not the user
  * changing their mind. Joins the live prompt only, never the ledger.
  */
-export function pushHarnessNote(s: RunState, text: string): void {
+export function pushHarnessNote(s: Pick<RunState, 'messages' | 'flags'>, text: string): void {
   s.messages.push(harnessMessage('note', s.flags.harnessNotes ? `${HARNESS_NOTE_PREFIX} ${text}` : text));
 }
 
-export function lastAssistantContent(s: RunState): string {
+export function lastAssistantContent(s: Pick<RunState, 'messages'>): string {
   for (let i = s.messages.length - 1; i >= 0; i--) {
     const message = s.messages[i];
     if (message?.role !== 'assistant') continue;

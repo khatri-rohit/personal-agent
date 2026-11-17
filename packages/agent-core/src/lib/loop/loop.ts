@@ -165,6 +165,12 @@ async function reportSystem1(
   }
 }
 
+/** What effort escalation reads, and the one field it writes (`escalatedAt`). */
+type EscalationView = Pick<RunState, 'escalatedAt' | 'flags' | 'runId' | 'iterations' | 'trace'> & {
+  readonly config: Pick<LoopConfig, 'effortPolicy'>;
+  readonly task: Pick<RunState['task'], 'evidenceCount'>;
+};
+
 /**
  * reasoning_effort to override for this call, or undefined to send the
  * baseline. System 1's routed rung applies as before; with escalation on, a
@@ -173,7 +179,7 @@ async function reportSystem1(
  * than that still wins).
  */
 function escalateEffort(
-  s: RunState,
+  s: EscalationView,
   effort: EffortDecision,
   cause: { toolError: boolean; nudged: boolean },
 ): string | undefined {
