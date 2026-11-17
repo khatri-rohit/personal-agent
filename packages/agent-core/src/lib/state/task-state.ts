@@ -300,6 +300,9 @@ export class TaskStateTracker {
         this.mergeChildFindings(event);
         return null;
       case 'context_restored': {
+        // Exact restores only, as before restore kinds: widening what marks
+        // a path restored changes eviction order and cards, a gated change.
+        if (event.kind !== 'exact') return null;
         const path = pathFromToolArgs({ path: event.path });
         if (path) this.restored.set(path, event.iteration);
         return null;

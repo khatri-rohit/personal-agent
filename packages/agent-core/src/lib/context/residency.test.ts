@@ -351,13 +351,26 @@ describe('ReadDedupe', () => {
   it('flags a re-read of text that was removed as a restore', () => {
     const dedupe = new ReadDedupe();
     const text = read(1, 50, 50);
-    expect(dedupe.apply('a.ts', {}, text, 1, 'r1')).toEqual({ text, restored: false, deduped: false });
+    expect(dedupe.apply('a.ts', {}, text, 1, 'r1')).toEqual({ text, restored: null, deduped: false });
     dedupe.forget(['r1']);
-    expect(dedupe.apply('a.ts', {}, text, 5, 'r2')).toEqual({ text, restored: true, deduped: false });
+    expect(dedupe.apply('a.ts', {}, text, 5, 'r2')).toEqual({ text, restored: 'exact', deduped: false });
     // Changed text after an edit is a new read, not a restore.
     dedupe.forget(['r2']);
     dedupe.invalidatePath('a.ts');
-    expect(dedupe.apply('a.ts', {}, text, 7, 'r3').restored).toBe(false);
+    expect(dedupe.apply('a.ts', {}, text, 7, 'r3').restored).toBeNull();
+  });
+
+  it('flags a read that overlaps removed lines as an overlap restore, once per line', () => {
+    const dedupe = new ReadDedupe();
+    dedupe.apply('a.ts', {}, read(1, 100, 200), 1, 'r1');
+    dedupe.forget(['r1']);
+    expect(dedupe.apply('a.ts', {}, read(50, 120, 200), 2, 'r2').restored).toBe('overlap');
+    // Lines 50–100 are back in the prompt; 121+ were never removed.
+    expect(dedupe.apply('a.ts', {}, read(121, 150, 200), 3, 'r3').restored).toBeNull();
+    expect(dedupe.apply('a.ts', {}, read(10, 20, 200), 4, 'r4').restored).toBe('overlap');
+    // A terminal command may have changed the file: nothing removed is known any more.
+    dedupe.clear();
+    expect(dedupe.apply('a.ts', {}, read(30, 40, 200), 5, 'r5').restored).toBeNull();
   });
 });
 

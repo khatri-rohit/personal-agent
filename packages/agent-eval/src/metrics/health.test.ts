@@ -31,15 +31,28 @@ function step(iteration: number, tools: { name: string; args?: Record<string, un
 const read = (path: string, from = 1, to = 50, of = 50) => ({ name: 'read_file', args: { path }, preview: `[lines ${from}–${to} of ${of}]\nbody` });
 
 describe('harness health', () => {
-  it('counts same-range re-reads, and an edit of the file resets them', () => {
+  it("counts re-reads from core's restore event, by kind, not from its own walk", () => {
+    const restore = (iteration: number, kind: 'exact' | 'overlap' | 'recall', path?: string) =>
+      ({ type: 'context_restored', runId, iteration, toolCallId: `x${++id}`, kind, ...(path ? { path } : {}), v: 3 }) as TraceLine;
     const lines = [
       ...step(1, [read('a.ts'), read('b.ts')]),
       ...step(2, [read('a.ts')]),
-      ...step(3, [{ name: 'edit_file', args: { path: 'a.ts' }, preview: 'Patched a.ts' }]),
-      ...step(4, [read('a.ts')]),
+      restore(2, 'exact', 'a.ts'),
+      ...step(3, [read('b.ts', 10, 20)]),
+      restore(3, 'overlap', 'b.ts'),
+      ...step(4, [{ name: 'recall', args: { sha256: 'f'.repeat(64) } }]),
+      restore(4, 'recall'),
     ];
     const health = computeHealth(lines, 4_000);
-    expect(health.reReads).toEqual({ reads: 4, sameRange: 1, rate: 0.25 });
+    expect(health.reReads).toEqual({ reads: 4, restored: 2, rate: 0.5 });
+    expect(health.restores).toEqual({ exact: 1, overlap: 1, recall: 1, total: 3 });
+  });
+
+  it('reports no restore counts for a trace from before restore kinds', () => {
+    const lines = [...step(1, [read('a.ts')]), ...step(2, [read('a.ts')])];
+    const health = computeHealth(lines, 2_000);
+    expect(health.reReads).toEqual({ reads: 2, restored: null, rate: null });
+    expect(health.restores).toBeNull();
   });
 
   it('counts removal steps, residue share and prefix stability from the new events', () => {
@@ -111,7 +124,7 @@ describe('harness health', () => {
 
   it('scores the re-read item by whether the named files are restored again or recorded', () => {
     const restored = (iteration: number, path: string) =>
-      ({ type: 'context_restored', runId, iteration, toolCallId: `x${++id}`, path }) as TraceLine;
+      ({ type: 'context_restored', runId, iteration, toolCallId: `x${++id}`, kind: 'exact', path }) as TraceLine;
     const card = { type: 'policy_decision', runId, iteration: 3, kind: 'card', ids: ['open:reread'] } as TraceLine;
     const base = [...step(1, [read('a.ts')]), ...step(2, [read('a.ts')]), restored(2, 'a.ts'), card];
 

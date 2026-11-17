@@ -34,7 +34,7 @@ export type TraceCallInput = {
  * offline reader (eval / observability app) can parse old traces. The JSONL
  * sink also stamps `ts` and `seq` (per-run-file emit order); order by `seq`.
  */
-export const TRACE_SCHEMA_VERSION = 2;
+export const TRACE_SCHEMA_VERSION = 3;
 
 /**
  * Internal execution trace events (console / eval harness / JSONL sink).
@@ -218,14 +218,24 @@ export type TraceEvent =
     }
   | {
       /**
-       * A read returned a range whose identical text had been removed from
-       * the prompt earlier: the model paid a step to get it back.
+       * The one definition of a re-read after removal: a call brought back
+       * text the harness had removed from the prompt earlier in this run, so
+       * the model paid a step to get it back. Eval and tests count this event;
+       * they do not re-derive it from evictions.
        */
       type: 'context_restored';
       runId: string;
       iteration: number;
       toolCallId: string;
-      path: string;
+      /**
+       * `exact`: a read of the same lines, identical text. `overlap`: a read
+       * whose lines overlap removed lines of the file, with no edit or
+       * terminal command since (so the text is unchanged). `recall`: recall
+       * brought back a stored result (removed or spilled) by its sha.
+       */
+      kind: 'exact' | 'overlap' | 'recall';
+      /** The file read; absent for a recall. */
+      path?: string;
     }
   | {
       type: 'skill_loaded';

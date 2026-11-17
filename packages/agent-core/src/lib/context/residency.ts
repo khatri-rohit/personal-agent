@@ -785,6 +785,9 @@ async function foldIntoRecap(
 
 const SEARCH_KEY = 'search|';
 
+/** Lines `from`–`to` of a file, inclusive, as a read_file header states them. */
+type LineRange = { from: number; to: number };
+
 function canonicalArgs(args: Record<string, unknown>): string {
   return JSON.stringify(Object.keys(args).sort().map((key) => [key, args[key]]));
 }
@@ -794,14 +797,18 @@ function canonicalArgs(args: Record<string, unknown>): string {
  * earlier identical call returned, while that earlier result is still in
  * the prompt in full: the model gets a pointer instead of the same text
  * twice. Eviction and compaction call `forget`; a re-read of text that was
- * removed is then a restore (the caller traces it). An edit to the path
- * invalidates its reads and every search; any terminal command (formatters,
- * codegen) invalidates everything.
+ * removed is then a restore (the caller traces it as `context_restored`):
+ * `exact` for the same lines and text, `overlap` for lines that overlap
+ * removed ones. An edit to the path invalidates its reads and every search;
+ * any terminal command (formatters, codegen) invalidates everything, so a
+ * removed range still listed here holds the text the file has now.
  */
 export class ReadDedupe {
-  private seen = new Map<string, { sha: string; iteration: number; toolCallId: string }>();
-  /** Keys whose result left the prompt, with the sha it had: a matching re-read is a restore. */
+  private seen = new Map<string, { sha: string; iteration: number; toolCallId: string; range: LineRange | null }>();
+  /** Keys whose result left the prompt, with the sha it had: a matching re-read is an exact restore. */
   private removed = new Map<string, string>();
+  /** Per path, line ranges whose text left the prompt and is unchanged since. */
+  private removedRanges = new Map<string, LineRange[]>();
 
   /** `path` is the loop's canonical form, so `./a.ts` and `a.ts` share a key. */
   apply(
@@ -810,8 +817,8 @@ export class ReadDedupe {
     result: string,
     iteration: number,
     toolCallId: string,
-  ): { text: string; restored: boolean; deduped: boolean } {
-    if (!path || result.startsWith('Error')) return { text: result, restored: false, deduped: false };
+  ): { text: string; restored: 'exact' | 'overlap' | null; deduped: boolean } {
+    if (!path || result.startsWith('Error')) return { text: result, restored: null, deduped: false };
     // Key on the lines actually returned: a file that fits comes back whole
     // whatever offset/limit asked, so two differently-sliced asks can be
     // the same read. Args are the fallback for results without a header.
@@ -824,14 +831,35 @@ export class ReadDedupe {
     if (prior && prior.sha === sha) {
       return {
         text: `${UNCHANGED_PREFIX} since iteration ${prior.iteration}) ${path}: identical to the earlier read_file result above.`,
-        restored: false,
+        restored: null,
         deduped: true,
       };
     }
-    const restored = this.removed.get(key) === sha;
+    const exact = this.removed.get(key) === sha;
     this.removed.delete(key);
-    this.seen.set(key, { sha, iteration, toolCallId });
-    return { text: result, restored, deduped: false };
+    const overlap = range !== null && this.takeRemoved(path, range);
+    this.seen.set(key, { sha, iteration, toolCallId, range });
+    return { text: result, restored: exact ? 'exact' : overlap ? 'overlap' : null, deduped: false };
+  }
+
+  /** Whether `range` overlaps removed lines of `path`; those lines are back in the prompt now. */
+  private takeRemoved(path: string, range: LineRange): boolean {
+    const ranges = this.removedRanges.get(path);
+    if (!ranges) return false;
+    const kept: LineRange[] = [];
+    let hit = false;
+    for (const gone of ranges) {
+      if (gone.to < range.from || gone.from > range.to) {
+        kept.push(gone);
+        continue;
+      }
+      hit = true;
+      if (gone.from < range.from) kept.push({ from: gone.from, to: range.from - 1 });
+      if (gone.to > range.to) kept.push({ from: range.to + 1, to: gone.to });
+    }
+    if (kept.length > 0) this.removedRanges.set(path, kept);
+    else this.removedRanges.delete(path);
+    return hit;
   }
 
   /** Same idea for grep and glob: an identical search with nothing edited since answers with a pointer. */
@@ -849,7 +877,7 @@ export class ReadDedupe {
     if (prior && prior.sha === sha) {
       return `${UNCHANGED_PREFIX} since iteration ${prior.iteration}) ${toolName}: identical to the earlier result above.`;
     }
-    this.seen.set(key, { sha, iteration, toolCallId });
+    this.seen.set(key, { sha, iteration, toolCallId, range: null });
     return result;
   }
 
@@ -860,7 +888,12 @@ export class ReadDedupe {
     for (const [key, entry] of this.seen) {
       if (!gone.has(entry.toolCallId)) continue;
       this.seen.delete(key);
-      if (!key.startsWith(SEARCH_KEY)) this.removed.set(key, entry.sha);
+      if (key.startsWith(SEARCH_KEY)) continue;
+      this.removed.set(key, entry.sha);
+      if (entry.range) {
+        const path = key.slice(0, key.lastIndexOf('|'));
+        this.removedRanges.set(path, [...(this.removedRanges.get(path) ?? []), entry.range]);
+      }
     }
   }
 
@@ -873,10 +906,12 @@ export class ReadDedupe {
     for (const key of [...this.removed.keys()]) {
       if (key.startsWith(prefix)) this.removed.delete(key);
     }
+    this.removedRanges.delete(path.trim());
   }
 
   clear(): void {
     this.seen.clear();
     this.removed.clear();
+    this.removedRanges.clear();
   }
 }

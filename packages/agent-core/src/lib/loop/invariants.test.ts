@@ -299,32 +299,9 @@ const run = (name: ShapeName) => {
   return runs.get(name)!;
 };
 
-/** Read results that returned a line range already returned, with no edit of that file between. */
-function sameRangeReReads(sim: Sim): number {
-  const args = new Map<string, string>();
-  for (const start of of(sim, 'tool_start')) {
-    if (start.toolName === 'read_file' || start.toolName === 'edit_file') {
-      args.set(start.toolCallId ?? '', `${start.toolName}\u0000${String((start.args as { path?: unknown }).path)}`);
-    }
-  }
-  const seen = new Map<string, Set<string>>();
-  let repeats = 0;
-  for (const done of of(sim, 'tool_complete')) {
-    const [name, path] = (args.get(done.toolCallId ?? '') ?? '').split('\u0000');
-    if (!name || !path) continue;
-    if (name === 'edit_file') {
-      seen.delete(path);
-      continue;
-    }
-    const range = /^\[lines (\d+)–(\d+)/.exec(done.resultPreview ?? '');
-    if (!range) continue;
-    const key = `${range[1]}-${range[2]}`;
-    const ranges = seen.get(path) ?? new Set<string>();
-    if (ranges.has(key)) repeats += 1;
-    ranges.add(key);
-    seen.set(path, ranges);
-  }
-  return repeats;
+/** Reads of the same lines whose identical text had been removed: core's exact restores, counted, not re-derived. */
+function exactRestores(sim: Sim): number {
+  return of(sim, 'context_restored').filter((event) => event.kind === 'exact').length;
 }
 
 // ---------------------------------------------------------------- invariants
@@ -466,16 +443,14 @@ describe('harness invariants over a reacting model', () => {
 
   it('I6: an unchanged range is never charged a fresh model step when findings are recorded', async () => {
     for (const name of ['research', 'delegated', 'long'] as ShapeName[]) {
-      expect(sameRangeReReads(await run(name)), name).toBe(0);
+      expect(exactRestores(await run(name)), name).toBe(0);
     }
   });
 
   it('the record is what removes re-reads: the same task without it re-reads, and costs more', async () => {
     const recorded = await run('research');
     const unrecorded = await run('unrecorded');
-    expect(sameRangeReReads(unrecorded)).toBeGreaterThan(0);
-    // Each re-read is a restore of text that was removed earlier.
-    expect(of(unrecorded, 'context_restored').length).toBeGreaterThan(0);
+    expect(exactRestores(unrecorded)).toBeGreaterThan(0);
     const spent = (sim: Sim) => of(sim, 'run_finish')[0]?.usage?.own.promptTokens ?? 0;
     expect(spent(recorded)).toBeLessThan(spent(unrecorded));
   });
@@ -483,7 +458,7 @@ describe('harness invariants over a reacting model', () => {
   it('I6 holds where nothing was removed (the measure itself is sound)', async () => {
     const sim = await simulate({ facts: 3, batch: 3 }, workspace(3, 2_000));
     expect(of(sim, 'context_evicted')).toHaveLength(0);
-    expect(sameRangeReReads(sim)).toBe(0);
+    expect(exactRestores(sim)).toBe(0);
   });
 
   /**

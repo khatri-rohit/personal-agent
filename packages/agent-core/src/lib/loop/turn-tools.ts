@@ -179,15 +179,26 @@ function shapeBareResult(
   // What the call is, from the tool's traits (tools/traits.ts), not its name.
   const traits = s.traitsOf(toolName);
   const filePath = traits?.file?.(args) ?? null;
+  // A stored result brought back by its sha: a restore, like a re-read.
+  if (traits?.restores?.(args) && !result.startsWith('Error')) {
+    s.trace({ type: 'context_restored', runId: s.runId, iteration: s.iterations, toolCallId, kind: 'recall' });
+  }
   // A window of a file's own content: an identical read is a pointer.
   if (traits?.lineRange) {
     const readPath = filePath;
     if (readPath === null) return result;
     const shaped = s.readDedupe.apply(readPath, args, result, s.iterations, toolCallId);
-    // The same text was removed earlier and the model paid a step to get it
-    // back: measured, so the working-set pricing can be judged.
+    // Text removed earlier and the model paid a step to get it back: the one
+    // definition of a re-read after removal, which eval and tests count.
     if (shaped.restored) {
-      s.trace({ type: 'context_restored', runId: s.runId, iteration: s.iterations, toolCallId, path: readPath });
+      s.trace({
+        type: 'context_restored',
+        runId: s.runId,
+        iteration: s.iterations,
+        toolCallId,
+        kind: shaped.restored,
+        path: readPath,
+      });
     }
     // The harness answered an identical read with a pointer (F-5): traced, so
     // the guard's action on identical calls is measured, not silent.

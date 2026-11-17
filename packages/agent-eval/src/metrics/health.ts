@@ -1,6 +1,6 @@
 import { EFFORT_IDLE_FLOOR_STEPS, parseSubagentHeader } from '@agent/agent-models';
 
-import { linesOf, type TraceLine } from '../read/trace.js';
+import { linesOf, type TraceLine, type TraceLineOf } from '../read/trace.js';
 
 /**
  * Harness health for one run: does each mechanism do what it exists for?
@@ -18,10 +18,14 @@ export type HealthMetrics = {
   residueShare: { mean: number; last: number } | null;
   /** Mean share of each call's messages that equal the previous call's leading messages. */
   prefixStability: number | null;
-  /** Reads that returned a line range already returned, with no edit of that file between. */
-  reReads: { reads: number; sameRange: number; rate: number | null };
-  /** Re-reads of text that had been removed from the prompt (the model paid a step to get it back). */
-  restores: number;
+  /**
+   * Reads that returned file lines, and how many of them brought back text
+   * removed from the prompt (core's `context_restored`, exact or overlap).
+   * `restored` and `rate` are null on traces before restore kinds (v3).
+   */
+  reReads: { reads: number; restored: number | null; rate: number | null };
+  /** Core's `context_restored` by kind; null on traces before restore kinds (v3). */
+  restores: { exact: number; overlap: number; recall: number; total: number } | null;
   /** Findings recorded with record_finding (research evidence). */
   findings: number;
   /** Findings merged in from sub-agents (`child_findings`), counted apart from this run's own. */
@@ -168,13 +172,36 @@ function citesPath(tool: StepTool, path: string): boolean {
  * minus paths a finding cited before it). Followed when none of them is
  * restored again in the window, or a finding in the window cites one.
  */
+/** Trace version from which `context_restored` carries every restore and its kind. */
+const RESTORE_KINDS_SINCE = 3;
+
+/** A line from before restore kinds has none; then only exact restores were traced. */
+function restoreKind(line: TraceLineOf<'context_restored'>): 'exact' | 'overlap' | 'recall' {
+  return (line as { kind?: 'exact' | 'overlap' | 'recall' }).kind ?? 'exact';
+}
+
+/** Core's restores by kind, or null when the trace predates restore kinds. */
+function countRestores(lines: TraceLine[]): HealthMetrics['restores'] {
+  const version = lines.reduce((max, line) => Math.max(max, line.v ?? 0), 0);
+  if (version < RESTORE_KINDS_SINCE) return null;
+  const counts = { exact: 0, overlap: 0, recall: 0, total: 0 };
+  for (const line of linesOf(lines, 'context_restored')) {
+    counts[restoreKind(line)] += 1;
+    counts.total += 1;
+  }
+  return counts;
+}
+
 function rereadFollowed(
   lines: TraceLine[],
   byStep: Map<number, StepTool[]>,
   iterations: number[],
   cardIteration: number,
 ): boolean {
-  const restores = linesOf(lines, 'context_restored').map((line) => ({ iteration: line.iteration, path: normalPath(line.path) }));
+  // The card names exact restores only (task-state.ts), so only those count here.
+  const restores = linesOf(lines, 'context_restored')
+    .filter((line) => restoreKind(line) === 'exact' && line.path)
+    .map((line) => ({ iteration: line.iteration, path: normalPath(line.path!) }));
   const before = iterations.filter((iteration) => iteration < cardIteration).flatMap((iteration) => byStep.get(iteration) ?? []);
   const paths = new Set(
     restores
@@ -228,11 +255,9 @@ export function computeHealth(lines: TraceLine[], totalPromptTokens: number): He
     stableCalls += 1;
   }
 
-  // Re-reads and repeat searches, reset by an edit (of that file, or any edit for searches).
-  const seenRanges = new Map<string, Set<string>>();
+  // Repeat searches, reset by any edit. Re-reads are core's restores, counted below.
   const seenSearches = new Set<string>();
   let reads = 0;
-  let sameRange = 0;
   let searches = 0;
   let repeats = 0;
   let evidence = 0;
@@ -262,7 +287,6 @@ export function computeHealth(lines: TraceLine[], totalPromptTokens: number): He
         lastEvidenceAt = iteration;
         editedSinceCheck = true;
         progress = true;
-        if (path) seenRanges.delete(path);
         seenSearches.clear();
       } else if (isCheck(tool)) {
         progress = true;
@@ -278,14 +302,8 @@ export function computeHealth(lines: TraceLine[], totalPromptTokens: number): He
           editedSinceCheck = false;
         }
       } else if (tool.name === 'read_file' && path) {
-        const range = RANGE.exec(tool.preview);
-        if (!range) continue;
+        if (!RANGE.test(tool.preview)) continue;
         reads += 1;
-        const key = `${range[1]}-${range[2]}`;
-        const seen = seenRanges.get(path) ?? new Set<string>();
-        if (seen.has(key)) sameRange += 1;
-        seen.add(key);
-        seenRanges.set(path, seen);
         if (!touched.has(path)) progress = true;
         touched.add(path);
       } else if (SEARCH_TOOLS.has(tool.name)) {
@@ -359,6 +377,8 @@ export function computeHealth(lines: TraceLine[], totalPromptTokens: number): He
 
   const budget = linesOf(lines, 'child_budget')[0];
   const finish = linesOf(lines, 'run_finish')[0];
+  const restores = countRestores(lines);
+  const restored = restores ? restores.exact + restores.overlap : null;
   const spent = finish?.usage?.own.promptTokens ?? responses.reduce((sum, line) => sum + (line.usage?.promptTokens ?? 0), 0);
   const toolCalls = finish?.toolCalls ?? linesOf(lines, 'tool_start').length;
 
@@ -371,8 +391,8 @@ export function computeHealth(lines: TraceLine[], totalPromptTokens: number): He
         ? { mean: residues.reduce((sum, value) => sum + value, 0) / residues.length, last: residues.at(-1)! }
         : null,
     prefixStability: stableCalls > 0 ? stableSum / stableCalls : null,
-    reReads: { reads, sameRange, rate: ratio(sameRange, reads) },
-    restores: linesOf(lines, 'context_restored').length,
+    reReads: { reads, restored, rate: restored === null ? null : ratio(restored, reads) },
+    restores,
     findings,
     childFindings: linesOf(lines, 'child_findings').reduce((sum, line) => sum + line.findings.length, 0),
     repeatSearches: { searches, repeats, rate: ratio(repeats, searches) },
