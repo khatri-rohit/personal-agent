@@ -13,11 +13,77 @@ const VOICE_STT_PROMPT = (
   'desk, Speaches, Nx monorepo, Ollama, agent-core, RunManager, ChatInput'
 ).trim();
 const MAX_AUDIO_BYTES = Number(process.env.VOICE_MAX_AUDIO_BYTES ?? 10_485_760);
+/** Server-side Silero VAD in faster-whisper: strips silence before decoding. */
+const VOICE_STT_VAD_FILTER =
+  (process.env.VOICE_STT_VAD_FILTER ?? 'true').trim().toLowerCase() !== 'false';
+
+/**
+ * Whisper's own silence rule (openai/whisper transcribe.py): a segment is
+ * silence when the no-speech probability is high AND the decode was unsure.
+ * Either alone is too eager — real quiet speech can score high no_speech.
+ */
+const NO_SPEECH_PROB = 0.6;
+const LOW_AVG_LOGPROB = -1.0;
+/** Above this the decoder looped ("thank you thank you thank you…"). */
+const MAX_COMPRESSION_RATIO = 2.4;
+/** Whisper's prompt window is ~224 tokens; keep context well inside it. */
+const MAX_CONTEXT_CHARS = 400;
+
+type WhisperSegment = {
+  text?: string;
+  no_speech_prob?: number;
+  avg_logprob?: number;
+  compression_ratio?: number;
+};
+
+type VerboseTranscription = {
+  text?: string;
+  segments?: WhisperSegment[];
+};
+
+function isSpeechSegment(seg: WhisperSegment): boolean {
+  const noSpeech = seg.no_speech_prob ?? 0;
+  const logprob = seg.avg_logprob ?? 0;
+  if (noSpeech > NO_SPEECH_PROB && logprob < LOW_AVG_LOGPROB) return false;
+  if ((seg.compression_ratio ?? 0) > MAX_COMPRESSION_RATIO) return false;
+  return true;
+}
+
+/** Keep only segments that pass the silence/loop gates. */
+function gatedText(data: VerboseTranscription): string {
+  if (!Array.isArray(data.segments)) return (data.text ?? '').trim();
+  return data.segments
+    .filter(isSpeechSegment)
+    .map((s) => (s.text ?? '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+}
+
+/**
+ * Vocabulary hint first, then the tail of what was dictated so far, so the
+ * decoder continues the sentence instead of starting cold.
+ */
+function buildPrompt(contextHeader: unknown): string {
+  let context = '';
+  if (typeof contextHeader === 'string' && contextHeader) {
+    try {
+      context = decodeURIComponent(contextHeader).trim();
+    } catch {
+      context = '';
+    }
+  }
+  if (context.length > MAX_CONTEXT_CHARS) {
+    context = context.slice(-MAX_CONTEXT_CHARS);
+  }
+  return [VOICE_STT_PROMPT, context].filter(Boolean).join('. ');
+}
 
 /**
  * POST /api/voice/transcribe
  * Body: raw audio bytes (Content-Type: audio/webm, audio/wav, …)
- * Returns: { text: string }
+ * Optional header X-Voice-Context: URI-encoded text dictated earlier this session.
+ * Returns: { text: string } — empty when the clip held no speech.
  *
  * Proxies to Speaches OpenAI-compatible /v1/audio/transcriptions.
  * Does not touch Ollama or agent-core.
@@ -59,9 +125,13 @@ router.post(
         `audio.${ext}`,
       );
       form.append('model', SPEACHES_STT_MODEL);
-      form.append('response_format', 'json');
+      // verbose_json carries per-segment no_speech_prob / avg_logprob for gating.
+      form.append('response_format', 'verbose_json');
       form.append('language', VOICE_STT_LANGUAGE);
-      if (VOICE_STT_PROMPT) form.append('prompt', VOICE_STT_PROMPT);
+      form.append('temperature', '0');
+      form.append('vad_filter', VOICE_STT_VAD_FILTER ? 'true' : 'false');
+      const prompt = buildPrompt(req.headers['x-voice-context']);
+      if (prompt) form.append('prompt', prompt);
 
       const upstream = await fetch(
         `${SPEACHES_BASE_URL}/v1/audio/transcriptions`,
@@ -85,8 +155,8 @@ router.post(
         });
       }
 
-      const data = (await upstream.json()) as { text?: string };
-      return res.json({ text: (data.text ?? '').trim() });
+      const data = (await upstream.json()) as VerboseTranscription;
+      return res.json({ text: gatedText(data) });
     } catch (err) {
       console.error('[voice] speaches unreachable', err);
       return res.status(503).json({ error: 'Voice service unavailable' });

@@ -28,7 +28,13 @@ app.use(
   cors({
     origin: process.env.CORS_ORIGIN ?? true, // true = reflect request origin (dev-friendly)
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Accept', 'Origin', 'X-Requested-With'],
+    allowedHeaders: [
+      'Content-Type',
+      'Accept',
+      'Origin',
+      'X-Requested-With',
+      'X-Voice-Context',
+    ],
   }),
 );
 

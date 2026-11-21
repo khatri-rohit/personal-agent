@@ -114,12 +114,15 @@ Host-run API (typical dev) — see [.env.example](./.env.example):
 | `SPEACHES_STT_MODEL`             | Speaches only — e.g. distil-whisper-large-v3                        |
 | `VOICE_STT_LANGUAGE`             | Speaches `language` (default `en`)                                  |
 | `VOICE_STT_PROMPT`               | Speaches vocabulary hint                                            |
+| `VOICE_STT_VAD_FILTER`           | Speaches server-side Silero VAD (default `true`)                    |
 
 Web app (optional override):
 
-| Variable               | Purpose                                      |
-| ---------------------- | -------------------------------------------- |
-| `NEXT_PUBLIC_API_BASE` | API origin (default `http://localhost:3333`) |
+| Variable                     | Purpose                                                        |
+| ---------------------------- | -------------------------------------------------------------- |
+| `NEXT_PUBLIC_API_BASE`       | API origin (default `http://localhost:3333`)                   |
+| `NEXT_PUBLIC_VAD_ASSET_BASE` | Speaches dictation: Silero VAD worklet/model (default jsDelivr) |
+| `NEXT_PUBLIC_ORT_WASM_BASE`  | Speaches dictation: onnxruntime-web wasm (default jsDelivr)    |
 
 Docker-only overrides: [.env.docker.example](./.env.docker.example) — see [docker/README.md](./docker/README.md). **Compose does not run Ollama**; it provides Redis + Speaches.
 
