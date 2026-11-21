@@ -20,7 +20,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { Kbd } from '@/components/ui/kbd';
-import { cn } from '@/lib/utils';
+import { cn, formatCount } from '@/lib/utils';
 
 function matchesQuery(m: OllamaModel, q: string): boolean {
   if (!q) return true;
@@ -225,7 +225,7 @@ export function ModelPicker({
                   {m.contextLength != null ? (
                     <span
                       className="type-caption font-medium tabular-nums text-muted-foreground"
-                      title={`${m.contextLength.toLocaleString()} token context`}
+                      title={`${formatCount(m.contextLength)} token context`}
                     >
                       {m.contextLength >= 1_000_000
                         ? `${m.contextLength / 1_000_000}M`

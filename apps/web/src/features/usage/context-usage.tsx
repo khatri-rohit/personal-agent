@@ -1,6 +1,6 @@
 'use client';
 
-import { cn } from '@/lib/utils';
+import { cn, formatCount } from '@/lib/utils';
 import {
   Popover,
   PopoverContent,
@@ -97,15 +97,10 @@ export function ContextUsage({
 
   const ratio = Math.min(1, Math.max(0, used / limit));
   const percent = Math.round(ratio * 100);
-  const usedLabel = used.toLocaleString();
-  const limitLabel = limit.toLocaleString();
+  const usedLabel = formatCount(used);
+  const limitLabel = formatCount(limit);
   const showTilde = source === 'estimate' || approximate;
   const defaultWindow = windowSource === 'fallback';
-  const size = 20;
-  const stroke = 2.25;
-  const radius = (size - stroke) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference * (1 - ratio);
   const free = Math.max(0, limit - used - reserve);
 
   return (
@@ -120,41 +115,24 @@ export function ContextUsage({
           aria-valuenow={percent}
           className="inline-flex h-7 items-center justify-center gap-1 rounded-md px-1.5 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
         >
-          <svg
-            width={size}
-            height={size}
-            viewBox={`0 0 ${size} ${size}`}
-            className="-rotate-90"
+          {/* A short bar, not a ring: a partial ring reads as a loading
+              spinner, a bar reads as "how full". */}
+          <span
+            className="relative h-1.5 w-7 overflow-hidden rounded-full bg-muted-foreground/20"
             aria-hidden
           >
-            <circle
-              cx={size / 2}
-              cy={size / 2}
-              r={radius}
-              fill="none"
-              className="stroke-muted-foreground/25"
-              strokeWidth={stroke}
-            />
-            <circle
-              cx={size / 2}
-              cy={size / 2}
-              r={radius}
-              fill="none"
+            <span
               className={cn(
-                'transition-[stroke-dashoffset] duration-500 ease-out',
+                'absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 ease-out',
                 ratio >= 0.92
-                  ? 'stroke-destructive'
+                  ? 'bg-destructive'
                   : ratio >= 0.75
-                    ? 'stroke-[var(--warning)]'
-                    : 'stroke-foreground/70',
+                    ? 'bg-[var(--warning)]'
+                    : 'bg-foreground/60',
               )}
-              strokeWidth={stroke}
-              strokeDasharray={circumference}
-              strokeDashoffset={offset}
-              strokeLinecap="round"
+              style={{ width: `${Math.max(ratio * 100, ratio > 0 ? 6 : 0)}%` }}
             />
-          </svg>
-          {/* A bare ring reads as a spinner; the number says what it is. */}
+          </span>
           <span className="type-caption tabular-nums" aria-hidden>
             {percent}%
           </span>
@@ -208,7 +186,7 @@ export function ContextUsage({
               <div key={bucket.id} className="contents">
                 <dt className="text-muted-foreground">{bucket.label}</dt>
                 <dd className="text-right tabular-nums">
-                  {tokens.toLocaleString()}
+                  {formatCount(tokens)}
                 </dd>
                 {kids.length > 1
                   ? kids.map((layer) => (
@@ -217,7 +195,7 @@ export function ContextUsage({
                           {layer.label}
                         </dt>
                         <dd className="text-right tabular-nums text-muted-foreground">
-                          {layer.tokens.toLocaleString()}
+                          {formatCount(layer.tokens)}
                         </dd>
                       </div>
                     ))
@@ -229,12 +207,12 @@ export function ContextUsage({
             <>
               <dt className="text-muted-foreground">Reserve</dt>
               <dd className="text-right tabular-nums">
-                {reserve.toLocaleString()}
+                {formatCount(reserve)}
               </dd>
             </>
           ) : null}
           <dt className="text-muted-foreground">Free</dt>
-          <dd className="text-right tabular-nums">{free.toLocaleString()}</dd>
+          <dd className="text-right tabular-nums">{formatCount(free)}</dd>
           <dt className="text-muted-foreground">Limit</dt>
           <dd className="text-right font-medium tabular-nums">{limitLabel}</dd>
           {runPromptTokens !== undefined ? (
@@ -242,8 +220,8 @@ export function ContextUsage({
               <dt className="text-muted-foreground">Run spend</dt>
               <dd className="text-right tabular-nums">
                 {runUsageEstimated ? '~' : ''}
-                {runPromptTokens.toLocaleString()}
-                {runPromptCap ? ` of ${runPromptCap.toLocaleString()}` : ''}
+                {formatCount(runPromptTokens)}
+                {runPromptCap ? ` of ${formatCount(runPromptCap)}` : ''}
               </dd>
             </>
           ) : null}

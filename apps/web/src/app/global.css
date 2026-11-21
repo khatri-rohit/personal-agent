@@ -232,6 +232,27 @@ button.trail-line:focus-visible {
   left: max(1.25rem, calc(50% - var(--reading-column) / 2 - 3rem));
 }
 
+/* Breadcrumb ancestors: quiet until hovered, so the thread name leads. */
+.crumb-link {
+  color: var(--muted-foreground);
+  border-radius: 0.25rem;
+  transition: color 120ms ease;
+}
+.crumb-link:hover,
+.crumb-link:focus-visible {
+  color: var(--foreground);
+}
+.crumb-link:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--ring) 50%, transparent);
+  outline-offset: 2px;
+}
+
+/* Jump-to-latest: mirrors the rail in the right gutter, so it never sits on
+   the text being read. On narrow screens it falls back to the corner. */
+.jump-to-latest {
+  right: max(1rem, calc(50% - var(--reading-column) / 2 - 3rem));
+}
+
 html {
   scroll-behavior: smooth;
 }

@@ -1045,7 +1045,10 @@ export function ChatInput({
             variant={showStopButton ? 'secondary' : 'default'}
             onClick={handlePrimaryAction}
             disabled={!showStopButton && !canSend}
-            className="shrink-0 rounded-full"
+            // Empty composer: a neutral chip, not a washed-out accent that
+            // reads as broken. The accent appears once there is something
+            // to send.
+            className="shrink-0 rounded-full disabled:bg-muted disabled:text-subtle-foreground disabled:opacity-100"
             aria-label={showStopButton ? 'Stop generating' : 'Send message'}
           >
             {showStopButton ? (

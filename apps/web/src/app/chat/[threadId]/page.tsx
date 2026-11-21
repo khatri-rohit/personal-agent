@@ -76,13 +76,15 @@ export default function ChatThreadPage({
       header={<ChatHeader threadId={threadId} />}
       footer={
         <div className="relative flex min-w-0 flex-col">
-          {/* Zone 2 — the live dock: one fixed-height line overlaying the
-              transcript's constant bottom room, so neither the composer nor
-              the conversation resizes during a run. The open question is
+          {/* Zone 2 — the live dock: one fixed-height line in flow above
+              the composer. In flow, not overlaid: an overlay covers whatever
+              the reader has open at the bottom of the transcript (an
+              expanded tool group). The transcript shortens by one line when
+              a run starts and grows back when it ends. The open question is
               Zone 3 and lives inline in the conversation (MessageList). */}
           {isRunning ? (
-            <div className="pointer-events-none absolute inset-x-0 bottom-full z-10 px-4 pb-2 sm:px-6">
-              <div className="reading-text-width pointer-events-auto">
+            <div className="relative z-10 px-4 pt-2 sm:px-6">
+              <div className="reading-text-width">
                 <LiveDock
                   phase={
                     chatState.pendingChoices.length > 0

@@ -39,8 +39,8 @@ function useCoarseNow(active: boolean): number {
  * many sub-agents are out — never the current tool step, which the newest
  * tool line in the conversation already reads in place.
  *
- * It overlays the transcript at a constant height (the list keeps constant
- * bottom room while running), so nothing reflows. Detail (plan, live
+ * It sits in flow above the composer at a constant height, so it never
+ * covers the transcript and never resizes mid-run. Detail (plan, live
  * sub-agents with links) opens upward only on click.
  */
 export function LiveDock({

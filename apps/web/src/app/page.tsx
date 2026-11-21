@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { normalizeRunPosture, type MessageAttachment } from '@agent/agent-models';
@@ -14,9 +14,8 @@ import { useThreads } from '@/features/conversation/use-agent-run';
 import { createThread, removeThread } from '@/features/threads/thread-cache';
 import { toastError } from '@/hooks/use-toast';
 import {
-  readStoredComposerLocal,
-  readStoredComposerModel,
-  readStoredContextWindowMode,
+  readStoredComposerPrefs,
+  SERVER_COMPOSER_PREFS,
   writeStoredComposerLocal,
   writeStoredComposerModel,
 } from '@/features/composer/ollama-models';
@@ -31,16 +30,12 @@ import {
 /** Must match ChatInput draft key for the home composer. */
 const HOME_DRAFT_SCOPE = '__home__';
 
-const defaultOptions = (webSearch: boolean): ComposerOptions => {
-  const local = readStoredComposerLocal();
-  return {
-    webSearch,
-    local,
-    model: readStoredComposerModel(local),
-    posture: 'agent',
-    contextWindowMode: readStoredContextWindowMode(),
-  };
-};
+// Server-safe start; stored prefs are applied after mount.
+const defaultOptions = (webSearch: boolean): ComposerOptions => ({
+  webSearch,
+  ...SERVER_COMPOSER_PREFS,
+  posture: 'agent',
+});
 
 function restoreHomeDraft(content: string, attachments?: MessageAttachment[]) {
   try {
@@ -67,6 +62,11 @@ export default function HomePage() {
   const [composerOptions, setComposerOptions] = useState<ComposerOptions>(() =>
     defaultOptions(true),
   );
+  // Browser storage after mount, so server HTML matches the first render.
+  useEffect(() => {
+    const stored = readStoredComposerPrefs();
+    setComposerOptions((prev) => ({ ...prev, ...stored }));
+  }, []);
 
   const recentThreads = useMemo(() => {
     return (threads ?? [])

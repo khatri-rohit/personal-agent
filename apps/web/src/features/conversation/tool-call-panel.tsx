@@ -56,9 +56,26 @@ function parseArgs(raw?: string): Record<string, unknown> {
       return parsed as Record<string, unknown>;
     }
   } catch {
-    /* truncated live previews are not always JSON */
+    // Live previews are cut at 200 chars by core, so a long command or path
+    // is not valid JSON. Salvage the string fields (the last may be cut off)
+    // so the line still says what is running instead of a generic word.
+    return salvageStringFields(raw);
   }
   return {};
+}
+
+function salvageStringFields(raw: string): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const field = /"([A-Za-z_]\w*)"\s*:\s*"((?:[^"\\]|\\.)*)("|$)/g;
+  for (const match of raw.matchAll(field)) {
+    const [, key, body, closed] = match;
+    try {
+      out[key] = JSON.parse(`"${body.replace(/\\$/, '')}"`) + (closed ? '' : '…');
+    } catch {
+      out[key] = body;
+    }
+  }
+  return out;
 }
 
 function fileNameFromPath(raw: string): string {
@@ -167,8 +184,15 @@ export function summarizeToolRow(row: ToolCallRow): ToolSummary {
         title: asString(args.claim) || 'finding',
         action: 'Finding',
       };
-    default:
-      return { kind: 'other', title: row.toolName, action: row.toolName };
+    default: {
+      // The tool name is already the action; the title is the first string
+      // argument (a skill name, a key), never the name again
+      // ("load_skill load_skill").
+      const first = Object.values(args).find(
+        (value): value is string => typeof value === 'string' && value.trim() !== '',
+      );
+      return { kind: 'other', title: first ?? '', action: row.toolName };
+    }
   }
 }
 
@@ -190,6 +214,7 @@ function groupHeader(rows: ToolCallRow[]): GroupHeader {
   const editFiles: string[] = [];
   const otherActions: string[] = [];
   let searches = 0;
+  let searchTitle = '';
   let commands = 0;
   let fetches = 0;
   let plus = 0;
@@ -214,6 +239,7 @@ function groupHeader(rows: ToolCallRow[]): GroupHeader {
       case 'grep':
       case 'web_search':
         searches += 1;
+        searchTitle = summary.title;
         break;
       case 'run_terminal':
         commands += 1;
@@ -230,7 +256,10 @@ function groupHeader(rows: ToolCallRow[]): GroupHeader {
   const parts: string[] = [];
   if (readFiles.length === 1) parts.push(`Read ${readFiles[0]}`);
   else if (readFiles.length > 1) parts.push(`Read ${readFiles.length} files`);
-  if (searches === 1) parts.push('Searched');
+  // A lone search names its pattern/query; a bare "Searched" says nothing.
+  if (searches === 1 && searchTitle) {
+    parts.push(`Searched ${truncateMiddle(searchTitle, 40)}`);
+  } else if (searches === 1) parts.push('Searched');
   else if (searches > 1) parts.push(`Searched ${searches} times`);
   if (editFiles.length === 1) parts.push(`Edited ${editFiles[0]}`);
   else if (editFiles.length > 1) parts.push(`Edited ${editFiles.length} files`);
@@ -293,10 +322,9 @@ const RUNNING_VERB: Record<string, string> = {
 function runningLine(row: ToolCallRow, doneCount: number): string {
   const summary = summarizeToolRow(row);
   const verb = RUNNING_VERB[summary.action] ?? summary.action;
-  const what =
-    summary.kind === 'terminal' ? truncateMiddle(summary.title, 64) : summary.title;
+  const what = truncateMiddle(summary.title, 64);
   const done = doneCount > 0 ? ` · ${doneCount} done` : '';
-  return `${verb} ${what}${done}`;
+  return `${[verb, what].filter(Boolean).join(' ')}${done}`;
 }
 
 function truncateMiddle(text: string, max: number): string {

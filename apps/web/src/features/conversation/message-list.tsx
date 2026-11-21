@@ -214,7 +214,8 @@ export function MessageList({
   return (
     <div className="relative flex min-h-0 flex-1">
       {showJumpToBottom && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-20 z-30 flex justify-center">
+        // In the right gutter beside the reading column, not over the prose.
+        <div className="jump-to-latest pointer-events-none absolute bottom-4 z-30">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -242,10 +243,7 @@ export function MessageList({
       <div
         ref={scrollRef}
         className={cn(
-          'min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto scrollbar-gutter-stable [overflow-anchor:none]',
-          // Constant room under the newest line for the one-line live dock
-          // for the whole run — it never grows, so nothing reflows mid-run.
-          isRunning ? 'pb-14' : 'pb-5',
+          'min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto scrollbar-gutter-stable [overflow-anchor:none] pb-5',
         )}
       >
         <div className="reading-column px-4 py-5 sm:px-6">

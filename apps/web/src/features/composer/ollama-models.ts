@@ -390,4 +390,31 @@ export function writeStoredContextWindowMode(mode: ContextWindowMode): void {
   }
 }
 
+export type StoredComposerPrefs = {
+  local: boolean;
+  model: string;
+  contextWindowMode: ContextWindowMode;
+};
+
+/**
+ * What the server renders before browser storage is readable. Composer
+ * state starts here and takes the stored prefs in a mount effect, so the
+ * server HTML and the first client render match (no hydration mismatch).
+ */
+export const SERVER_COMPOSER_PREFS: StoredComposerPrefs = {
+  local: false,
+  model: DEFAULT_OLLAMA_MODEL,
+  contextWindowMode: 'default',
+};
+
+/** Browser-only: call from an effect, never during render. */
+export function readStoredComposerPrefs(): StoredComposerPrefs {
+  const local = readStoredComposerLocal();
+  return {
+    local,
+    model: readStoredComposerModel(local),
+    contextWindowMode: readStoredContextWindowMode(),
+  };
+}
+
 export { DEFAULT_OLLAMA_MODEL };
