@@ -353,3 +353,9 @@ export {
   reviewFingerprintKey,
   sameReviewFingerprint,
 } from './lib/review.js';
+export type { VoiceCapabilities, VoiceProvider } from './lib/voice.js';
+export {
+  VOICE_OFF,
+  parseVoiceCapabilities,
+  parseVoiceProvider,
+} from './lib/voice.js';

@@ -1,7 +1,15 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { Check, Copy, Pencil, RotateCcw } from 'lucide-react';
+import {
+  Check,
+  Copy,
+  Loader2,
+  Pencil,
+  RotateCcw,
+  Square,
+  Volume2,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
@@ -11,9 +19,48 @@ import {
 import { toastError } from '@/hooks/use-toast';
 import { copyText } from '@/lib/copy-text';
 import { cn } from '@/lib/utils';
+import { useReadAloudEnabled } from '@/lib/voice-prefs';
+import { useReadAloud } from './read-aloud';
+
+const ACTION_BUTTON =
+  'type-caption h-7 gap-1.5 px-2 text-muted-foreground hover:text-foreground';
+
+/** Play / stop this reply aloud. Rendered only when read-aloud is enabled. */
+function ReadAloudButton({ id, content }: { id: string; content: string }) {
+  const { status, toggle } = useReadAloud(id, content);
+  const busy = status !== 'idle';
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className={cn(ACTION_BUTTON, busy && 'text-foreground')}
+          onClick={toggle}
+          disabled={!content.trim()}
+          aria-pressed={busy}
+        >
+          {status === 'loading' ? (
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          ) : status === 'playing' ? (
+            <Square className="size-3 fill-current" aria-hidden />
+          ) : (
+            <Volume2 className="size-3.5" aria-hidden />
+          )}
+          {busy ? 'Stop' : 'Listen'}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>
+        {busy ? 'Stop reading aloud' : 'Read this reply aloud'}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 export function MessageActions({
   content,
+  readAloudId,
   align = 'start',
   showRetry = false,
   onRetry,
@@ -23,6 +70,8 @@ export function MessageActions({
   className,
 }: {
   content: string;
+  /** Message id; when set and read-aloud is on, a Listen button appears. */
+  readAloudId?: string;
   align?: 'start' | 'end';
   showRetry?: boolean;
   onRetry?: () => void | Promise<void>;
@@ -31,6 +80,7 @@ export function MessageActions({
   disabled?: boolean;
   className?: string;
 }) {
+  const readAloudOn = useReadAloudEnabled();
   const [copied, setCopied] = useState(false);
   const [confirmRetry, setConfirmRetry] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -90,6 +140,10 @@ export function MessageActions({
         </TooltipTrigger>
         <TooltipContent>Copy message</TooltipContent>
       </Tooltip>
+
+      {readAloudOn && readAloudId ? (
+        <ReadAloudButton id={readAloudId} content={content} />
+      ) : null}
 
       {showEdit && onEdit && (
         <Tooltip>

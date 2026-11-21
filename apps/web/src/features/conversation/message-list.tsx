@@ -747,7 +747,7 @@ const AssistantMessage = memo(function AssistantMessage({
   );
 });
 
-/** Time · work summary on the left, Copy/Retry for the final reply on the right. */
+/** Time · work summary on the left, Copy/Listen/Retry for the final reply on the right. */
 function TurnFooter({
   message,
   workSummary,
@@ -773,6 +773,7 @@ function TurnFooter({
     >
       <MessageActions
         content={message.content}
+        readAloudId={message.id}
         align="start"
         showRetry={showRetry}
         onRetry={onRetry}

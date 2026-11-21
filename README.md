@@ -85,7 +85,7 @@ Profile defaults live in `packages/agent-models/src/lib/mode.ts` (`HOME_MODE` / 
 - **Ollama** for chat: cloud API key and/or local `OLLAMA_BASE_URL` ([docs](https://docs.ollama.com))
 - **Web search/fetch** always run the same layered pipeline (Ollama → Firecrawl → Tavily; fetch then **local HTTP**). Keys are credentials for a layer, not a router. Firecrawl/Tavily keyless still work without a dedicated search key.
 - **Redis** (optional but required for async **thread title** jobs): local Docker or existing instance — see [docker/README.md](./docker/README.md)
-- **Voice STT** (optional): default **browser** Web Speech API; optional **Speaches** via Docker — see env table + [docker/README.md](./docker/README.md)
+- **Voice add-ons** (optional, off per reader until enabled in Settings → Voice add-ons): dictation (STT) and read-aloud (TTS). Default **browser** APIs; optional **Speaches** (Whisper + Kokoro) via Docker — see env table + [docker/README.md](./docker/README.md). Neither sits on the run path.
 
 Ollama **chat** uses the OpenAI-compatible endpoint (`OLLAMA_BASE_URL=https://ollama.com/v1`). Web tools are independent of which model is chatting: `tools/web/router.ts` tries Ollama, then Firecrawl, then Tavily; `web_fetch` then tries local HTTP. Keyless Firecrawl/Tavily tiers are shared / rate-limited — not a production SLA.
 
@@ -108,13 +108,16 @@ Host-run API (typical dev) — see [.env.example](./.env.example):
 | `FIRECRAWL_API_KEY`              | Optional — higher Firecrawl limits (keyless works without it)       |
 | `TAVILY_API_KEY`                 | Optional — higher Tavily limits (keyless works without it)          |
 | `AGENT_HOME`                     | Session catalog/ledger root (default `~/.local/personal-assistant`) |
-| `VOICE_STT_PROVIDER`             | `browser` (default) \| `speaches` \| `off`                          |
-| `NEXT_PUBLIC_VOICE_STT_PROVIDER` | Same value for the web app (must match)                             |
+| `VOICE_STT_PROVIDER`             | Dictation: `browser` (default) \| `speaches` \| `off`. Web reads it from `/api/voice/capabilities` |
 | `SPEACHES_BASE_URL`              | Speaches only — STT proxy base URL                                  |
 | `SPEACHES_STT_MODEL`             | Speaches only — e.g. distil-whisper-large-v3                        |
 | `VOICE_STT_LANGUAGE`             | Speaches `language` (default `en`)                                  |
 | `VOICE_STT_PROMPT`               | Speaches vocabulary hint                                            |
 | `VOICE_STT_VAD_FILTER`           | Speaches server-side Silero VAD (default `true`)                    |
+| `VOICE_TTS_PROVIDER`             | Read-aloud: `browser` (default) \| `speaches` \| `off`. Web reads it from `/api/voice/capabilities` |
+| `SPEACHES_TTS_MODEL`             | Speaches only — e.g. `speaches-ai/Kokoro-82M-v1.0-ONNX-fp16`        |
+| `VOICE_TTS_VOICE`                | Kokoro voice (default `af_heart`)                                   |
+| `VOICE_TTS_SPEED`                | Speech speed 0.5–2.0 (default `1`)                                  |
 
 Web app (optional override):
 

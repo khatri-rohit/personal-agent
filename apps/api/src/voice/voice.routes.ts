@@ -1,6 +1,35 @@
 import express, { Router, type Request, type Response } from 'express';
+import {
+  parseVoiceProvider,
+  type VoiceCapabilities,
+} from '@agent/agent-models';
+import {
+  buildPrompt,
+  gatedText,
+  type VerboseTranscription,
+} from './transcript-gate';
 
-const router = Router();
+/**
+ * Voice add-on: the API's one module for speech, and the single source of
+ * truth for which voice backends exist. It owns every voice setting and
+ * decides which routes exist; main.ts only mounts `voiceRouter`, and the web
+ * learns the providers from GET /api/voice/capabilities. Nothing on the run
+ * path calls it, and a missing or broken Speaches only fails the voice
+ * request itself.
+ */
+
+/** Blank or non-numeric env falls back (Number('') is 0, not "unset"). */
+function envNumber(raw: string | undefined, fallback: number): number {
+  if (raw == null || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** browser | speaches | off (default browser). Speaches routes mount only for `speaches`. */
+export const voiceProviders: VoiceCapabilities = {
+  stt: parseVoiceProvider(process.env.VOICE_STT_PROVIDER),
+  tts: parseVoiceProvider(process.env.VOICE_TTS_PROVIDER),
+};
 
 const SPEACHES_BASE_URL = (
   process.env.SPEACHES_BASE_URL ?? 'http://127.0.0.1:8000'
@@ -12,72 +41,15 @@ const VOICE_STT_PROMPT = (
   process.env.VOICE_STT_PROMPT ??
   'desk, Speaches, Nx monorepo, Ollama, agent-core, RunManager, ChatInput'
 ).trim();
-const MAX_AUDIO_BYTES = Number(process.env.VOICE_MAX_AUDIO_BYTES ?? 10_485_760);
+const MAX_AUDIO_BYTES = envNumber(process.env.VOICE_MAX_AUDIO_BYTES, 10_485_760);
 /** Server-side Silero VAD in faster-whisper: strips silence before decoding. */
 const VOICE_STT_VAD_FILTER =
   (process.env.VOICE_STT_VAD_FILTER ?? 'true').trim().toLowerCase() !== 'false';
 
-/**
- * Whisper's own silence rule (openai/whisper transcribe.py): a segment is
- * silence when the no-speech probability is high AND the decode was unsure.
- * Either alone is too eager — real quiet speech can score high no_speech.
- */
-const NO_SPEECH_PROB = 0.6;
-const LOW_AVG_LOGPROB = -1.0;
-/** Above this the decoder looped ("thank you thank you thank you…"). */
-const MAX_COMPRESSION_RATIO = 2.4;
-/** Whisper's prompt window is ~224 tokens; keep context well inside it. */
-const MAX_CONTEXT_CHARS = 400;
-
-type WhisperSegment = {
-  text?: string;
-  no_speech_prob?: number;
-  avg_logprob?: number;
-  compression_ratio?: number;
-};
-
-type VerboseTranscription = {
-  text?: string;
-  segments?: WhisperSegment[];
-};
-
-function isSpeechSegment(seg: WhisperSegment): boolean {
-  const noSpeech = seg.no_speech_prob ?? 0;
-  const logprob = seg.avg_logprob ?? 0;
-  if (noSpeech > NO_SPEECH_PROB && logprob < LOW_AVG_LOGPROB) return false;
-  if ((seg.compression_ratio ?? 0) > MAX_COMPRESSION_RATIO) return false;
-  return true;
-}
-
-/** Keep only segments that pass the silence/loop gates. */
-function gatedText(data: VerboseTranscription): string {
-  if (!Array.isArray(data.segments)) return (data.text ?? '').trim();
-  return data.segments
-    .filter(isSpeechSegment)
-    .map((s) => (s.text ?? '').trim())
-    .filter(Boolean)
-    .join(' ')
-    .trim();
-}
-
-/**
- * Vocabulary hint first, then the tail of what was dictated so far, so the
- * decoder continues the sentence instead of starting cold.
- */
-function buildPrompt(contextHeader: unknown): string {
-  let context = '';
-  if (typeof contextHeader === 'string' && contextHeader) {
-    try {
-      context = decodeURIComponent(contextHeader).trim();
-    } catch {
-      context = '';
-    }
-  }
-  if (context.length > MAX_CONTEXT_CHARS) {
-    context = context.slice(-MAX_CONTEXT_CHARS);
-  }
-  return [VOICE_STT_PROMPT, context].filter(Boolean).join('. ');
-}
+/** Speech → text (Whisper). */
+const sttRouter = Router();
+/** Text → speech (Kokoro). */
+const ttsRouter = Router();
 
 /**
  * POST /api/voice/transcribe
@@ -88,7 +60,7 @@ function buildPrompt(contextHeader: unknown): string {
  * Proxies to Speaches OpenAI-compatible /v1/audio/transcriptions.
  * Does not touch Ollama or agent-core.
  */
-router.post(
+sttRouter.post(
   '/transcribe',
   express.raw({
     type: (req) => {
@@ -130,7 +102,10 @@ router.post(
       form.append('language', VOICE_STT_LANGUAGE);
       form.append('temperature', '0');
       form.append('vad_filter', VOICE_STT_VAD_FILTER ? 'true' : 'false');
-      const prompt = buildPrompt(req.headers['x-voice-context']);
+      const prompt = buildPrompt(
+        VOICE_STT_PROMPT,
+        req.headers['x-voice-context'],
+      );
       if (prompt) form.append('prompt', prompt);
 
       const upstream = await fetch(
@@ -164,4 +139,79 @@ router.post(
   },
 );
 
-export { router as voiceRouter };
+const SPEACHES_TTS_MODEL =
+  process.env.SPEACHES_TTS_MODEL ?? 'speaches-ai/Kokoro-82M-v1.0-ONNX-fp16';
+const VOICE_TTS_VOICE = process.env.VOICE_TTS_VOICE ?? 'af_heart';
+const VOICE_TTS_SPEED = clampSpeed(envNumber(process.env.VOICE_TTS_SPEED, 1));
+/** The web client sends sentence-sized chunks; this only stops abuse. */
+const MAX_TTS_CHARS = 2_000;
+
+function clampSpeed(n: number): number {
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(2, Math.max(0.5, n));
+}
+
+/**
+ * POST /api/voice/speak
+ * Body: { text: string } — already plain speech text (markdown stripped client-side).
+ * Returns: audio/mpeg bytes.
+ *
+ * Proxies to Speaches OpenAI-compatible /v1/audio/speech (Kokoro).
+ * Does not touch Ollama or agent-core.
+ */
+ttsRouter.post('/speak', async (req: Request, res: Response) => {
+  const text =
+    typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+  if (!text) return res.status(400).json({ error: 'text is required' });
+  if (text.length > MAX_TTS_CHARS) {
+    return res.status(413).json({ error: 'text too long' });
+  }
+
+  try {
+    const upstream = await fetch(`${SPEACHES_BASE_URL}/v1/audio/speech`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: SPEACHES_TTS_MODEL,
+        input: text,
+        voice: VOICE_TTS_VOICE,
+        response_format: 'mp3',
+        speed: VOICE_TTS_SPEED,
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!upstream.ok) {
+      const detail = await upstream.text().catch(() => '');
+      console.error(
+        '[voice] speaches tts error',
+        upstream.status,
+        detail.slice(0, 500),
+      );
+      return res
+        .status(502)
+        .json({ error: 'Speech service failed', status: upstream.status });
+    }
+
+    const audio = Buffer.from(await upstream.arrayBuffer());
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.send(audio);
+  } catch (err) {
+    console.error('[voice] speaches unreachable (tts)', err);
+    return res.status(503).json({ error: 'Voice service unavailable' });
+  }
+});
+
+/**
+ * Mounted at /api/voice. `/capabilities` is always there (a browser-only or
+ * voice-off deployment still has to say so); Speaches routes only when their
+ * provider is `speaches`.
+ */
+export const voiceRouter = Router();
+voiceRouter.get('/capabilities', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(voiceProviders);
+});
+if (voiceProviders.stt === 'speaches') voiceRouter.use(sttRouter);
+if (voiceProviders.tts === 'speaches') voiceRouter.use(ttsRouter);

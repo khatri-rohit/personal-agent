@@ -2,29 +2,15 @@
 
 import { useBrowserSpeechDictation } from '@/features/composer/use-browser-speech-dictation';
 import { useVoiceDictation } from '@/features/composer/use-voice-dictation';
-
-type VoiceSttProvider = 'browser' | 'speaches' | 'off';
-
-const VOICE_PROVIDERS = new Set<VoiceSttProvider>([
-  'browser',
-  'speaches',
-  'off',
-]);
-
-/** Default `browser` so forks work without Docker / Speaches / GPU. */
-function resolveVoiceSttProvider(): VoiceSttProvider {
-  const raw = (process.env.NEXT_PUBLIC_VOICE_STT_PROVIDER ?? 'browser')
-    .trim()
-    .toLowerCase();
-  if (VOICE_PROVIDERS.has(raw as VoiceSttProvider)) {
-    return raw as VoiceSttProvider;
-  }
-  return 'browser';
-}
+import {
+  useVoiceCapabilities,
+  useVoiceInputEnabled,
+  type VoiceProvider,
+} from '@/lib/voice-prefs';
 
 export type VoiceInputController = {
   enabled: boolean;
-  provider: VoiceSttProvider;
+  provider: VoiceProvider;
   active: boolean;
   level: number;
   transcribing: boolean;
@@ -41,25 +27,26 @@ type Options = {
 };
 
 /**
- * Composer voice entrypoint. Provider comes from NEXT_PUBLIC_VOICE_STT_PROVIDER:
- * - browser  — Web Speech API (default; no Docker)
- * - speaches — local Speaches via apps/api
- * - off      — hide voice UI
+ * Composer voice entrypoint. Live only when the deployment provides a backend
+ * (API capabilities: stt browser | speaches) AND the reader turned
+ * "Voice input" on in Settings. Otherwise both hooks stay idle: no mic,
+ * no Alt+A listener, no VAD download.
  */
 export function useVoiceInput({ onTranscript }: Options): VoiceInputController {
-  const provider = resolveVoiceSttProvider();
+  const provider = useVoiceCapabilities().stt;
+  const on = useVoiceInputEnabled();
 
   const speaches = useVoiceDictation({
     onTranscript,
-    enabled: provider === 'speaches',
+    enabled: on && provider === 'speaches',
   });
 
   const browser = useBrowserSpeechDictation({
     onTranscript,
-    enabled: provider === 'browser',
+    enabled: on && provider === 'browser',
   });
 
-  if (provider === 'off') {
+  if (!on || provider === 'off') {
     return {
       enabled: false,
       provider,
@@ -72,27 +59,15 @@ export function useVoiceInput({ onTranscript }: Options): VoiceInputController {
     };
   }
 
-  if (provider === 'browser') {
-    return {
-      enabled: true,
-      provider,
-      active: browser.active,
-      level: browser.level,
-      transcribing: browser.transcribing,
-      error: browser.error,
-      toggle: browser.toggle,
-      stop: browser.stop,
-    };
-  }
-
+  const live = provider === 'browser' ? browser : speaches;
   return {
     enabled: true,
     provider,
-    active: speaches.active,
-    level: speaches.level,
-    transcribing: speaches.transcribing,
-    error: speaches.error,
-    toggle: speaches.toggle,
-    stop: speaches.stop,
+    active: live.active,
+    level: live.level,
+    transcribing: live.transcribing,
+    error: live.error,
+    toggle: live.toggle,
+    stop: live.stop,
   };
 }
