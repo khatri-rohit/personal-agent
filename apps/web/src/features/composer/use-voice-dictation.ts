@@ -1,176 +1,86 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { MicVAD } from '@ricky0123/vad-web';
 import { transcribeAudio } from '@/api/voice-client';
 import { isUsableTranscript } from '@/features/composer/voice-transcript';
 
-/** Mic energy sample interval. */
-const VAD_TICK_MS = 80;
-/** RMS above this counts as speech. */
-const SPEECH_RMS = 0.02;
-/** End a chunk after this much silence (while listening). */
-const SILENCE_AFTER_SPEECH_MS = 700;
-/** Ignore trailing silence until the chunk has this much audio. */
-const MIN_SPEECH_MS = 280;
+/** vad-web joins base + filename, so a base must end in "/". Empty → unset. */
+function assetBase(raw: string | undefined): string | null {
+  const v = raw?.trim();
+  if (!v) return null;
+  return v.endsWith('/') ? v : `${v}/`;
+}
+
 /**
- * Force-cut a chunk while the user is still talking so STT starts early
- * (near-realtime), instead of waiting for a long pause or a 10s cap.
+ * Silero VAD assets: AudioWorklet + ONNX model. Pinned to the installed
+ * @ricky0123/vad-web version (bump with package.json). Env override points at
+ * a self-hosted copy for offline use. Inlined at build time (NEXT_PUBLIC_).
  */
-const FORCE_CHUNK_MS = 2_000;
-const MIN_BLOB_BYTES = 1_200;
+const VAD_ASSET_BASE =
+  assetBase(process.env.NEXT_PUBLIC_VAD_ASSET_BASE) ??
+  'https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.31/dist/';
+/**
+ * onnxruntime wasm must match the bundled onnxruntime-web JS exactly, so the
+ * default is built from the runtime's own version (see start()).
+ */
+const ORT_WASM_BASE_OVERRIDE = assetBase(process.env.NEXT_PUBLIC_ORT_WASM_BASE);
+
+/** Silero speech probability that opens an utterance. */
+const POSITIVE_SPEECH = 0.5;
+/** Probability under which a frame counts as silence (Silero: positive − 0.15). */
+const NEGATIVE_SPEECH = 0.35;
+/** Silence that ends an utterance. */
+const END_SILENCE_MS = 800;
+/** Audio kept from before speech was detected, so the first word survives. */
+const PRE_SPEECH_PAD_MS = 300;
+/** Shorter "speech" is a cough / click — dropped without calling STT. */
+const MIN_SPEECH_MS = 400;
+/** Cut a long monologue so text keeps arriving and stays inside Whisper's 30 s window. */
+const MAX_UTTERANCE_MS = 25_000;
+/** Tail of this session's text sent as the Whisper prompt. */
+const CONTEXT_CHARS = 400;
+
+const SAMPLE_RATE = 16_000;
 
 type MicSession = {
+  vad: MicVAD;
   stream: MediaStream;
-  ctx: AudioContext;
-  analyser: AnalyserNode;
-  mimeType: string;
-  /** Ends listening only — does not cancel in-flight STT. */
-  listenAbort: AbortController;
+  cutTimer: ReturnType<typeof setInterval> | null;
 };
 
-function pickMimeType(): string {
-  if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-    return 'audio/webm;codecs=opus';
-  }
-  if (MediaRecorder.isTypeSupported('audio/webm')) return 'audio/webm';
-  return 'audio/mp4';
-}
-
-function readRms(analyser: AnalyserNode): number {
-  const data = new Uint8Array(analyser.fftSize);
-  analyser.getByteTimeDomainData(data);
+function frameLevel(frame: Float32Array): number {
   let sum = 0;
-  for (let i = 0; i < data.length; i++) {
-    const v = ((data[i] ?? 128) - 128) / 128;
+  for (let i = 0; i < frame.length; i++) {
+    const v = frame[i] ?? 0;
     sum += v * v;
   }
-  return Math.sqrt(sum / data.length);
-}
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new DOMException('Aborted', 'AbortError'));
-      return;
-    }
-    const onAbort = () => {
-      clearTimeout(id);
-      reject(new DOMException('Aborted', 'AbortError'));
-    };
-    const id = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-async function waitForSpeech(
-  session: MicSession,
-): Promise<'speech' | 'aborted'> {
-  const { signal } = session.listenAbort;
-  while (!signal.aborted) {
-    if (readRms(session.analyser) >= SPEECH_RMS) return 'speech';
-    try {
-      await sleep(VAD_TICK_MS, signal);
-    } catch {
-      return 'aborted';
-    }
-  }
-  return 'aborted';
+  return Math.min(1, Math.sqrt(sum / Math.max(1, frame.length)) * 6);
 }
 
 /**
- * Record until silence, force-chunk, or listen-stop.
- * On listen-stop, flushes the current recorder so the last words are kept.
+ * AGC off: in a quiet room it lifts the noise floor until fans and keys look
+ * like speech. Noise suppression stays on; echo cancellation keeps speaker
+ * playback out of the mic.
  */
-function recordChunk(session: MicSession): Promise<Blob | null> {
-  return new Promise((resolve) => {
-    const { signal } = session.listenAbort;
-    if (signal.aborted) {
-      resolve(null);
-      return;
-    }
-
-    let recorder: MediaRecorder;
-    try {
-      recorder = MediaRecorder.isTypeSupported(session.mimeType)
-        ? new MediaRecorder(session.stream, { mimeType: session.mimeType })
-        : new MediaRecorder(session.stream);
-    } catch {
-      resolve(null);
-      return;
-    }
-
-    const chunks: BlobPart[] = [];
-    const startedAt = performance.now();
-    let silenceMs = 0;
-    let vadTimer: ReturnType<typeof setInterval> | null = null;
-    let maxTimer: ReturnType<typeof setTimeout> | null = null;
-    let settled = false;
-
-    const cleanup = () => {
-      if (vadTimer) clearInterval(vadTimer);
-      if (maxTimer) clearTimeout(maxTimer);
-      signal.removeEventListener('abort', onAbort);
-    };
-
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      if (recorder.state === 'recording') {
-        try {
-          recorder.stop();
-        } catch {
-          resolve(null);
-        }
-      } else {
-        resolve(null);
-      }
-    };
-
-    const onAbort = () => finish();
-
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunks.push(e.data);
-    };
-
-    recorder.onstop = () => {
-      const blob = new Blob(chunks, {
-        type: recorder.mimeType || session.mimeType,
-      });
-      resolve(blob.size >= MIN_BLOB_BYTES ? blob : null);
-    };
-
-    recorder.onerror = () => {
-      cleanup();
-      resolve(null);
-    };
-
-    signal.addEventListener('abort', onAbort, { once: true });
-    recorder.start();
-    maxTimer = setTimeout(finish, FORCE_CHUNK_MS);
-
-    vadTimer = setInterval(() => {
-      if (signal.aborted) {
-        finish();
-        return;
-      }
-      if (readRms(session.analyser) >= SPEECH_RMS) {
-        silenceMs = 0;
-        return;
-      }
-      if (performance.now() - startedAt < MIN_SPEECH_MS) return;
-      silenceMs += VAD_TICK_MS;
-      if (silenceMs >= SILENCE_AFTER_SPEECH_MS) finish();
-    }, VAD_TICK_MS);
+function openMic(): Promise<MediaStream> {
+  return navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: false,
+    },
   });
 }
 
-function releaseMic(session: MicSession) {
-  session.stream.getTracks().forEach((t) => t.stop());
-  void session.ctx.close().catch(() => undefined);
+function releaseSession(session: MicSession) {
+  if (session.cutTimer) clearInterval(session.cutTimer);
+  // destroy() pauses first, which flushes in-progress speech (submitUserSpeechOnPause).
+  void session.vad
+    .destroy()
+    .catch(() => undefined)
+    .finally(() => session.stream.getTracks().forEach((t) => t.stop()));
 }
 
 type VoiceDictationOptions = {
@@ -180,8 +90,9 @@ type VoiceDictationOptions = {
 };
 
 /**
- * Speaches push-to-talk dictation (MediaRecorder → /api/voice/transcribe).
- * Short chunks while speaking; stop ends listening only (STT still drains).
+ * Speaches dictation: Silero VAD in the browser cuts whole utterances
+ * (speech → silence), each is sent as 16 kHz WAV to /api/voice/transcribe.
+ * Silence never reaches Whisper. Stop ends listening only (STT still drains).
  */
 export function useVoiceDictation({
   onTranscript,
@@ -193,31 +104,17 @@ export function useVoiceDictation({
   const [error, setError] = useState<string | null>(null);
 
   const sessionRef = useRef<MicSession | null>(null);
+  const startingRef = useRef(false);
+  /** Alt+A pressed again while the detector was still loading. */
+  const cancelStartRef = useRef(false);
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
-  const meterRafRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const pendingRef = useRef(0);
-  /** Serial Speaches chain — one request at a time. */
+  /** Text accepted this session — the prompt context for the next utterance. */
+  const sessionTextRef = useRef('');
+  /** Serial Speaches chain — one request at a time, so context stays ordered. */
   const sttChainRef = useRef(Promise.resolve());
-
-  const stopMeter = useCallback(() => {
-    if (meterRafRef.current != null) {
-      cancelAnimationFrame(meterRafRef.current);
-      meterRafRef.current = null;
-    }
-    setLevel(0);
-  }, []);
-
-  const startMeter = useCallback(() => {
-    const tick = () => {
-      const session = sessionRef.current;
-      if (!session) return;
-      setLevel(Math.min(1, readRms(session.analyser) * 3.2));
-      meterRafRef.current = requestAnimationFrame(tick);
-    };
-    meterRafRef.current = requestAnimationFrame(tick);
-  }, []);
 
   const enqueueTranscribe = useCallback((blob: Blob) => {
     pendingRef.current += 1;
@@ -226,9 +123,13 @@ export function useVoiceDictation({
     const run = async () => {
       try {
         if (!mountedRef.current) return;
-        const text = await transcribeAudio(blob);
+        const context = sessionTextRef.current.slice(-CONTEXT_CHARS);
+        const text = await transcribeAudio(blob, context);
         if (!mountedRef.current) return;
-        if (isUsableTranscript(text)) onTranscriptRef.current(text);
+        if (isUsableTranscript(text)) {
+          sessionTextRef.current = `${sessionTextRef.current} ${text}`.trim();
+          onTranscriptRef.current(text);
+        }
         setError(null);
       } catch (err: unknown) {
         if (!mountedRef.current) return;
@@ -239,92 +140,116 @@ export function useVoiceDictation({
       }
     };
 
-    // One Speaches request at a time; onRejected also runs so the queue continues.
+    // onRejected also runs so the queue continues after a failure.
     sttChainRef.current = sttChainRef.current.then(run, run);
   }, []);
-
-  const runLoop = useCallback(
-    async (session: MicSession) => {
-      try {
-        while (
-          !session.listenAbort.signal.aborted &&
-          sessionRef.current === session
-        ) {
-          const gate = await waitForSpeech(session);
-          if (gate === 'aborted') break;
-
-          const blob = await recordChunk(session);
-          if (blob) enqueueTranscribe(blob);
-
-          // After Alt+A off, recordChunk flushes then abort is set — exit.
-          if (session.listenAbort.signal.aborted) break;
-        }
-      } finally {
-        releaseMic(session);
-        if (sessionRef.current === session) {
-          sessionRef.current = null;
-        }
-      }
-    },
-    [enqueueTranscribe],
-  );
 
   const stop = useCallback(() => {
     const session = sessionRef.current;
     if (!session) return;
-
-    // End listening immediately; STT drain keeps running via enqueueTranscribe.
     sessionRef.current = null;
     setActive(false);
-    stopMeter();
-    session.listenAbort.abort();
-  }, [stopMeter]);
+    setLevel(0);
+    releaseSession(session);
+  }, []);
 
   const start = useCallback(async () => {
-    if (!enabled || sessionRef.current) return;
+    if (!enabled || sessionRef.current || startingRef.current) return;
+    startingRef.current = true;
+    cancelStartRef.current = false;
     setError(null);
+    sessionTextRef.current = '';
 
+    let stream: MediaStream | null = null;
+    let session: MicSession | null = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: true,
-          autoGainControl: true,
+      stream = await openMic();
+      const micStream = stream;
+      const [{ MicVAD, utils }, ort] = await Promise.all([
+        import('@ricky0123/vad-web'),
+        // Same deduped copy vad-web runs (both resolve onnxruntime-web/wasm).
+        import('onnxruntime-web/wasm'),
+      ]);
+      const ortWasmBase =
+        ORT_WASM_BASE_OVERRIDE ??
+        `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ort.env.versions.web}/dist/`;
+
+      let speechStartedAt: number | null = null;
+
+      const vad = await MicVAD.new({
+        model: 'v5',
+        baseAssetPath: VAD_ASSET_BASE,
+        onnxWASMBasePath: ortWasmBase,
+        startOnLoad: false,
+        positiveSpeechThreshold: POSITIVE_SPEECH,
+        negativeSpeechThreshold: NEGATIVE_SPEECH,
+        redemptionMs: END_SILENCE_MS,
+        preSpeechPadMs: PRE_SPEECH_PAD_MS,
+        minSpeechMs: MIN_SPEECH_MS,
+        submitUserSpeechOnPause: true,
+        // One mic stream for the whole session; pause/resume only rewire nodes.
+        getStream: async () => micStream,
+        pauseStream: async () => undefined,
+        resumeStream: async () => micStream,
+        onFrameProcessed: (_probs, frame) => {
+          if (mountedRef.current) setLevel(frameLevel(frame));
+        },
+        onSpeechStart: () => {
+          speechStartedAt = performance.now();
+        },
+        onVADMisfire: () => {
+          speechStartedAt = null;
+        },
+        onSpeechEnd: (audio) => {
+          speechStartedAt = null;
+          const wav = utils.encodeWAV(audio, 1, SAMPLE_RATE, 1, 16);
+          enqueueTranscribe(new Blob([wav], { type: 'audio/wav' }));
         },
       });
 
-      const Ctx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext })
-          .webkitAudioContext;
-      const ctx = new Ctx();
-      if (ctx.state === 'suspended') await ctx.resume();
+      const live: MicSession = { vad, stream: micStream, cutTimer: null };
+      session = live;
 
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      ctx.createMediaStreamSource(stream).connect(analyser);
+      // Long monologue: pause (flushes the utterance) and resume on the same stream.
+      live.cutTimer = setInterval(() => {
+        if (speechStartedAt == null) return;
+        if (performance.now() - speechStartedAt < MAX_UTTERANCE_MS) return;
+        speechStartedAt = null;
+        void vad
+          .pause()
+          .then(() => (sessionRef.current === live ? vad.start() : undefined))
+          .catch(() => undefined);
+      }, 500);
 
-      const session: MicSession = {
-        stream,
-        ctx,
-        analyser,
-        mimeType: pickMimeType(),
-        listenAbort: new AbortController(),
-      };
+      if (!mountedRef.current || cancelStartRef.current) {
+        releaseSession(live);
+        return;
+      }
 
-      sessionRef.current = session;
+      await vad.start();
+      sessionRef.current = live;
       setActive(true);
-      startMeter();
-      void runLoop(session);
-    } catch {
-      setError('Microphone permission denied or unavailable');
+    } catch (err: unknown) {
+      if (session) releaseSession(session);
+      else stream?.getTracks().forEach((t) => t.stop());
+      const denied =
+        err instanceof DOMException &&
+        (err.name === 'NotAllowedError' || err.name === 'NotFoundError');
+      setError(
+        denied
+          ? 'Microphone permission denied or unavailable'
+          : 'Voice detector failed to load',
+      );
       setActive(false);
-      stopMeter();
+      setLevel(0);
+    } finally {
+      startingRef.current = false;
     }
-  }, [enabled, runLoop, startMeter, stopMeter]);
+  }, [enabled, enqueueTranscribe]);
 
   const toggle = useCallback(() => {
-    if (sessionRef.current) stop();
+    if (startingRef.current) cancelStartRef.current = true;
+    else if (sessionRef.current) stop();
     else void start();
   }, [start, stop]);
 
@@ -343,6 +268,7 @@ export function useVoiceDictation({
 
   useEffect(() => {
     if (enabled) return;
+    cancelStartRef.current = true;
     stop();
   }, [enabled, stop]);
 
@@ -352,13 +278,7 @@ export function useVoiceDictation({
       mountedRef.current = false;
       const session = sessionRef.current;
       sessionRef.current = null;
-      if (meterRafRef.current != null) {
-        cancelAnimationFrame(meterRafRef.current);
-      }
-      if (session) {
-        session.listenAbort.abort();
-        releaseMic(session);
-      }
+      if (session) releaseSession(session);
     };
   }, []);
 
