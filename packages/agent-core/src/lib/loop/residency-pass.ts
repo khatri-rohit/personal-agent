@@ -1,4 +1,4 @@
-import { CARD_MARKS } from '@agent/agent-models';
+import { CARD_MARKS, inRunMarks } from '@agent/agent-models';
 
 import { stubLiveToolResults } from '../context/assemble-context';
 import {
@@ -17,27 +17,63 @@ import type { RunState } from './run-state';
 import { recordOverflowText } from './state-card';
 
 /**
+ * What the pass reads from the run, and the fields it writes: the prompt
+ * (`messages`, its job), the residency counters `markLift`, `prefixHeavy`,
+ * `recordedThrough`, `recordBlobSha` and `recordBlobKey`, and the removed
+ * calls it tells read dedupe, skill loads and admission about.
+ */
+export type ResidencyView = Pick<
+  RunState,
+  | 'messages'
+  | 'runStart'
+  | 'iterations'
+  | 'contextBudget'
+  | 'flags'
+  | 'traitsOf'
+  | 'task'
+  | 'runId'
+  | 'trace'
+  | 'readDedupe'
+  | 'skillLoads'
+  | 'markLift'
+  | 'prefixHeavy'
+  | 'recordedThrough'
+  | 'recordBlobSha'
+  | 'recordBlobKey'
+> & {
+  readonly tools: Pick<RunState['tools'], 'definitions'>;
+  readonly webSources: Pick<RunState['webSources'], 'putBlob'>;
+  readonly admission: Pick<RunState['admission'], 'forgetSkillLoads'>;
+};
+
+/**
  * The prompt projection after a tool turn (v2 phase 7). Between boundaries
  * the prompt only grows (new steps are appended); at a boundary it is
  * reshaped once, by every mechanism together, so the cached prefix breaks
  * at one known step instead of at each mechanism's own moment (P3).
  *
  * A boundary is any of: a verified milestone (a check passed after edits),
- * the working set over its cap or with enough stale results to clear, the
- * residue past its mark, a skill body retiring, the overflow guard, or the
- * card's new findings past `CARD_MARKS.recordDeltaTokens`. Once one fires,
- * the cheap removals ride along (stale results and card-only steps go at
- * any size: the prefix is broken anyway), and the run's task record is
- * written into the history as one message, cached until the next boundary.
+ * the whole prompt past the in-run high mark (`inRunMarks`, derived from
+ * the window), a skill body retiring, or the card's new findings past
+ * `CARD_MARKS.recordDeltaTokens`. Once one fires, the free removals ride
+ * along (superseded copies, and card-only steps when folding them saves
+ * more than it writes: the prefix is broken anyway), and the run's task
+ * record is written into the history as one message, cached until the next
+ * boundary.
  *
  * Order: cap oversized recent results and retire skill bodies; milestone
- * fold (before anything trims what it would fold); working set; residue
- * fold; overflow guard; then, at a boundary, the ride-along round and the
- * record message.
+ * fold (before anything trims what it would fold); the pass at the high
+ * mark (card-only steps, then results by value, then the recap fold); then,
+ * at a boundary, the ride-along round and the record message.
  */
-export async function manageResidency(s: RunState): Promise<void> {
+export async function manageResidency(s: ResidencyView): Promise<void> {
   const triggers: string[] = [];
-  if (stubLiveToolResults(s.messages, s.contextBudget, s.runStart, s.flags) > 0) triggers.push('stub');
+  // A result cut here is no longer in the prompt in full: read dedupe must
+  // not answer an identical call with "identical to the earlier result above".
+  const stubbed = stubLiveToolResults(s.messages, s.contextBudget, s.runStart, s.flags, (id) =>
+    s.readDedupe.forget([id]),
+  );
+  if (stubbed > 0) triggers.push('stub');
 
   for (const retired of retireSkillBodies(
     s.messages,
@@ -46,7 +82,7 @@ export async function manageResidency(s: RunState): Promise<void> {
     s.contextBudget.skillResidentIterations,
   )) {
     // A reload after retirement is legitimate, not a repeat.
-    s.guard.forgetSkillLoads();
+    s.admission.forgetSkillLoads();
     s.trace({
       type: 'skill_evicted',
       runId: s.runId,
@@ -79,45 +115,60 @@ export async function manageResidency(s: RunState): Promise<void> {
     }
   }
 
-  if (await workingSetPass(s, s.contextBudget, putBlob)) triggers.push('working_set');
-
-  // Without the card, the record_finding calls' arguments are the only copy
-  // of the findings: steps holding them do not fold.
-  const folded = await foldResidue(s.messages, s.runStart, s.contextBudget, s.tools.definitions, {
-    keepFindingCalls: !s.flags.stateCard,
-    stepOf,
-    putBlob,
-    traitsOf: s.traitsOf,
-  });
-  if (folded) {
-    traceFold(s, folded, 'residue');
-    triggers.push('residue');
-  }
-
-  if (!milestone && !s.prefixHeavy) {
-    const compacted = await compactCurrentRun(
-      s.messages,
-      s.runStart,
-      s.contextBudget,
-      s.tools.definitions,
+  // The one budget: past the high mark (on the whole prompt), one pass down
+  // to the low mark, cheapest loss first. Card-only steps fold, then results
+  // leave by value, then (still over) the oldest steps fold into the recap.
+  // Below the mark nothing leaves: the prompt only grows.
+  const base = inRunMarks(s.contextBudget);
+  if (s.markLift > 0 && estimatePromptTokens(s.messages, s.tools.definitions) <= base.low) s.markLift = 0;
+  const marks = { high: base.high + s.markLift, low: base.low + s.markLift };
+  if (estimatePromptTokens(s.messages, s.tools.definitions) > marks.high) {
+    triggers.push('mark');
+    // Without the card, the record_finding calls' arguments are the only copy
+    // of the findings: steps holding them do not fold.
+    const folded = await foldResidue(s.messages, s.runStart, s.contextBudget, s.tools.definitions, {
+      keepFindingCalls: !s.flags.stateCard,
+      stepOf,
       putBlob,
-      { stepOf, traitsOf: s.traitsOf },
-    );
-    if (compacted) {
-      traceFold(s, compacted, undefined);
-      triggers.push('overflow');
-      if (compacted.prefixHeavy) {
-        // Prior turns alone keep the prompt over the low mark. Folding one
-        // more iteration per call would rewrite the prefix every call, so stop;
-        // pre-run compaction handles this at the next run.
-        s.prefixHeavy = true;
-        s.trace({
-          type: 'context_prefix_heavy',
-          runId: s.runId,
-          iteration: s.iterations,
-          promptTokens: compacted.afterTokens,
-        });
+      requireSaving: true,
+      traitsOf: s.traitsOf,
+    });
+    if (folded) traceFold(s, folded, 'residue');
+    await workingSetPass(s, putBlob, { marks });
+    if (!s.prefixHeavy) {
+      const compacted = await compactCurrentRun(
+        s.messages,
+        s.runStart,
+        s.contextBudget,
+        s.tools.definitions,
+        putBlob,
+        { stepOf, traitsOf: s.traitsOf, marks },
+      );
+      if (compacted) {
+        traceFold(s, compacted, undefined);
+        if (compacted.prefixHeavy) {
+          // Prior turns alone keep the prompt over the low mark. Folding one
+          // more iteration per call would rewrite the prefix every call, so stop;
+          // pre-run compaction handles this at the next run.
+          s.prefixHeavy = true;
+          s.trace({
+            type: 'context_prefix_heavy',
+            runId: s.runId,
+            iteration: s.iterations,
+            promptTokens: compacted.afterTokens,
+          });
+        }
       }
+    }
+    // The pass could not reach the low mark (prior turns, or results it may
+    // not remove): lift both marks by the shortfall, so the next pass waits
+    // for the same real growth as any other instead of firing every step.
+    // The lifted high mark stays inside the input budget: at that ceiling a
+    // pass every step is the lesser cost next to a prompt the window rejects.
+    const after = estimatePromptTokens(s.messages, s.tools.definitions);
+    if (after > marks.low) {
+      const input = Math.max(1, s.contextBudget.windowTokens - s.contextBudget.outputReserveTokens);
+      s.markLift = Math.min(after - base.low, Math.max(0, input * LIFTED_HIGH_CEILING - base.high));
     }
   }
 
@@ -128,13 +179,13 @@ export async function manageResidency(s: RunState): Promise<void> {
   if (triggers.length === 0 && !recordDue) return;
   if (triggers.length === 0) triggers.push('record');
 
-  // Ride-along round: the prefix changes at this step anyway, so removals
-  // that alone were not worth a cache break go now (a record-only boundary
-  // keeps the break small: only from the old record message onward).
+  // Ride-along round: the prefix changes at this step anyway, so losses that
+  // cost nothing go now: superseded copies, and card-only steps when folding
+  // them frees more than the recap line (a record-only boundary keeps the
+  // break small: only from the old record message onward).
   if (!(triggers.length === 1 && triggers[0] === 'record')) {
-    const rideAlong = { ...s.contextBudget, inRunClearAtLeastTokens: 0, inRunResidueFoldTokens: 0 };
-    if (await workingSetPass(s, rideAlong, putBlob)) triggers.push('ride_along');
-    const residue = await foldResidue(s.messages, s.runStart, rideAlong, s.tools.definitions, {
+    if (await workingSetPass(s, putBlob, { freeOnly: true })) triggers.push('ride_along');
+    const residue = await foldResidue(s.messages, s.runStart, s.contextBudget, s.tools.definitions, {
       keepFindingCalls: !s.flags.stateCard,
       stepOf,
       putBlob,
@@ -161,16 +212,16 @@ export async function manageResidency(s: RunState): Promise<void> {
   });
 }
 
-/** One working-set pass under `budget`; true when it removed anything. */
+/** One working-set pass (`freeOnly`: superseded copies only; `marks`: this run's marks); true when it removed anything. */
 async function workingSetPass(
-  s: RunState,
-  budget: RunState['contextBudget'],
+  s: ResidencyView,
   putBlob: (text: string) => Promise<string>,
+  options: { freeOnly?: boolean; marks?: { high: number; low: number } } = {},
 ): Promise<boolean> {
   const evicted = await manageWorkingSet(
     s.messages,
     s.runStart,
-    budget,
+    s.contextBudget,
     s.tools.definitions,
     putBlob,
     s.traitsOf,
@@ -180,12 +231,14 @@ async function workingSetPass(
       lastTouch: (path) => s.task.lastTouch(path),
       isUnchecked: (path) => s.task.isUnchecked(path),
       isCited: (path) => s.task.isCited(path),
+      isRestored: (path) => s.task.wasRestored(path),
     },
+    options,
   );
   if (!evicted) return false;
   s.readDedupe.forget(evicted.toolCallIds);
-  // One trace line per reason, so eval can tell stale copies, cold files,
-  // cited files and budget pressure apart. Token counts are for the whole pass.
+  // One trace line per reason, so eval can tell superseded copies, cited
+  // files and removals for the mark apart. Token counts are for the whole pass.
   for (const [reason, ids] of Object.entries(evicted.byReason) as Array<[EvictionReason, string[]]>) {
     s.trace({
       type: 'context_evicted',
@@ -208,7 +261,7 @@ async function workingSetPass(
  * state; this makes the ones the card cannot show reachable at 0 calls'
  * search cost (one recall).
  */
-async function storeRecordOverflow(s: RunState, putBlob: (text: string) => Promise<string>): Promise<void> {
+async function storeRecordOverflow(s: ResidencyView, putBlob: (text: string) => Promise<string>): Promise<void> {
   if (!s.flags.stateCard) return;
   const full = recordOverflowText(s.task.snapshot().evidence.findings, s.contextBudget.recordCardTokens);
   if (full === null) return;
@@ -218,8 +271,8 @@ async function storeRecordOverflow(s: RunState, putBlob: (text: string) => Promi
   s.recordBlobKey = key;
 }
 
-/** Forget what a fold removed and trace it. `reason` undefined = the size mark. */
-function traceFold(s: RunState, fold: InRunCompactionResult, reason: 'milestone' | 'residue' | undefined): void {
+/** Forget what a fold removed and trace it. `reason` undefined = the recap fold at the high mark. */
+function traceFold(s: ResidencyView, fold: InRunCompactionResult, reason: 'milestone' | 'residue' | undefined): void {
   s.readDedupe.forget(fold.toolCallIds);
   for (const id of fold.toolCallIds) s.skillLoads.delete(id);
   s.trace({
@@ -238,11 +291,17 @@ function traceFold(s: RunState, fold: InRunCompactionResult, reason: 'milestone'
  * run's own context is big enough that folding it pays for the one-time
  * change to the cached prefix.
  */
-function atVerifiedMilestone(s: RunState): boolean {
+function atVerifiedMilestone(s: ResidencyView): boolean {
   const check = s.task.snapshot().evidence.lastCheck;
   if (!check || check.iteration !== s.iterations || check.exitCode !== 0 || !check.afterEdit) {
     return false;
   }
   const ownTokens = estimatePromptTokens(s.messages.slice(s.runStart));
-  return ownTokens >= 2 * s.contextBudget.inRunClearAtLeastTokens;
+  return ownTokens >= MILESTONE_SHARE_OF_HIGH * inRunMarks(s.contextBudget).high;
 }
+
+/** Share of the input budget a lifted high mark may reach (`RunState.markLift`). */
+const LIFTED_HIGH_CEILING = 0.95;
+
+/** A milestone folds once the run's own steps reach this share of the high mark (smaller is not worth a prefix break). */
+const MILESTONE_SHARE_OF_HIGH = 0.1;

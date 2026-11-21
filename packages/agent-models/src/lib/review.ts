@@ -77,7 +77,7 @@ export type ReviewRunHealth = {
   residueShare: number | null;
   /** Leading messages unchanged call to call (cache reuse). */
   prefixStability: number | null;
-  /** Reads of a line range already returned. */
+  /** Reads that brought back text removed from the prompt (core's `context_restored`). */
   reReadRate: number | null;
   /** Identical searches repeated. */
   repeatSearchRate: number | null;

@@ -56,7 +56,7 @@ export type {
   System1Site,
 } from './lib/system1.js';
 
-export type { Thread, ThreadKind } from './lib/thread.js';
+export type { Thread, ThreadDetail, ThreadKind } from './lib/thread.js';
 export {
   CHAT_TITLE_MIN_WORDS,
   CHAT_TITLE_MAX_WORDS,
@@ -298,6 +298,7 @@ export {
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   MIN_CONTEXT_WINDOW_TOKENS,
   compactionMarks,
+  inRunMarks,
   contextBudgetForWindow,
   parseContextWindowMode,
   parseSnapshot,

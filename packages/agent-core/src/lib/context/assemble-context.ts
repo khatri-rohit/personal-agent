@@ -405,6 +405,11 @@ export function stubLiveToolResults(
    */
   liveFrom: number = messages.length,
   flags: HarnessFlags = DEFAULT_HARNESS_FLAGS,
+  /**
+   * Told each tool result this replaced, so whatever tracks what is still in
+   * the prompt (the loop's read dedupe) stops pointing at it.
+   */
+  onStubbed?: (toolCallId: string) => void,
 ): number {
   const maxToolChars = budget.toolResultMaxTokens * CHARS_PER_TOKEN;
   let callInfo: Map<string, ToolCallInfo> | null = null;
@@ -477,6 +482,7 @@ export function stubLiveToolResults(
         content: capRecentToolContent(content, cap),
       };
     }
+    onStubbed?.(message.tool_call_id);
     stubbed++;
   }
   return stubbed;

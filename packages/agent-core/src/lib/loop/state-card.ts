@@ -4,8 +4,37 @@ import { CARD_HEADER, harnessMessage } from '../context/message-origin';
 import { residentReadPaths } from '../context/residency';
 import { cardDue, cardItems, classPace, EVIDENCE_WORDS } from '../policy';
 import { recordSection } from '../state/record-view';
+import type { AgentLimits } from './limits';
 import { tracePolicyDecision } from './policy-trace';
+import type { ProgressSteering } from './progress-steering';
+import type { RunBudget } from './run-budget';
 import type { RunState } from './run-state';
+
+/**
+ * What the card reads from the run: all it may see. It writes one field,
+ * consuming the one-shot `advisories` it shows.
+ */
+export type CardView = Pick<
+  RunState,
+  | 'task'
+  | 'iterations'
+  | 'can'
+  | 'messages'
+  | 'traitsOf'
+  | 'posture'
+  | 'serialReadTurns'
+  | 'recordBlobSha'
+  | 'recordedThrough'
+  | 'contextBudget'
+  | 'flags'
+  | 'advisories'
+  | 'runId'
+  | 'trace'
+> & {
+  readonly steering: Pick<ProgressSteering, 'stalled'>;
+  readonly budget: Pick<RunBudget, 'spent' | 'snapshot' | 'nearLimit'>;
+  readonly limits: Pick<AgentLimits, 'maxPromptTokens'>;
+};
 
 /**
  * The harness card: one ephemeral message appended to each model call,
@@ -40,7 +69,7 @@ function tokensK(tokens: number): string {
 export { recordCardChars, recordOverflowText, recordSection } from '../state/record-view';
 
 /** Text of the card for this call, or null when it has nothing to say. */
-export function buildStateCard(s: RunState, perCallTokens: number): string | null {
+export function buildStateCard(s: CardView, perCallTokens: number): string | null {
   return composeStateCard(s, perCallTokens)?.text ?? null;
 }
 
@@ -50,7 +79,7 @@ export function buildStateCard(s: RunState, perCallTokens: number): string | nul
  * whether advice changes behaviour).
  */
 export function composeStateCard(
-  s: RunState,
+  s: CardView,
   perCallTokens: number,
 ): { text: string; ids: string[] } | null {
   const ids: string[] = [];
@@ -71,7 +100,7 @@ export function composeStateCard(
     .map((entry) => ({ entry, touch: s.task.lastTouch(entry.path) ?? 0 }))
     .sort((a, b) => b.touch - a.touch);
   const hot = touched.filter(({ entry }) => resident.has(entry.path) || s.task.isUnchecked(entry.path));
-  const cold = touched.filter(
+  const outOfView = touched.filter(
     ({ entry }) => entry.reads > 0 && !resident.has(entry.path) && !s.task.isUnchecked(entry.path),
   ).length;
 
@@ -184,15 +213,15 @@ export function composeStateCard(
     CARD_HEADER,
     `Phase: ${task.phase} · step ${step} · task ${task.taskClass} ${task.shape} · ~${tokensK(perCallTokens)} tokens per call${spend}`,
   ];
-  if (hot.length > 0 || cold > 0) {
+  if (hot.length > 0 || outOfView > 0) {
     const files = hot.slice(0, WORKING_SET_MAX).map(({ entry }) => {
       const mark = s.task.isUnchecked(entry.path) ? ' (edited, unchecked)' : entry.edits > 0 ? ' (edited)' : '';
       return `${entry.path}${mark}`;
     });
     const more = hot.length > WORKING_SET_MAX ? `, +${hot.length - WORKING_SET_MAX} more` : '';
     const older =
-      cold > 0
-        ? `${files.length > 0 ? '; ' : ''}${cold} file(s) read earlier are no longer in full view (read_file again if needed)`
+      outOfView > 0
+        ? `${files.length > 0 ? '; ' : ''}${outOfView} file(s) read earlier are no longer in full view (read_file again if needed)`
         : '';
     lines.push(`Working set: ${files.join(', ')}${more}${older}`);
   }
@@ -217,7 +246,7 @@ export function composeStateCard(
 
 /** The messages one model call sends: the live prompt plus this step's card. */
 export function withStateCard(
-  s: RunState,
+  s: CardView,
   messages: ChatCompletionMessageParam[],
   perCallTokens: number,
 ): ChatCompletionMessageParam[] {

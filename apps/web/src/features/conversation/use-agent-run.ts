@@ -12,10 +12,9 @@ import {
   type ThreadKind,
 } from '@agent/agent-models';
 import {
-  readStoredComposerLocal,
-  readStoredComposerModel,
-  readStoredContextWindowMode,
+  readStoredComposerPrefs,
   resolveOllamaModel,
+  SERVER_COMPOSER_PREFS,
   writeStoredComposerLocal,
   writeStoredComposerModel,
 } from '@/features/composer/ollama-models';
@@ -45,16 +44,12 @@ const EMPTY_VIEW: ThreadView = {
 const getEmptyView = () => EMPTY_VIEW;
 const noSubscription = () => () => undefined;
 
-const defaultComposerOptions = (): ComposerOptions => {
-  const local = readStoredComposerLocal();
-  return {
-    webSearch: true,
-    local,
-    model: readStoredComposerModel(local),
-    posture: 'agent',
-    contextWindowMode: readStoredContextWindowMode(),
-  };
-};
+// Server-safe start; stored prefs are applied after mount (see below).
+const defaultComposerOptions = (): ComposerOptions => ({
+  webSearch: true,
+  ...SERVER_COMPOSER_PREFS,
+  posture: 'agent',
+});
 
 /**
  * React adapter over one thread's session (see thread-session.ts) plus the
@@ -69,6 +64,14 @@ export function useAgentRun(threadId: string) {
   );
   const [threadKind, setThreadKind] = useState<ThreadKind>('home');
   const [isSubagentThread, setIsSubagentThread] = useState(false);
+
+  // Browser storage is read after mount so the server HTML matches the first
+  // client render. Declared before the thread fetch: the thread's own model
+  // and window mode (async) still win.
+  useEffect(() => {
+    const stored = readStoredComposerPrefs();
+    setComposerOptions((prev) => ({ ...prev, ...stored }));
+  }, []);
 
   useEffect(() => {
     const next = createThreadSession(threadId);

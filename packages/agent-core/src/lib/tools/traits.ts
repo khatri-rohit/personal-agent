@@ -1,4 +1,7 @@
+import type { ToolStage } from '@agent/agent-models';
+
 import { pathFromToolArgs } from '../loop/call-identity';
+import type { Tool } from './types';
 
 /**
  * How the harness treats a tool's calls: what the task state counts them as
@@ -49,12 +52,14 @@ export type ToolTraits = {
    */
   lineRange?: (result: string) => { from: number; to: number; of?: number } | null;
   /**
-   * How results leave the prompt (default: by age and by the working-set cap).
+   * How results leave the prompt. By default a result stays until the whole
+   * prompt passes the in-run high mark, then leaves in value order (other
+   * results, then file views, then files read back), or when superseded.
    * - `never`: live state (the plan, todos, a loaded skill) or a sub-agent
    *   report; the working set does not remove them.
-   * - `no_aging`: material under judgement (a diff). It does not go cold with
-   *   age; it leaves when the cap needs room (cited files first) or when the
-   *   same call is made again.
+   * - `no_aging`: material under judgement (a diff). Past the mark it leaves
+   *   after other results and file views read once; or when the same call
+   *   is made again.
    */
   residency?: 'never' | 'no_aging';
   /**
@@ -124,8 +129,8 @@ const BUILTIN_TOOL_TRAITS: Record<string, ToolTraits> = {
     effect: 'read',
     restores: (args) => text(args, 'sha256').toLowerCase() || null,
   },
-  // A diff is what a review judges and what an edit is checked against: it
-  // stays until the cap needs room, and a later diff of the same file (or of
+  // A diff is what a review judges and what an edit is checked against: past
+  // the high mark it leaves late, and a later diff of the same file (or of
   // the whole tree) replaces it.
   diff: {
     effect: 'read',
@@ -185,4 +190,9 @@ export function runCapabilities(toolNames: Iterable<string>, traitsOf: TraitsOf)
     record: effects.has('record'),
     delegate: effects.has('subagent'),
   };
+}
+
+/** A tool without a declared stage (e.g. a future MCP tool) is scheduled as mutate, the strictest class. */
+export function toolStage(tool: Pick<Tool, 'stage'>): ToolStage {
+  return tool.stage ?? 'mutate';
 }

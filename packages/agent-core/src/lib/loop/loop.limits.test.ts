@@ -324,9 +324,10 @@ describe('runLoop limits', () => {
     );
     expect(result.status).toBe('incomplete');
     expect(result.limitReason).toMatch(/^limit\.read_storm:/);
-    // Shared bucket: ~30 admits then halt — not ~60 if ./a and a split.
-    expect(calls).toBeGreaterThan(30);
-    expect(calls).toBeLessThan(40);
+    // Shared bucket: 30 reads run, the next 30 are answered (the run goes
+    // on), the 61st halts — not ~120 if ./a and a split.
+    expect(calls).toBeGreaterThan(60);
+    expect(calls).toBeLessThan(70);
   });
 
   it('labels max iterations with limit.iterations', async () => {

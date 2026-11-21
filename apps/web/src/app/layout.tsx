@@ -2,6 +2,7 @@ import './global.css';
 import { Inter, JetBrains_Mono } from 'next/font/google';
 import { Providers } from '@/components/shell/providers';
 import { THEME_INIT_SCRIPT } from '@/components/shell/theme-presets';
+import { READING_PREFS_INIT_SCRIPT } from '@/lib/reading-prefs-init';
 
 // Inter: a reading face for long replies. Plus Jakarta (display) read as
 // marketing copy at body sizes.
@@ -37,6 +38,8 @@ export default function RootLayout({
       <head>
         {/* FOUC guard: sets html.dark/.light before first paint. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+        {/* Same guard for the reader's text size (Settings → Text size). */}
+        <script dangerouslySetInnerHTML={{ __html: READING_PREFS_INIT_SCRIPT }} />
       </head>
       <body className="min-h-screen bg-background font-sans text-foreground antialiased">
         <Providers>{children}</Providers>

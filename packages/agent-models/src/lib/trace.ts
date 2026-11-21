@@ -34,7 +34,7 @@ export type TraceCallInput = {
  * offline reader (eval / observability app) can parse old traces. The JSONL
  * sink also stamps `ts` and `seq` (per-run-file emit order); order by `seq`.
  */
-export const TRACE_SCHEMA_VERSION = 2;
+export const TRACE_SCHEMA_VERSION = 3;
 
 /**
  * Internal execution trace events (console / eval harness / JSONL sink).
@@ -101,6 +101,8 @@ export type TraceEvent =
       contentPreview?: string;
       /** Provider-reported token counts for this iteration, when available. */
       usage?: TokenUsage;
+      /** The provider's raw `usage` object, as sent (which counters it reports). */
+      providerUsage?: Record<string, unknown>;
       /** Model call + stream time. */
       durationMs?: number;
       /** Provider sent no usage; the run charged the local estimate. */
@@ -189,10 +191,11 @@ export type TraceEvent =
       toolCallIds?: string[];
       /**
        * Why these left the working set: `superseded` (a later read of the same
-       * lines or run of the same command), `cold` (not used for a few
-       * iterations), `cited` (a recorded finding cites the file, so the
-       * finding stands for it), `budget` (resident cap, removed down to the
-       * low mark in one pass). Absent on older traces (size-triggered eviction).
+       * lines or run of the same command), `cited` (removed past the high
+       * mark; a recorded finding cites the file, so the finding stands for
+       * it), `budget` (removed past the high mark, down to the low mark in one
+       * pass). `cold` (not used for a few iterations) is on older traces only.
+       * Absent on older traces (size-triggered eviction).
        */
       reason?: 'superseded' | 'cold' | 'cited' | 'budget';
     }
@@ -207,22 +210,32 @@ export type TraceEvent =
       toolCallIds?: string[];
       /**
        * `milestone`: folded at a verified checkpoint (a check passed after
-       * edits). `residue`: old steps whose results had all left were folded
-       * once their cards and call arguments passed the residue mark. Absent =
-       * size mark.
+       * edits). `residue`: old steps whose results had all left (cards and
+       * call arguments only) were folded at a boundary. Absent = the recap
+       * fold, the last step of a pass at the in-run high mark.
        */
       reason?: 'milestone' | 'residue';
     }
   | {
       /**
-       * A read returned a range whose identical text had been removed from
-       * the prompt earlier: the model paid a step to get it back.
+       * The one definition of a re-read after removal: a call brought back
+       * text the harness had removed from the prompt earlier in this run, so
+       * the model paid a step to get it back. Eval and tests count this event;
+       * they do not re-derive it from evictions.
        */
       type: 'context_restored';
       runId: string;
       iteration: number;
       toolCallId: string;
-      path: string;
+      /**
+       * `exact`: a read of the same lines, identical text. `overlap`: a read
+       * whose lines overlap removed lines of the file, with no edit or
+       * terminal command since (so the text is unchanged). `recall`: recall
+       * brought back a stored result (removed or spilled) by its sha.
+       */
+      kind: 'exact' | 'overlap' | 'recall';
+      /** The file read; absent for a recall. */
+      path?: string;
     }
   | {
       type: 'skill_loaded';

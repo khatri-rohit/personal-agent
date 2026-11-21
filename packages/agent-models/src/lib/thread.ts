@@ -10,7 +10,12 @@ export const CHAT_TITLE_MAX_WORDS = 7;
 
 /** Keep titles short for sidebar and header; enforces a max word count. */
 export function clampChatTitle(title: string, fallback = 'New Chat'): string {
-  const words = title.trim().split(/\s+/).filter(Boolean);
+  // Titles often come from a pasted first message: drop markdown syntax
+  // (a leading "# ", "> ", "- ", bold/code markers) so it never shows raw.
+  const plain = title
+    .replace(/^[\s#>*+-]+/, '')
+    .replace(/\*\*|__|`/g, '');
+  const words = plain.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return fallback;
   return words.slice(0, CHAT_TITLE_MAX_WORDS).join(' ');
 }
@@ -84,4 +89,15 @@ export interface Thread {
   parentRunId?: string;
   /** Context window policy. Absent = default (260k cap). */
   contextWindowMode?: ContextWindowMode;
+}
+
+/**
+ * One thread as `GET /threads/:id` returns it: the catalog row plus facts
+ * the host knows live. Lists stay plain `Thread`.
+ */
+export interface ThreadDetail extends Thread {
+  /** Sub-agent profile (explore, review, advisor, a user agent). */
+  subagentProfile?: string;
+  /** True while a run is active on this thread in the host process. */
+  running?: boolean;
 }

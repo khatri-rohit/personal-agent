@@ -1,0 +1,15 @@
+{
+  "id": "m9-long-investigation",
+  "suite": "matrix",
+  "repo": { "source": "D:/02 Rohit/Silzila/silzila-saas-frontend", "commit": "d1d927f7" },
+  "prompt": "review the @DsTransform file when we open saved and it reload all Transformation Nodes it load all and what's the bug is the remove column open after save it shows only checked data in case of preserve columns and list looks empty that's not good, I I mention exact test case is a save Ds Transnform list with SOurceTbale node then lowercase and remove column node., and the remove coluimn have one selected with preserve because before save we just selected one checkbox from all list of columns with preserve selected columns.",
+  "posture": "ask",
+  "checks": [],
+  "files": [],
+  "answer": [
+    { "mustMatch": "NEEDS_PARENT_PREVIEW" },
+    { "mustMatch": "removeColumns" }
+  ],
+  "scope": { "allow": [] },
+  "budget": { "maxPromptTokens": 4000000, "maxMinutes": 25 }
+}

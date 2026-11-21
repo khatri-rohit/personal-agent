@@ -33,6 +33,11 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens?: number;
+  /**
+   * Prompt tokens the provider served from its prompt cache (part of
+   * `promptTokens`), when it reports them. Absent means not reported, not 0.
+   */
+  cachedTokens?: number;
 }
 
 /**
@@ -79,6 +84,11 @@ export interface ModelTurn {
   toolCalls: PendingToolCall[];
   finishReason: string | null;
   usage?: TokenUsage;
+  /**
+   * The provider's own `usage` object, as sent (diagnosis: which fields a
+   * provider reports, e.g. its cache counters).
+   */
+  providerUsage?: Record<string, unknown>;
 }
 
 /**

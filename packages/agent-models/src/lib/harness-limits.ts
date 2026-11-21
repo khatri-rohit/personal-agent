@@ -8,9 +8,10 @@ import type { SubagentThoroughness } from './subagent.js';
  * limit the child runs under), one is derived from the other here, and
  * harness-limits.test.ts checks they agree.
  *
- * In-run context knobs (resident cap, cold window, compaction marks) are
- * scaled per model window and live in context.ts (ContextBudget); the
- * consistency test covers them too.
+ * In-run context marks (the high and low marks on the whole prompt, and the
+ * between-run compaction marks) derive from the model window in context.ts
+ * (ContextBudget, inRunMarks, compactionMarks); the consistency test covers
+ * them too.
  */
 
 /**
@@ -198,10 +199,11 @@ export const EFFORT_IDLE_FLOOR_STEPS = 3;
 export const GUARD_LIMITS = {
   /** Invented tool names in a row before the run halts. */
   unknownToolStreak: 2,
-  /** read_file admits per path per run (stops offset-paging storms). */
+  /**
+   * Reads of one path since its last edit that run; as many again are
+   * answered with a pointer, then the run halts (`readStormAction`).
+   */
   readsPerPath: 30,
-  /** run_terminal admits per run (migrations run 40+ builds). */
-  terminalCalls: 60,
   /** Identical edit or command outcome (call + result) before the run halts. */
   identicalOutcomes: 3,
   /** Turns of only-refused calls in a report-only child before it ends. */

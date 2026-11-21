@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { LedgerResponse, ThreadKind } from '@agent/agent-models';
+import type { LedgerResponse, ThreadDetail, ThreadKind } from '@agent/agent-models';
 import {
   HOME_MODE,
   isWorkspaceKind,
@@ -112,7 +112,15 @@ router.get('/threads/:id', asyncRoute(async (req: Request, res: Response) => {
   const store = await getThreadStore();
   const thread = store.getThread(req.params.id);
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
-  return res.json(thread);
+  const profile = thread.parentThreadId
+    ? store.subagentProfile(req.params.id)
+    : undefined;
+  const detail: ThreadDetail = {
+    ...thread,
+    ...(profile ? { subagentProfile: profile } : {}),
+    running: Boolean(runManager.activeRun(req.params.id)),
+  };
+  return res.json(detail);
 }));
 
 router.patch('/threads/:id', asyncRoute(async (req: Request, res: Response) => {

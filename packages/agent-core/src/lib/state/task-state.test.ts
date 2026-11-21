@@ -416,11 +416,22 @@ describe('task shape and findings', () => {
   it('lists restored files no finding cites, until one does', () => {
     const tracker = new TaskStateTracker();
     feed(tracker, [
-      { type: 'context_restored', runId, iteration: 4, toolCallId: 'r1', path: 'src/a.ts' },
-      { type: 'context_restored', runId, iteration: 5, toolCallId: 'r2', path: 'src/b.ts' },
+      { type: 'context_restored', runId, iteration: 4, toolCallId: 'r1', kind: 'exact', path: 'src/a.ts' },
+      { type: 'context_restored', runId, iteration: 5, toolCallId: 'r2', kind: 'exact', path: 'src/b.ts' },
     ]);
     expect(tracker.uncitedRestoredPaths()).toEqual(['src/a.ts', 'src/b.ts']);
     feed(tracker, finding(6, 'f1', { claim: 'A sets it', evidence: './src/a.ts:3' }));
     expect(tracker.uncitedRestoredPaths()).toEqual(['src/b.ts']);
+  });
+
+  it('knows a path was read back after removal, by its canonical form, cited or not', () => {
+    const tracker = new TaskStateTracker();
+    expect(tracker.wasRestored('src/a.ts')).toBe(false);
+    feed(tracker, [{ type: 'context_restored', runId, iteration: 4, toolCallId: 'r1', kind: 'exact', path: './src/a.ts' }]);
+    expect(tracker.wasRestored('src/a.ts')).toBe(true);
+    // A finding citing it does not change that the model paid to get it back.
+    feed(tracker, finding(5, 'f1', { claim: 'A sets it', evidence: 'src/a.ts:3' }));
+    expect(tracker.wasRestored('src/a.ts')).toBe(true);
+    expect(tracker.wasRestored('src/b.ts')).toBe(false);
   });
 });

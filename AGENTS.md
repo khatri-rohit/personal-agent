@@ -79,14 +79,16 @@ Eval reads these files. It does not re-derive what core already put in the trace
 
 - `loop.ts` — iteration: model turn → tools → budget/limits → finish. Replay snapshots in `__replay__/` pin event/trace order.
 - `limits.ts`, `run-budget.ts` — iteration, tool-call, token, and wall caps.
-- `repetition-guard.ts`, `progress-steering.ts` — stall / research-gate (absolute marks 750k / 1.25M).
+- `admission.ts` — whether a tool call runs, is answered instead, or ends the run (unknown tools, read storms, repeats, identical outcomes, report-only reserve, posture, research gate); returns a verdict `turn-tools.ts` applies.
+- `progress-steering.ts` — stall / research-gate (absolute marks 750k / 1.25M).
+- Loop passes take a declared view of `RunState` (`CardView`, `NotesView`, `ResidencyView`, `FinishView`, and the `run-state.ts` helpers), not the whole state; only the orchestrators (`loop.ts` `runLoopCore`, `turn-tools.ts`) hold all of it. Every run ends through `turn-finish.ts` `endRun`.
 - `model-call.ts`, `call-record.ts` — streaming call; optional content-addressed recording of exactly what the model saw.
 - `to-ledger-record.ts` — loop output → ledger row.
 
 **Context** — `packages/agent-core/src/lib/context/`
 
 - `assemble-context.ts` — builds the prompt. Old tool results stub first, then attachments; large bodies spill to blobs; tape compact last.
-- `residency.ts` — in-run eviction (`(evicted)` cards) and extractive recap. Compaction is not an LLM call.
+- `residency.ts` — in-run residency: one pass at the high mark on the whole prompt (`inRunMarks` in `agent-models/src/lib/context.ts`), removing by value down to the low mark (`(evicted)` cards with a sha), then the extractive recap; nothing leaves below the mark. The boundary that runs it is `loop/residency-pass.ts`. Compaction is not an LLM call.
 - Host-side between-run compact: `apps/api/src/runs/compaction.ts`. Window size: `apps/api/src/models/model-runtime.ts` + `agent-models/src/lib/context.ts`.
 
 **Tools** — `packages/agent-core/src/lib/tools/`

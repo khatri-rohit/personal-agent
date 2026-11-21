@@ -33,7 +33,9 @@ function describeHealth(h: RunMetrics['health']): string {
     `health: removals on ${h.removalSteps}/${h.steps} steps (${percent(h.removalStepShare)})`,
     `residue ${h.residueShare ? `${percent(h.residueShare.mean)} mean, ${percent(h.residueShare.last)} last` : '-'}`,
     `prefix stable ${percent(h.prefixStability)}`,
-    `same-range re-reads ${h.reReads.sameRange}/${h.reReads.reads} (${percent(h.reReads.rate)}), restores ${h.restores}`,
+    h.restores
+      ? `re-reads after removal ${h.reReads.restored}/${h.reReads.reads} (${percent(h.reReads.rate)}), restores ${h.restores.total} (exact ${h.restores.exact}, overlap ${h.restores.overlap}, recall ${h.restores.recall})`
+      : 'restores n/a (trace predates restore kinds)',
     `findings ${h.findings}`,
     `repeat searches ${h.repeatSearches.repeats}/${h.repeatSearches.searches}`,
     `repeats answered ${h.guardAnswered}`,
@@ -68,7 +70,7 @@ function describe(m: RunMetrics): string {
     `wall clock ${duration(m.wallClockMs)}${m.runDurationMs !== undefined ? ` (answer footer ${duration(m.runDurationMs)}, last call ${duration(m.answerWriteMs)})` : ''}`,
     `edits ${m.edits}${m.firstEdit ? `, first at iteration ${m.firstEdit.iteration} after ${tokens(m.firstEdit.promptTokensBefore)}` : ''}; idle share ${percent(m.idleShare)}`,
     `read walks: ${m.readWalks.length ? m.readWalks.map((w) => `${w.path} ×${w.calls} (it ${w.fromIteration}–${w.toIteration})`).join('; ') : 'none'}`,
-    `re-reads after eviction: ${m.reReadsAfterEviction ?? 'n/a (trace predates eviction ids)'} (recall ${m.recallCalls})`,
+    `recall calls ${m.recallCalls}`,
     `steering: stall ${m.steering.stallNudges}, research gate ${m.steering.researchGates}, notes ${m.steering.toolNotes}, budget warnings ${m.steering.budgetWarnings}, evictions ${m.steering.evictions}, in-run compactions ${m.steering.inRunCompactions}, prefix heavy ${m.steering.prefixHeavy}, thread compactions ${m.steering.threadCompactions}`,
     `limits: ${m.steering.limits.join(' | ') || 'none'}`,
     describeHealth(m.health),

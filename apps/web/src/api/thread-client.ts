@@ -1,4 +1,9 @@
-import type { LedgerResponse, Thread, ThreadKind } from '@agent/agent-models';
+import type {
+  LedgerResponse,
+  Thread,
+  ThreadDetail,
+  ThreadKind,
+} from '@agent/agent-models';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3333';
 
@@ -74,7 +79,7 @@ export async function createThread(
   return res.json() as Promise<Thread>;
 }
 
-export async function fetchThread(id: string): Promise<Thread | undefined> {
+export async function fetchThread(id: string): Promise<ThreadDetail | undefined> {
   const res = await fetch(`${API_BASE}/api/agent/threads/${id}`);
   if (res.status === 404) return undefined;
   if (!res.ok) {
@@ -82,7 +87,7 @@ export async function fetchThread(id: string): Promise<Thread | undefined> {
       await readError(res, `Failed to load thread: ${res.status}`),
     );
   }
-  return res.json() as Promise<Thread>;
+  return res.json() as Promise<ThreadDetail>;
 }
 
 export async function patchThread(

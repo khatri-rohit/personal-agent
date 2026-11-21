@@ -7,6 +7,6 @@ export { cardDue, cardItems, type CardFacts, type CardItem } from './card';
 export { earnedThoroughness, normalizeScopePaths, overlappingPath, usageDelta } from './delegation';
 export { effortFloor, escalationStep, isSteadyFloor, type EffortFloorReason, type EffortSignals } from './effort';
 export { changeGate, planGate } from './finish';
-export { repeatAction, reportOnlyCall } from './guards';
+export { readStormAction, repeatAction, reportOnlyCall } from './guards';
 export { classPace, EVIDENCE_WORDS, progressMarks, progressScope } from './progress';
 export { taskClassFor, type TaskSize } from './task-class';

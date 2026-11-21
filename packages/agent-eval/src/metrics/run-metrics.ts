@@ -59,8 +59,6 @@ export type RunMetrics = {
   idleShare: number | null;
   readWalks: ReadWalk[];
   recallCalls: number;
-  /** recall calls + re-reads of evicted paths; null when evictions lack ids (pre-P2 traces). */
-  reReadsAfterEviction: number | null;
   steering: {
     stallNudges: number;
     researchGates: number;
@@ -151,36 +149,6 @@ function readWalks(lines: TraceLine[]): ReadWalk[] {
   }
   close();
   return walks;
-}
-
-/** recall calls plus read_file of a path whose earlier result was evicted or folded. */
-function reReads(lines: TraceLine[]): { recall: number; total: number | null } {
-  const recall = linesOf(lines, 'tool_start').filter((line) => line.toolName === 'recall').length;
-  const removals = lines.filter(
-    (line) => line.type === 'context_evicted' || line.type === 'context_compacted_inrun',
-  ) as Extract<TraceLine, { type: 'context_evicted' | 'context_compacted_inrun' }>[];
-  if (removals.some((line) => !line.toolCallIds)) return { recall, total: null };
-
-  const pathByCall = new Map<string, string>();
-  const evicted = new Set<string>();
-  let reread = 0;
-  for (const line of lines) {
-    if (line.type === 'tool_start' && line.toolName === 'read_file') {
-      const path = argPath(line.args);
-      if (!path) continue;
-      if (evicted.has(path)) {
-        reread += 1;
-        evicted.delete(path);
-      }
-      if (line.toolCallId) pathByCall.set(line.toolCallId, path);
-    } else if (line.type === 'context_evicted' || line.type === 'context_compacted_inrun') {
-      for (const id of line.toolCallIds ?? []) {
-        const path = pathByCall.get(id);
-        if (path) evicted.add(path);
-      }
-    }
-  }
-  return { recall, total: recall + reread };
 }
 
 function system1Metrics(lines: TraceLine[]): System1Metrics | null {
@@ -322,7 +290,6 @@ export function computeRunMetrics(input: {
   for (const request of linesOf(lines, 'llm_request')) {
     count(effort, request.reasoningEffort ?? 'default');
   }
-  const rereads = reReads(lines);
   const skillsLoaded = linesOf(lines, 'skill_loaded');
   const memoryGate: Record<string, number> = {};
   for (const gate of linesOf(lines, 'memory_gate')) count(memoryGate, gate.verdict);
@@ -362,8 +329,7 @@ export function computeRunMetrics(input: {
     idleShare:
       ownPrompt > 0 ? (promptBefore === null ? 1 : Math.min(1, promptBefore / ownPrompt)) : null,
     readWalks: readWalks(lines),
-    recallCalls: rereads.recall,
-    reReadsAfterEviction: rereads.total,
+    recallCalls: linesOf(lines, 'tool_start').filter((line) => line.toolName === 'recall').length,
     steering: {
       stallNudges: linesOf(lines, 'stall_nudge').length,
       researchGates: linesOf(lines, 'research_gate').length,

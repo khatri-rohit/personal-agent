@@ -1,82 +1,60 @@
 'use client';
 
-import { useState } from 'react';
-import { Check, ChevronDown, Layers, Loader2 } from 'lucide-react';
+import { Layers } from 'lucide-react';
 
 import type { CompactionNotice } from './chat-store';
-import { cn } from '@/lib/utils';
+import { TrailLine, TrailSection } from './trail-line';
+import { useDiagnostics } from '@/lib/reading-prefs';
 
 /**
- * Compaction step in the turn trail — same column as tools, not ToolStepList.
- * Running: spinner like a live tool. Done: expandable brief/summary.
+ * Compaction in the reading flow: one trail line. While running it is a
+ * still line (the dock carries the motion); once done it expands to the
+ * brief and summary. The ledger seq is a diagnostic, not reader copy.
  */
 export function CompactionCard({ notice }: { notice: CompactionNotice }) {
-  const [open, setOpen] = useState(false);
+  const diagnostics = useDiagnostics();
   const running = notice.status === 'running';
 
+  if (running) {
+    return (
+      <TrailLine
+        icon={<Layers className="size-3.5" strokeWidth={1.75} />}
+        label="Compacting context…"
+        ariaLabel="Compacting context"
+      />
+    );
+  }
+
+  const hasBody = Boolean(notice.brief.trim() || notice.summary.trim());
   return (
-    <section
-      className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border/60 bg-muted/25"
-      aria-label={running ? 'Compacting context' : 'Context compacted'}
-      aria-busy={running}
+    <TrailLine
+      icon={<Layers className="size-3.5" strokeWidth={1.75} />}
+      label="Context compacted"
+      ariaLabel="Context compacted"
+      meta={
+        diagnostics && notice.throughSeq > 0 ? (
+          <span>through seq {notice.throughSeq}</span>
+        ) : null
+      }
     >
-      <button
-        type="button"
-        className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
-        aria-expanded={open}
-        disabled={running}
-        onClick={() => {
-          if (!running) setOpen((value) => !value);
-        }}
-      >
-        {running ? (
-          <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
-        ) : (
-          <Check className="size-3.5 shrink-0 text-subtle-foreground" />
-        )}
-        <Layers className="size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
-        <span className="type-ui min-w-0 flex-1 truncate text-foreground/90">
-          {running ? 'Compacting context…' : 'Context compacted'}
-        </span>
-        {!running && notice.throughSeq > 0 ? (
-          <span className="type-caption shrink-0 tabular-nums text-muted-foreground">
-            through seq {notice.throughSeq}
-          </span>
-        ) : null}
-        {!running ? (
-          <ChevronDown
-            className={cn(
-              'size-3.5 shrink-0 transition-transform',
-              open && 'rotate-180',
-            )}
-            strokeWidth={1.75}
-          />
-        ) : null}
-      </button>
-      {!running && open ? (
-        <div className="space-y-2 border-t border-border/60 px-3 py-2">
+      {hasBody ? (
+        <>
           {notice.brief.trim() ? (
-            <section className="min-w-0">
-              <p className="type-ui mb-1 font-medium text-muted-foreground">
-                Brief
-              </p>
-              <pre className="type-ui max-h-40 overflow-auto whitespace-pre-wrap break-words leading-relaxed text-foreground/85">
+            <TrailSection title="Brief">
+              <pre className="type-ui max-h-40 overflow-auto whitespace-pre-wrap break-words font-sans leading-relaxed text-[var(--reading-foreground)]">
                 {notice.brief}
               </pre>
-            </section>
+            </TrailSection>
           ) : null}
           {notice.summary.trim() ? (
-            <section className="min-w-0">
-              <p className="type-ui mb-1 font-medium text-muted-foreground">
-                Summary
-              </p>
-              <pre className="type-ui max-h-64 overflow-auto whitespace-pre-wrap break-words leading-relaxed text-foreground/85">
+            <TrailSection title="Summary">
+              <pre className="type-ui max-h-64 overflow-auto whitespace-pre-wrap break-words font-sans leading-relaxed text-[var(--reading-foreground)]">
                 {notice.summary}
               </pre>
-            </section>
+            </TrailSection>
           ) : null}
-        </div>
+        </>
       ) : null}
-    </section>
+    </TrailLine>
   );
 }

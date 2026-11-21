@@ -307,6 +307,7 @@ describe('harness card re-read item', () => {
     runId,
     iteration,
     toolCallId: `x-${path}`,
+    kind: 'exact',
     path,
   });
   const item = /Open: Re-read after removal: (.+)\. Record the facts you need from them with record_finding so they need not be read again\./;

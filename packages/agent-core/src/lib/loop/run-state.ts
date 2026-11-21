@@ -14,7 +14,6 @@ import {
   type RunUsage,
   type TokenUsage,
   type ToolOrigin,
-  type ToolStage,
   type TraceEvent,
   type WebTrust,
 } from '@agent/agent-models';
@@ -28,8 +27,8 @@ import type { Tool, ToolRegistry } from '../tools/types';
 import { createCallRecorder, type CallRecorder } from './call-record';
 import { resolveLimits, type AgentLimits } from './limits';
 import { progressScope } from '../policy';
+import { Admission } from './admission';
 import { ProgressSteering } from './progress-steering';
-import { RepetitionGuard } from './repetition-guard';
 import { RunBudget } from './run-budget';
 import { preview, ToolCallRecord } from './tool-call-record';
 import { toLedgerRecord } from './to-ledger-record';
@@ -85,7 +84,8 @@ export type RunState = {
   readonly emit: ((event: AgentEventWithoutSeq) => void) | undefined;
   readonly budget: RunBudget;
   readonly steering: ProgressSteering;
-  readonly guard: RepetitionGuard;
+  /** Whether each tool call runs, is answered instead, or ends the run (loop/admission.ts). */
+  readonly admission: Admission;
   readonly webSources: WebSourceStore;
   readonly recorder: CallRecorder | null;
   readonly record: ToolCallRecord;
@@ -103,6 +103,15 @@ export type RunState = {
   lastLimitReason: string | undefined;
   advisorHinted: boolean;
   prefixHeavy: boolean;
+  /**
+   * Tokens the in-run marks are lifted by, after a pass could not reach the
+   * low mark (prior turns or pinned results it may not remove). The next
+   * pass then waits for the same real growth as any other (I1), instead of
+   * removing each new result one step after it arrives. Capped so the lifted
+   * high mark stays inside the input budget. Back to 0 once the
+   * prompt is under the unlifted low mark.
+   */
+  markLift: number;
   /** Set when a tool (sub-agent `report`) asks to end the run with this answer. */
   stopContent: string | undefined;
   /** Effort escalation fired: later calls use one rung above the baseline. */
@@ -114,8 +123,6 @@ export type RunState = {
   serialReadTurns: number;
   /** This turn's single read result carries the serial-reads note. */
   serialReadNoteDue: boolean;
-  /** Consecutive turns whose calls were all refused because only `report` was left. */
-  reportOnlyTurns: number;
   /** One-shot advice for the next harness card (consumed when the card is built). */
   readonly advisories: string[];
   /** Fingerprints of the previous call's messages, for the prefix-stability measure. */
@@ -222,7 +229,11 @@ export function createRunState(
     emit,
     budget,
     steering,
-    guard: new RepetitionGuard(),
+    admission: new Admission({
+      traitsOf,
+      maxToolCalls: limits.maxToolCalls,
+      maxRepeatedToolCalls: limits.maxRepeatedToolCalls,
+    }),
     webSources,
     recorder:
       config.recordCalls && config.putBlob ? createCallRecorder(config.putBlob) : null,
@@ -243,12 +254,12 @@ export function createRunState(
     lastLimitReason: undefined,
     advisorHinted: false,
     prefixHeavy: false,
+    markLift: 0,
     stopContent: undefined,
     escalatedAt: null,
     stopChecked: false,
     serialReadTurns: 0,
     serialReadNoteDue: false,
-    reportOnlyTurns: 0,
     advisories: [],
     promptKeys: [],
     recordBlobSha: undefined,
@@ -258,10 +269,7 @@ export function createRunState(
   return state;
 }
 
-/** A tool without a declared stage (e.g. a future MCP tool) is scheduled as mutate, the strictest class. */
-export function toolStage(tool: Tool): ToolStage {
-  return tool.stage ?? 'mutate';
-}
+export { toolStage } from '../tools/traits';
 
 /** The tool's own compact view of its arguments, so UI labels are not poisoned by truncated text. */
 export function toolArgsPreview(tool: Tool | undefined, args: unknown): string {
@@ -287,9 +295,12 @@ function argsPreviewOf(
   return toolArgsPreview(tools.byName.get(toolCall.function.name), args);
 }
 
+/** What appending a durable turn reads and writes. */
+export type DurableView = Pick<RunState, 'messages'> & { readonly config: Pick<LoopConfig, 'onMessage'> };
+
 /** A durable turn: joins the live prompt and the host ledger. */
 export async function appendDurable(
-  s: RunState,
+  s: DurableView,
   message: ChatCompletionMessageParam,
   meta?: LedgerAppendMeta,
 ): Promise<void> {
@@ -299,7 +310,10 @@ export async function appendDurable(
   }
 }
 
-export function noteLimit(s: RunState, reason: string): void {
+/** What noting a limit writes (`lastLimitReason`) and where it reports it. */
+export type LimitView = Pick<RunState, 'lastLimitReason' | 'trace' | 'emit' | 'runId' | 'iterations'>;
+
+export function noteLimit(s: LimitView, reason: string): void {
   s.lastLimitReason = reason;
   s.trace({
     type: 'limit',
@@ -310,7 +324,12 @@ export function noteLimit(s: RunState, reason: string): void {
   s.emit?.({ type: 'limit.hit', runId: s.runId, reason });
 }
 
-export function emitTurnCompleted(s: RunState, iteration: number, usage?: TokenUsage): void {
+/** What a turn's completion event reads. */
+export type TurnCompletedView = Pick<RunState, 'messages' | 'tools' | 'emit' | 'runId'> & {
+  readonly config: Pick<LoopConfig, 'contextReport'>;
+};
+
+export function emitTurnCompleted(s: TurnCompletedView, iteration: number, usage?: TokenUsage): void {
   const contextReport = s.config.contextReport
     ? refreshContextReport(s.config.contextReport, s.messages, s.tools, usage)
     : undefined;
@@ -323,16 +342,15 @@ export function emitTurnCompleted(s: RunState, iteration: number, usage?: TokenU
   });
 }
 
-
 /**
  * Loop control the model must read as the harness speaking, not the user
  * changing their mind. Joins the live prompt only, never the ledger.
  */
-export function pushHarnessNote(s: RunState, text: string): void {
+export function pushHarnessNote(s: Pick<RunState, 'messages' | 'flags'>, text: string): void {
   s.messages.push(harnessMessage('note', s.flags.harnessNotes ? `${HARNESS_NOTE_PREFIX} ${text}` : text));
 }
 
-export function lastAssistantContent(s: RunState): string {
+export function lastAssistantContent(s: Pick<RunState, 'messages'>): string {
   for (let i = s.messages.length - 1; i >= 0; i--) {
     const message = s.messages[i];
     if (message?.role !== 'assistant') continue;

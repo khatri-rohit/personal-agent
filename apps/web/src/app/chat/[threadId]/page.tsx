@@ -5,9 +5,7 @@ import { normalizeRunPosture } from '@agent/agent-models';
 import { ChatHeader } from '@/features/conversation/chat-header';
 import { MessageList } from '@/features/conversation/message-list';
 import { ChatInput } from '@/features/composer/chat-input';
-import { ThreadPlanCard } from '@/features/conversation/thread-plan-card';
-import { SubagentLiveStrip } from '@/features/conversation/subagent-card';
-import { ChoiceCard } from '@/features/conversation/choice-card';
+import { LiveDock } from '@/features/conversation/live-dock';
 import { ChatShell } from '@/components/shell/chat-shell';
 import { useAgentRun } from '@/features/conversation/use-agent-run';
 import { takePendingMessage } from '@/api/agent-client';
@@ -78,29 +76,28 @@ export default function ChatThreadPage({
       header={<ChatHeader threadId={threadId} />}
       footer={
         <div className="relative flex min-w-0 flex-col">
-          <div className="mx-auto w-full max-w-4xl px-4 sm:px-6">
-            <ChoiceCard
-              choice={
-                chatState.pendingChoices[
-                  chatState.pendingChoices.length - 1
-                ] ?? null
-              }
-              onResolve={resolvePendingChoice}
-            />
-          </div>
-          {/* Live plan + running sub-agents overlay: absolute so the
-              composer height never changes. */}
-          {isRunning &&
-          (chatState.plan ||
-            (chatState.activeRun?.subagentActivity?.some(
-              (activity) => activity.status === 'running',
-            ) ??
-              false)) ? (
-            <div className="pointer-events-none absolute inset-x-0 bottom-full z-10 px-4 pb-2 sm:px-6">
-              <div className="pointer-events-auto mx-auto w-full max-w-4xl space-y-2">
-                {chatState.plan ? <ThreadPlanCard plan={chatState.plan} /> : null}
-                <SubagentLiveStrip
-                  activities={chatState.activeRun?.subagentActivity}
+          {/* Zone 2 — the live dock: one fixed-height line in flow above
+              the composer. In flow, not overlaid: an overlay covers whatever
+              the reader has open at the bottom of the transcript (an
+              expanded tool group). The transcript shortens by one line when
+              a run starts and grows back when it ends. The open question is
+              Zone 3 and lives inline in the conversation (MessageList). */}
+          {isRunning ? (
+            <div className="relative z-10 px-4 pt-2 sm:px-6">
+              <div className="reading-text-width">
+                <LiveDock
+                  phase={
+                    chatState.pendingChoices.length > 0
+                      ? 'waiting'
+                      : chatState.compactionNotice?.status === 'running'
+                        ? 'compacting'
+                        : 'working'
+                  }
+                  plan={chatState.plan}
+                  subagents={chatState.activeRun?.subagentActivity ?? []}
+                  {...(chatState.activeRun?.runStartedAt
+                    ? { runStartedAt: chatState.activeRun.runStartedAt }
+                    : {})}
                 />
               </div>
             </div>
@@ -124,6 +121,7 @@ export default function ChatThreadPage({
             onComposerOptionsChange={setComposerOptions}
             onStop={() => void stopGeneration()}
             activeRun={chatState.activeRun}
+            choicePending={chatState.pendingChoices.length > 0}
           />
           )}
         </div>
@@ -136,6 +134,7 @@ export default function ChatThreadPage({
         threadKind={threadKind}
         onRetryLastResponse={retryLastResponse}
         onEditLastUserMessage={editLastUserMessage}
+        onResolveChoice={resolvePendingChoice}
         {...(isSubagentThread
           ? {}
           : { onContinue })}

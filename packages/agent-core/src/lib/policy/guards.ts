@@ -24,6 +24,24 @@ export function repeatAction(input: {
 }
 
 /**
+ * What to do with a read of one file past its per-path limit (P5, like
+ * `repeatAction` for reads): up to the limit it runs; past it the read is
+ * answered with a pointer to what is already above or recallable, and the
+ * run goes on; only past twice the limit (a model in a loop) does the run
+ * stop with a handoff.
+ */
+export function readStormAction(input: {
+  /** Reads of this path asked for so far, this one included. */
+  attempts: number;
+  limit: number;
+}): 'run' | 'answer' | 'halt' {
+  const { attempts, limit } = input;
+  if (attempts <= limit) return 'run';
+  if (attempts <= limit * 2) return 'answer';
+  return 'halt';
+}
+
+/**
  * A run with a `report` tool keeps its last budgeted call for `report`:
  * once only that reserve is left, every other call is refused (a row, not a
  * halt), so the model still gets a turn to report.
