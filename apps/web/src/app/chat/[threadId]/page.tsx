@@ -6,6 +6,7 @@ import { ChatHeader } from '@/features/conversation/chat-header';
 import { MessageList } from '@/features/conversation/message-list';
 import { ChatInput } from '@/features/composer/chat-input';
 import { LiveDock } from '@/features/conversation/live-dock';
+import { stopReadAloud } from '@/features/conversation/read-aloud';
 import { ChatShell } from '@/components/shell/chat-shell';
 import { useAgentRun } from '@/features/conversation/use-agent-run';
 import { takePendingMessage } from '@/api/agent-client';
@@ -35,6 +36,10 @@ export default function ChatThreadPage({
     isSubagentThread,
   } = useAgentRun(threadId);
   const sentPendingRef = useRef(false);
+
+  // Read-aloud follows the thread: leaving it removes the Stop button, so the
+  // page stops playback rather than leaving audio nobody can reach.
+  useEffect(() => () => stopReadAloud(), [threadId]);
 
   useEffect(() => {
     if (sentPendingRef.current) return;

@@ -5,6 +5,8 @@ import {
   Activity,
   Bell,
   Check,
+  Headphones,
+  Mic,
   Monitor,
   Moon,
   Palette,
@@ -91,6 +93,13 @@ import {
   writeNotifyPref,
   writeSoundPref,
 } from '@/features/conversation/run-alerts';
+import {
+  setReadAloudPref,
+  setVoiceInputPref,
+  useReadAloudPref,
+  useVoiceCapabilities,
+  useVoiceInputPref,
+} from '@/lib/voice-prefs';
 
 /** agent-client throws plain Error objects; normalize once for catch blocks. */
 function describeError(error: unknown): string {
@@ -105,6 +114,9 @@ export function SidebarSettings({
   const { preference, setPreference } = useTheme();
   const textSize = useTextSize();
   const diagnostics = useDiagnostics();
+  const voiceInputOn = useVoiceInputPref();
+  const readAloudOn = useReadAloudPref();
+  const voiceCaps = useVoiceCapabilities();
   const [profileOpen, setProfileOpen] = useState(false);
   const [soundOn, setSoundOn] = useState(true);
   const [notifyOn, setNotifyOn] = useState(false);
@@ -268,6 +280,44 @@ export function SidebarSettings({
               Show run diagnostics (seq, tokens, timings, System 1)
             </span>
           </DropdownMenuCheckboxItem>
+          {voiceCaps.stt !== 'off' || voiceCaps.tts !== 'off' ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className="text-xs text-muted-foreground">
+                Voice add-ons
+              </DropdownMenuLabel>
+            </>
+          ) : null}
+          {voiceCaps.stt !== 'off' ? (
+            <DropdownMenuCheckboxItem
+              checked={voiceInputOn}
+              className="items-start gap-2 py-2 whitespace-normal"
+              onCheckedChange={(checked) => setVoiceInputPref(checked === true)}
+            >
+              <Mic className="mt-0.5 size-4 shrink-0 opacity-80" />
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="leading-snug">Voice input</span>
+                <span className="type-caption leading-snug text-muted-foreground">
+                  Mic button and Alt+A dictation in the composer
+                </span>
+              </span>
+            </DropdownMenuCheckboxItem>
+          ) : null}
+          {voiceCaps.tts !== 'off' ? (
+            <DropdownMenuCheckboxItem
+              checked={readAloudOn}
+              className="items-start gap-2 py-2 whitespace-normal"
+              onCheckedChange={(checked) => setReadAloudPref(checked === true)}
+            >
+              <Headphones className="mt-0.5 size-4 shrink-0 opacity-80" />
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="leading-snug">Read replies aloud</span>
+                <span className="type-caption leading-snug text-muted-foreground">
+                  Listen button next to Copy on agent replies
+                </span>
+              </span>
+            </DropdownMenuCheckboxItem>
+          ) : null}
           <DropdownMenuSeparator />
           <DropdownMenuCheckboxItem
             checked={soundOn}

@@ -1,4 +1,4 @@
-# Agent local infrastructure: Speaches (STT only).
+# Agent local infrastructure: Speaches (STT: Whisper, TTS: Kokoro).
 #
 # This stack does NOT run Ollama and never mounts Ollama model directories.
 # Chat uses cloud Ollama via host apps/api .env (OLLAMA_BASE_URL=https://ollama.com/v1).
@@ -24,6 +24,9 @@ services:
     environment:
       LOG_LEVEL: ${SPEACHES_LOG_LEVEL:-info}
       ENABLE_UI: ${SPEACHES_ENABLE_UI:-false}
+      # Speaches reads model idle-unload as WHISPER__TTL (it also covers Kokoro/Piper).
+      # -1 = never unload. STT_MODEL_TTL is not a Speaches setting; kept for older images.
+      WHISPER__TTL: ${SPEACHES_STT_MODEL_TTL:--1}
       STT_MODEL_TTL: ${SPEACHES_STT_MODEL_TTL:--1}
       PRELOAD_MODELS: ${SPEACHES_PRELOAD_MODELS:-["Systran/faster-distil-whisper-large-v3"]}
       WHISPER__INFERENCE_DEVICE: cpu
@@ -53,10 +56,18 @@ services:
     environment:
       LOG_LEVEL: ${SPEACHES_LOG_LEVEL:-info}
       ENABLE_UI: ${SPEACHES_ENABLE_UI:-false}
+      # Speaches reads model idle-unload as WHISPER__TTL (it also covers Kokoro/Piper).
+      # -1 = never unload. STT_MODEL_TTL is not a Speaches setting; kept for older images.
+      WHISPER__TTL: ${SPEACHES_STT_MODEL_TTL:--1}
       STT_MODEL_TTL: ${SPEACHES_STT_MODEL_TTL:--1}
       PRELOAD_MODELS: ${SPEACHES_PRELOAD_MODELS:-["Systran/faster-distil-whisper-large-v3"]}
       WHISPER__INFERENCE_DEVICE: cuda
       WHISPER__COMPUTE_TYPE: ${SPEACHES_WHISPER_COMPUTE_TYPE:-float16}
+      # Speaches 0.1.0 passes ONNX providers to Kokoro as list(set(...)), so the
+      # order (and CPU vs GPU) changes per process with Python's random hash seed.
+      # Seed 0 orders CUDAExecutionProvider first → Kokoro runs on the GPU every start.
+      # Re-check after an image upgrade (docker/README.md, "TTS model").
+      PYTHONHASHSEED: '0'
     volumes:
       - ${SPEACHES_HF_CACHE_DIR:-speaches-hf-cache}:/home/ubuntu/.cache/huggingface/hub
     deploy:

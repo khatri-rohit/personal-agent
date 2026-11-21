@@ -2,7 +2,7 @@
 
 Compose stack for optional **Speaches** (STT: **faster-distil-whisper-large-v3**). Chat titles no longer use Redis.
 
-Voice defaults to the **browser** Web Speech API (`VOICE_STT_PROVIDER=browser`) — no Speaches required. Start this Speaches service only when you set `VOICE_STT_PROVIDER=speaches` (and matching `NEXT_PUBLIC_VOICE_STT_PROVIDER`) in the host `.env`.
+Voice defaults to the **browser** Web Speech API (`VOICE_STT_PROVIDER=browser`) — no Speaches required. Start this Speaches service only when you set `VOICE_STT_PROVIDER=speaches` in the host `.env` (the web reads providers from the API; no `NEXT_PUBLIC_` copy). Read-aloud (Kokoro) is the same with `VOICE_TTS_PROVIDER=speaches`.
 
 **Ollama is not part of this compose file.** Chat stays on cloud via host `.env` (`OLLAMA_BASE_URL=https://ollama.com/v1`). Your existing Ollama container and model directory (e.g. `D:\ollama\models`) are never mounted, created, replaced, or deleted by `docker compose up` / `down` / `down -v`.
 
@@ -44,7 +44,30 @@ Compose rule: a **bare name** → named volume; an **absolute path** → host bi
 | `Systran/faster-whisper-medium`                        | CPU-only fallback if distil is too heavy         |
 | `Systran/faster-whisper-large-v3`                      | Avoid as default — often 2–4× slower than distil |
 
-**Preload only one STT model** (`SPEACHES_PRELOAD_MODELS`). Keep the same id in host `.env` as `SPEACHES_STT_MODEL`.
+**One STT model.** Keep the same id in host `.env` as `SPEACHES_STT_MODEL`.
+
+> The current Speaches image (`0.1.0`) does **not** read `PRELOAD_MODELS`; the list is kept for images that do. Install models with `POST /v1/models/<id>` (below). Weights land in the same HF cache (`SPEACHES_HF_CACHE_DIR`), so they survive `down` / `up`.
+>
+> Idle unload is Speaches' `WHISPER__TTL` (one setting for Whisper, Kokoro and Piper). Compose maps `SPEACHES_STT_MODEL_TTL` onto it; `-1` keeps models loaded.
+
+## TTS model (read-aloud)
+
+| Model | Size | Notes |
+| --- | --- | --- |
+| **`speaches-ai/Kokoro-82M-v1.0-ONNX-fp16`** | ~200 MB | English voices (e.g. `af_heart`), runs on GPU via onnxruntime-gpu in `latest-cuda` |
+
+```bash
+curl -X POST "http://127.0.0.1:8000/v1/models/speaches-ai%2FKokoro-82M-v1.0-ONNX-fp16"
+```
+
+Same server, same cache folder, same OpenAI-style API as STT: `POST /v1/audio/speech` with `{ model, input, voice, response_format }`.
+
+**GPU check.** Speaches 0.1.0 picks Kokoro's ONNX device from an unordered set, so without a fixed seed it lands on CPU about half the time. The `gpu` service pins `PYTHONHASHSEED=0`, which orders CUDA first. On an RTX 3060 Ti a 134-character paragraph takes ~0.6 s on GPU vs ~1.8–2.7 s on CPU. After an image upgrade, re-check:
+
+```bash
+docker exec agent-speaches /home/ubuntu/speaches/.venv/bin/python -c "import onnxruntime as o; print(list(set(o.get_available_providers())-{'TensorrtExecutionProvider'})[0])"
+# must print CUDAExecutionProvider
+```
 
 ### Switch model / free old HF weights
 
@@ -62,6 +85,8 @@ curl -s http://127.0.0.1:8000/health
 curl -s http://127.0.0.1:8000/v1/models
 # if distil missing:
 curl -X POST "http://127.0.0.1:8000/v1/models/Systran%2Ffaster-distil-whisper-large-v3"
+# if Kokoro missing (TTS):
+curl -X POST "http://127.0.0.1:8000/v1/models/speaches-ai%2FKokoro-82M-v1.0-ONNX-fp16"
 ```
 
 ## Optional: Windows D: bind (Speaches only)
@@ -120,7 +145,7 @@ When the gate test passes, switch Speaches to GPU in `.env.docker`:
 COMPOSE_PROFILES=gpu
 SPEACHES_TAG=latest-cuda
 SPEACHES_WHISPER_COMPUTE_TYPE=float16
-SPEACHES_PRELOAD_MODELS=["Systran/faster-distil-whisper-large-v3"]
+SPEACHES_PRELOAD_MODELS=["Systran/faster-distil-whisper-large-v3","speaches-ai/Kokoro-82M-v1.0-ONNX-fp16"]
 ```
 
 Then:
@@ -138,11 +163,13 @@ App `.env` stays `SPEACHES_STT_MODEL=Systran/faster-distil-whisper-large-v3`.
 
 ```env
 VOICE_STT_PROVIDER=speaches
-NEXT_PUBLIC_VOICE_STT_PROVIDER=speaches
 SPEACHES_BASE_URL=http://127.0.0.1:8000
 SPEACHES_STT_MODEL=Systran/faster-distil-whisper-large-v3
 VOICE_STT_LANGUAGE=en
 VOICE_STT_PROMPT=agent, Speaches, Nx monorepo, Ollama, agent-core, RunManager, ChatInput
+VOICE_TTS_PROVIDER=speaches
+SPEACHES_TTS_MODEL=speaches-ai/Kokoro-82M-v1.0-ONNX-fp16
+VOICE_TTS_VOICE=af_heart
 # Keep chat on cloud — do not point OLLAMA_BASE_URL at Compose
 ```
 
@@ -155,8 +182,8 @@ curl -X POST "http://127.0.0.1:8000/v1/models/Systran%2Ffaster-distil-whisper-la
 ### Latency checklist
 
 - One warm GPU request on a short clip should be **&lt; ~3 s** (first request after restart may download/load).
-- Voice UI (Speaches) uses **~2 s** force-chunks + silence flush; Alt+A off still drains in-flight STT.
-- If wall clock is still 9–10 s per phrase, confirm CUDA (`docker compose logs speaches`) and that only one model is preloaded.
+- Voice UI (Speaches) cuts whole utterances with Silero VAD in the browser (800 ms silence ends one, 25 s cap); Alt+A off still drains in-flight STT.
+- If wall clock is still 9–10 s per phrase, confirm CUDA (`docker compose logs speaches`) and that only one STT model is installed.
 
 ## Useful commands
 
