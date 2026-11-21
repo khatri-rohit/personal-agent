@@ -185,12 +185,13 @@ export const UserMessage = memo(function UserMessage({
         </div>
       ) : (
         <>
-          {/* Document-style prompt card: stronger fill + bright ring so the
-              user's prompt is visually distinct from assistant/code content
-              while scrolling the transcript. */}
+          {/* The user's prompt: a raised fill, full-strength text, no
+              outline. The fill alone separates it from replies; a bright
+              ring added a hard frame per turn that pulled the eye down the
+              page. */}
           <div
             className={cn(
-              'type-user min-w-0 max-w-full overflow-hidden rounded-lg bg-muted/55 px-4 py-3 text-foreground ring-1 ring-foreground/25',
+              'type-user min-w-0 max-w-full overflow-hidden rounded-lg bg-muted px-4 py-3 text-foreground',
             )}
           >
             {message.attachments && message.attachments.length > 0 ? (

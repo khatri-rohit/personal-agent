@@ -91,12 +91,9 @@ export function ChatHeader({ threadId }: { threadId: string }) {
           {spaceName}
         </Link>
       </nav>
-      <h1 className="truncate text-lg font-semibold leading-snug tracking-tight text-pretty text-foreground">
+      <h1 className="truncate text-[length:var(--text-body)] font-semibold leading-snug tracking-tight text-pretty text-foreground">
         {isPending ? (
-          <span className="inline-flex items-center gap-2">
-            <span className="text-muted-foreground">Untitled</span>
-            <span className="h-3 w-24 animate-pulse rounded-full bg-muted" />
-          </span>
+          <span className="text-muted-foreground">Untitled</span>
         ) : (
           display
         )}

@@ -116,14 +116,17 @@ import {
   skillTokensInText,
 } from '@/features/composer/skill-slash-picker';
 import { fetchSkillCatalogs, type SkillCatalogItem } from '@/api/skills-client';
+import { getChoiceHandle } from '@/features/conversation/choice-focus';
 
 function composerPlaceholder(opts: {
   voiceActive: boolean;
   voiceTranscribing: boolean;
   isHero: boolean;
+  choicePending?: boolean;
 }): string {
   if (opts.voiceActive) return 'Listening… speech appends here';
   if (opts.voiceTranscribing) return 'Transcribing…';
+  if (opts.choicePending) return 'Answer the question above — text you send here becomes its note';
   if (opts.isHero) return 'Ask anything to start…';
   return 'Send a follow-up…';
 }
@@ -145,6 +148,7 @@ export function ChatInput({
   hideWebSearch = false,
   showWorkspacePicker = false,
   showPostureChips = false,
+  choicePending = false,
 }: {
   onSend: (
     content: string,
@@ -172,6 +176,12 @@ export function ChatInput({
   showWorkspacePicker?: boolean;
   /** Workspace-only Ask | Agent. Home stays chip-less. */
   showPostureChips?: boolean;
+  /**
+   * The agent is paused on a question. Sending then routes the text into
+   * the question's note instead of queuing a message the paused run would
+   * only see after the question is settled.
+   */
+  choicePending?: boolean;
 }) {
   const [input, setInput] = useState(
     () => loadComposerDraft(draftScope)?.content ?? '',
@@ -454,6 +464,16 @@ export function ChatInput({
     const content = input.trim();
     if (!content && pendingAttachments.length === 0) return;
 
+    if (choicePending && content && pendingAttachments.length === 0) {
+      const handle = getChoiceHandle();
+      if (handle) {
+        handle.addNote(content);
+        setInput('');
+        clearComposerDraft(draftScope);
+        return;
+      }
+    }
+
     if (localMode) {
       if (localModelsLoading) {
         toastError(
@@ -519,6 +539,7 @@ export function ChatInput({
     onSend,
     composerOptions,
     draftScope,
+    choicePending,
   ]);
 
   const visibleMentions = useMemo(() => {
@@ -1097,6 +1118,7 @@ export function ChatInput({
           voiceActive: voice.active,
           voiceTranscribing: voice.transcribing,
           isHero,
+          choicePending,
         })}
         rows={1}
         className={cn(
@@ -1121,7 +1143,7 @@ export function ChatInput({
       <div
         className={cn(
           'mx-auto w-full min-w-0 space-y-2',
-          isHero ? 'max-w-none' : 'max-w-4xl',
+          isHero ? 'max-w-none' : 'reading-text-width',
         )}
       >
         {queuedMessage && (

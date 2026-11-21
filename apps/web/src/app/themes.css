@@ -19,6 +19,10 @@
 :root {
   --background: #1b1b1d;
   --foreground: #ededef;
+  /* Long-form reading tier: a step under --foreground (~12:1, not ~15:1),
+     so headings and bold can sit above body text and big dark panels don't
+     bloom. Headings, strong and the user's own words keep --foreground. */
+  --reading-foreground: #d6d6da;
   --card: #232326;
   --card-foreground: #ededef;
   --popover: #29292c;
@@ -72,6 +76,7 @@
 .light {
   --background: oklch(0.98 0.005 85);
   --foreground: oklch(0.24 0.01 85);
+  --reading-foreground: oklch(0.28 0.01 85);
   --card: oklch(1 0.003 85);
   --card-foreground: oklch(0.24 0.01 85);
   --popover: oklch(1 0.003 85);

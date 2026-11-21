@@ -70,30 +70,73 @@
   --text-md-h3: calc(var(--text-body-reading) * 1.06);
   --text-md-h3-leading: 1.38;
 
-  --text-body: 0.9375rem;
+  /* One type ramp, two knobs. The window width sets the base step (--fs-*);
+     the reader's Text size pref (html[data-text-size]) multiplies it. Every
+     role scales together, so on a large display chrome grows with prose
+     instead of staying tiny next to it. */
+  --text-scale: 1;
+  --fs-body: 0.9375rem; /* 15px */
+  --fs-ui: 0.8125rem; /* 13px */
+  --fs-caption: 0.75rem; /* 12px — never below this */
+
+  --text-body: calc(var(--fs-body) * var(--text-scale));
   --text-body-leading: 1.6;
-  --text-body-reading: 0.9375rem;
-  --text-body-reading-leading: 1.62;
-  --text-user: 0.875rem;
+  --text-body-reading: calc(var(--fs-body) * var(--text-scale));
+  --text-body-reading-leading: 1.65;
+  --text-user: calc(var(--fs-body) * var(--text-scale));
   --text-user-leading: 1.55;
-  --text-composer: 0.9375rem;
+  --text-composer: calc(var(--fs-body) * var(--text-scale));
   --text-composer-leading: 1.5;
-  --text-ui: 0.8125rem;
-  --text-ui-leading: 1.4;
-  --text-caption: 0.6875rem;
-  --text-caption-leading: 1.35;
+  --text-ui: calc(var(--fs-ui) * var(--text-scale));
+  --text-ui-leading: 1.45;
+  --text-caption: calc(var(--fs-caption) * var(--text-scale));
+  --text-caption-leading: 1.4;
+
+  /* Reading column: fixed 56rem (Tailwind max-w-4xl), the wide conversation
+     width the user prefers. Transcript, composer, live dock and rail all
+     align to it. */
+  --reading-column: 56rem;
 }
 
-/* Extra-large screens: scale up the reading measure so text isn't cramped. */
 @media (min-width: 1536px) {
   :root {
-    --text-body: 1rem;
-    --text-body-leading: 1.6;
-    --text-body-reading: 1rem;
-    --text-body-reading-leading: 1.62;
-    --text-user: 1rem;
-    --text-user-leading: 1.55;
+    --fs-body: 1rem; /* 16px */
+    --fs-ui: 0.84375rem; /* 13.5px */
+    --fs-caption: 0.78125rem; /* 12.5px */
   }
+}
+
+/* Large desktops (≥1920 CSS px: 27–32" at 100–125%). */
+@media (min-width: 1920px) {
+  :root {
+    --fs-body: 1.0625rem; /* 17px */
+    --fs-ui: 0.875rem; /* 14px */
+    --fs-caption: 0.8125rem; /* 13px */
+  }
+}
+
+:root[data-text-size='sm'] {
+  --text-scale: 0.92;
+}
+
+:root[data-text-size='lg'] {
+  --text-scale: 1.12;
+}
+
+/* The shared reading column (transcript, with its own side padding). */
+.reading-column {
+  width: 100%;
+  min-width: 0;
+  max-width: var(--reading-column);
+  margin-inline: auto;
+}
+
+/* Composer and live dock width: the full column, as before the redesign. */
+.reading-text-width {
+  width: 100%;
+  min-width: 0;
+  max-width: var(--reading-column);
+  margin-inline: auto;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -105,35 +148,88 @@
     animation: none !important;
   }
 
-  .tool-running {
+  /* The live dock's one spinner becomes a still dot. */
+  .live-spinner {
     animation: none !important;
-    background-image: none !important;
   }
 }
 
-/* Lean tool group: a soft primary-tinted band sweeping left→right marks
-   what is running mid-stream (group header line + live tool row). */
-@keyframes tool-running-sweep {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
+/* --- Trail lines ---
+   Everything in the reading flow that is not prose (tool groups, sub-agents,
+   questions, compaction, plan) is one quiet line in one style: small muted
+   text, a fixed icon column, no box. Expanding hangs the detail off a thin
+   left rule. Nothing here animates; motion lives only in the live dock. */
+.trail-line {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.125rem 0;
+  border-radius: calc(var(--radius) - 2px);
+  text-align: left;
+  font-size: var(--text-ui);
+  line-height: var(--text-ui-leading);
+  color: var(--muted-foreground);
+}
+
+button.trail-line {
+  cursor: pointer;
+}
+
+button.trail-line:hover,
+button.trail-line[aria-expanded='true'] {
+  color: var(--foreground);
+}
+
+button.trail-line:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.trail-icon {
+  display: inline-flex;
+  width: 1rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Chevron shows on hover/focus or while open, so idle lines stay bare. */
+.trail-chevron {
+  flex-shrink: 0;
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    transform 0.15s ease;
+}
+
+.trail-line:hover .trail-chevron,
+.trail-line:focus-visible .trail-chevron,
+.trail-line[aria-expanded='true'] .trail-chevron {
+  opacity: 1;
+}
+
+.trail-line[aria-expanded='true'] .trail-chevron {
+  transform: rotate(180deg);
+}
+
+@media (hover: none) {
+  .trail-chevron {
+    opacity: 1;
   }
 }
 
-.tool-running {
-  background-image: linear-gradient(
-    90deg,
-    transparent 0%,
-    color-mix(in oklch, var(--primary) 10%, transparent) 35%,
-    color-mix(in oklch, var(--primary) 18%, transparent) 50%,
-    color-mix(in oklch, var(--primary) 10%, transparent) 65%,
-    transparent 100%
-  );
-  background-size: 200% 100%;
-  background-repeat: no-repeat;
-  animation: tool-running-sweep 1.6s ease-in-out infinite;
+.trail-body {
+  margin: 0.25rem 0 0.25rem 0.5rem;
+  padding-left: 0.875rem;
+  border-left: 1px solid var(--border);
+  min-width: 0;
+}
+
+/* Conversation rail: off the reading column's left edge, not against it. */
+.conversation-rail {
+  left: max(1.25rem, calc(50% - var(--reading-column) / 2 - 3rem));
 }
 
 html {
@@ -209,8 +305,13 @@ body {
   overflow-wrap: break-word;
   font-size: var(--text-body-reading);
   line-height: var(--text-body-reading-leading);
-  color: var(--foreground);
+  color: var(--reading-foreground);
   font-weight: 400;
+}
+
+.agent-markdown :is(strong, b) {
+  color: var(--foreground);
+  font-weight: 600;
 }
 
 .agent-markdown > *:first-child {
@@ -372,7 +473,7 @@ body {
   background: color-mix(in oklch, var(--muted) 40%, transparent);
   border-bottom: 1px solid var(--border);
   padding: 0.5rem 0.75rem;
-  font-size: 0.8125rem;
+  font-size: 0.86em;
 }
 
 .agent-markdown tbody td,
@@ -450,12 +551,15 @@ body {
 
 /* --- Assistant markdown (Streamdown) --- */
 
+/* Links read as text with an accent underline: a page of citations must not
+   turn into a field of clay. Colour arrives on hover. */
 .agent-markdown [data-streamdown='link'] {
   cursor: pointer;
-  color: var(--link);
-  font-weight: 500;
+  color: inherit;
+  font-weight: inherit;
   text-decoration: underline;
-  text-decoration-color: color-mix(in oklch, var(--link) 35%, transparent);
+  text-decoration-color: color-mix(in oklch, var(--link) 55%, transparent);
+  text-decoration-thickness: 1px;
   text-underline-offset: 3px;
   transition:
     color 0.15s ease,
@@ -464,11 +568,7 @@ body {
 
 .agent-markdown [data-streamdown='link']:hover {
   color: var(--link-hover);
-  text-decoration-color: color-mix(
-    in oklch,
-    var(--link-hover) 55%,
-    transparent
-  );
+  text-decoration-color: var(--link-hover);
 }
 
 .agent-markdown [data-streamdown='link']:focus-visible {
@@ -545,7 +645,7 @@ body {
   border-radius: 0;
   background: transparent;
   padding: 0.75rem 1rem 1rem;
-  font-size: 0.8125rem;
+  font-size: var(--text-ui);
   line-height: 1.55;
 }
 

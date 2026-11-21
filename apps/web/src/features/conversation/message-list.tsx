@@ -43,9 +43,16 @@ import { SubagentCard, SubagentLiveLine } from './subagent-card';
 import { ToolStepList } from './tool-call-panel';
 import { PlanChip } from './thread-plan-card';
 import { UserMessage } from './user-message';
+import { ChoiceCard, ChoiceRecord } from './choice-card';
 import { isUserCancelled, stopReasonLabel } from './stop-reason';
 import { toastError } from '@/hooks/use-toast';
+import { useDiagnostics } from '@/lib/reading-prefs';
 import { cn } from 'cn';
+
+export type ChoiceResolver = (
+  choiceId: string,
+  body: { skipped: true } | { optionIds: string[]; text?: string },
+) => Promise<void>;
 
 export function MessageList({
   messages,
@@ -55,11 +62,14 @@ export function MessageList({
   onRetryLastResponse,
   onEditLastUserMessage,
   onContinue,
+  onResolveChoice,
 }: {
   messages: Message[] | undefined;
   chatState: ChatState;
   isRunning: boolean;
   threadKind?: 'home' | 'workspace';
+  /** Answer the agent's open question (rendered inline at the turn's end). */
+  onResolveChoice?: ChoiceResolver;
   onRetryLastResponse: () => void | Promise<void>;
   /** Start the next run from the last run's handoff (budget/capacity stops). */
   onContinue?: () => void | Promise<void>;
@@ -168,13 +178,9 @@ export function MessageList({
 
   const hasMessages = (messages?.length ?? 0) > 0;
   const lastTurnIndex = turns.length - 1;
-  // Overlay clearance: the plan card and the running-sub-agent strip both
-  // float above the composer, so the newest lines need bottom room.
-  const hasLiveSubagents =
-    (chatState.activeRun?.subagentActivity?.some(
-      (activity) => activity.status === 'running',
-    ) ??
-      false) && isRunning;
+  const diagnostics = useDiagnostics();
+  const pendingChoice =
+    chatState.pendingChoices[chatState.pendingChoices.length - 1] ?? null;
 
   const latestAssistantMessageId = useMemo(() => {
     if (!messages?.length) return null;
@@ -237,12 +243,12 @@ export function MessageList({
         ref={scrollRef}
         className={cn(
           'min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto scrollbar-gutter-stable [overflow-anchor:none]',
-          // Keep the newest lines reachable above the floating plan card
-          // and the live sub-agent strip.
-          isRunning && (chatState.plan || hasLiveSubagents) ? 'pb-40' : 'pb-5',
+          // Constant room under the newest line for the one-line live dock
+          // for the whole run — it never grows, so nothing reflows mid-run.
+          isRunning ? 'pb-14' : 'pb-5',
         )}
       >
-        <div className="mx-auto w-full min-w-0 max-w-4xl px-4 py-5 sm:px-6">
+        <div className="reading-column px-4 py-5 sm:px-6">
           {!hasMessages && !isRunning && !streaming?.content && (
             <p className="type-ui text-center text-muted-foreground">
               Conversation will appear here.
@@ -269,9 +275,9 @@ export function MessageList({
                   latestAssistantMessageId={latestAssistantMessageId}
                   latestUserMessageId={latestUserMessageId}
                   plan={chatState.plan}
-                  pendingChoices={chatState.pendingChoices}
+                  pendingChoice={isLastTurn ? pendingChoice : null}
+                  onResolveChoice={onResolveChoice}
                   limitNotice={chatState.limitNotice}
-                  runStartedAt={chatState.activeRun?.runStartedAt}
                   transcriptBusy={transcriptBusy}
                   runTranscriptAction={runTranscriptAction}
                   onRetryLastResponse={onRetryLastResponse}
@@ -286,7 +292,7 @@ export function MessageList({
           {chatState.limitNotice ? (
             <div
               className={cn(
-                'flex flex-wrap items-center gap-x-3 gap-y-1',
+                'mt-4 flex flex-wrap items-center gap-x-3 gap-y-1',
                 // A stop the user didn't ask for (interrupt, limit) is the most
                 // important line on screen: banner, not caption.
                 isUserCancelled(chatState.limitNotice.reason)
@@ -320,9 +326,11 @@ export function MessageList({
             </div>
           ) : null}
 
-          {chatState.system1Notice ? (
+          {/* Developer diagnostics: shown only with Settings → Show run
+              diagnostics on, so product reading stays plain language. */}
+          {diagnostics && chatState.system1Notice ? (
             <p
-              className="type-caption px-1 text-muted-foreground"
+              className="type-caption mt-2 text-subtle-foreground"
               role="status"
             >
               {system1NoticeText(chatState.system1Notice.report)}
@@ -379,69 +387,6 @@ function turnOwnsCompaction(
   return isLastTurn;
 }
 
-/** Quiet “still working” cue for model think gaps when no stream is visible. */
-function TurnStatusLine({
-  toolActivity,
-  hasStreamingText,
-  compacting,
-  waitingForChoice,
-  runStartedAt,
-}: {
-  toolActivity: ToolActivity[];
-  hasStreamingText: boolean;
-  compacting?: boolean;
-  waitingForChoice?: boolean;
-  /** Server start time of the run; shows the total next to the phase clock. */
-  runStartedAt?: string;
-}) {
-  const running = toolActivity.find((t) => t.status === 'running');
-  let label: string | null = null;
-
-  if (compacting) {
-    label = 'Compacting context…';
-  } else if (waitingForChoice) {
-    label = 'Waiting for a choice…';
-  } else if (running) {
-    label = `${running.toolName}…`;
-  } else if (toolActivity.length > 0 && !hasStreamingText) {
-    label = 'Working…';
-  } else if (!hasStreamingText) {
-    label = 'Working…';
-  }
-
-  // Each phase (tool call, think gap) gets its own clock keyed on the label.
-  const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    setElapsed(0);
-    if (!label) return;
-    const id = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(id);
-  }, [label]);
-
-  if (!label) return null;
-  // Re-rendered every second by the phase clock above.
-  const started = runStartedAt ? Date.parse(runStartedAt) : NaN;
-  const total = Number.isFinite(started)
-    ? Math.max(0, Date.now() - started)
-    : null;
-
-  return (
-    <p
-      className="type-caption flex items-center gap-1.5 pl-0.5 text-left text-muted-foreground tabular-nums"
-      aria-live="polite"
-    >
-      <span
-        className="size-1.5 shrink-0 rounded-full bg-primary/80 animate-pulse"
-        aria-hidden
-      />
-      {label}
-      <span className="text-muted-foreground">
-        {elapsed}s{total != null ? ` · ${formatDuration(total)} total` : ''}
-      </span>
-    </p>
-  );
-}
-
 function MessageTimestamp({
   iso,
   durationMs,
@@ -458,7 +403,7 @@ function MessageTimestamp({
     <time
       dateTime={iso}
       title={title}
-      className="type-caption text-muted-foreground tabular-nums"
+      className="type-caption text-subtle-foreground tabular-nums"
     >
       {text}
       {durationMs != null && ` · ${formatDuration(durationMs)}`}
@@ -551,9 +496,10 @@ type TurnViewProps = {
   latestAssistantMessageId: string | null;
   latestUserMessageId: string | null;
   plan: ThreadPlan | null;
-  pendingChoices: PendingChoice[];
+  /** Open question for this turn (last turn only), rendered inline. */
+  pendingChoice: PendingChoice | null;
+  onResolveChoice: ChoiceResolver | undefined;
   limitNotice: LimitNotice | null;
-  runStartedAt: string | undefined;
   transcriptBusy: boolean;
   runTranscriptAction: (action: () => void | Promise<void>) => void;
   onRetryLastResponse: () => void | Promise<void>;
@@ -575,9 +521,9 @@ const TurnView = memo(function TurnView({
   latestAssistantMessageId,
   latestUserMessageId,
   plan,
-  pendingChoices,
+  pendingChoice,
+  onResolveChoice,
   limitNotice,
-  runStartedAt,
   transcriptBusy,
   runTranscriptAction,
   onRetryLastResponse,
@@ -619,16 +565,21 @@ const TurnView = memo(function TurnView({
 
   const workSummary = useMemo(() => summarizeTurnWork(steps), [steps]);
 
-  const latestReplyStep = steps.find(
-    (step): step is Extract<typeof step, { type: 'assistant' }> =>
-      step.type === 'assistant' &&
-      step.message.id === latestAssistantMessageId,
-  );
-  // The thread's latest assistant reply lives in this turn — retry is only
-  // valid there (retry rewinds the ledger to that point).
-  const isLatestTurnReply = latestReplyStep !== undefined;
-  const footerAfterSteps =
-    latestReplyStep !== undefined && steps.at(-1) !== latestReplyStep;
+  // One footer per turn, under the turn's final answer — never between the
+  // agent's interim lines ("Let me check X"), which would chop one answer
+  // into pieces. Hidden while the turn's run is still going.
+  const finalAnswer = [...steps]
+    .reverse()
+    .find(
+      (step): step is Extract<typeof step, { type: 'assistant' }> =>
+        step.type === 'assistant',
+    );
+  const turnLive = isLastTurn && isRunning;
+  // Retry is only valid on the thread's latest reply (retry rewinds the
+  // ledger to that point).
+  const isLatestTurnReply =
+    finalAnswer !== undefined &&
+    finalAnswer.message.id === latestAssistantMessageId;
   const showSteps =
     turn.replies.length > 0 ||
     toolActivity.length > 0 ||
@@ -688,20 +639,12 @@ const TurnView = memo(function TurnView({
         <div className="flex min-w-0 flex-col gap-3">
           {steps.map((step) => {
             if (step.type === 'assistant') {
-              const isLatestAssistant =
-                step.message.id === latestAssistantMessageId;
               return (
-                <AssistantMessage
-                  key={step.message.id}
-                  message={step.message}
-                  showMeta={!footerAfterSteps}
-                  workSummary={isLatestAssistant ? workSummary : undefined}
-                  turnStartedAt={turn.userMessage.createdAt}
-                  showRetry={!isRunning && isLatestAssistant}
-                  onRetry={onRetryLastResponse}
-                  retryDisabled={isRunning}
-                />
+                <AssistantMessage key={step.message.id} message={step.message} />
               );
+            }
+            if (step.type === 'choice') {
+              return <ChoiceRecord key={step.key} row={step.row} />;
             }
             if (step.type === 'snippet') {
               // Render through AssistantMessage with the same key the
@@ -710,7 +653,6 @@ const TurnView = memo(function TurnView({
               return (
                 <AssistantMessage
                   key={step.messageId}
-                  showMeta={false}
                   message={{
                     id: step.messageId,
                     threadId: turn.userMessage.threadId,
@@ -735,9 +677,9 @@ const TurnView = memo(function TurnView({
               );
             }
             if (step.type === 'subagent') {
-              // Live delegates read as one lean line (plan-row language);
-              // the full-width link + progress live in the strip above the
-              // composer. Settled delegates keep the digest card here.
+              // Live delegates are a still line here; progress, links and
+              // the spinner live in the dock. Settled ones expand to the
+              // digest.
               if (step.activity.status === 'running') {
                 return (
                   <SubagentLiveLine
@@ -756,7 +698,6 @@ const TurnView = memo(function TurnView({
             return (
               <AssistantMessage
                 key={step.messageId}
-                showMeta={false}
                 streaming
                 message={{
                   id: step.messageId,
@@ -773,24 +714,18 @@ const TurnView = memo(function TurnView({
         </div>
       ) : null}
 
-      {footerAfterSteps && latestReplyStep ? (
-        <TurnFooter
-          message={latestReplyStep.message}
-          workSummary={workSummary}
-          turnStartedAt={turn.userMessage.createdAt}
-          showRetry={!isRunning && isLatestTurnReply}
-          onRetry={onRetryLastResponse}
-          retryDisabled={isRunning}
-        />
+      {pendingChoice && onResolveChoice ? (
+        <ChoiceCard choice={pendingChoice} onResolve={onResolveChoice} />
       ) : null}
 
-      {isLastTurn && (isRunning || compactionNotice?.status === 'running') ? (
-        <TurnStatusLine
-          toolActivity={toolActivity}
-          hasStreamingText={Boolean(streaming?.content)}
-          compacting={compactionNotice?.status === 'running'}
-          waitingForChoice={pendingChoices.length > 0}
-          {...(runStartedAt ? { runStartedAt } : {})}
+      {finalAnswer && !turnLive ? (
+        <TurnFooter
+          message={finalAnswer.message}
+          workSummary={workSummary}
+          turnStartedAt={turn.userMessage.createdAt}
+          showRetry={isLatestTurnReply}
+          onRetry={onRetryLastResponse}
+          retryDisabled={isRunning}
         />
       ) : null}
     </section>
@@ -799,44 +734,18 @@ const TurnView = memo(function TurnView({
 
 const AssistantMessage = memo(function AssistantMessage({
   message,
-  showMeta = true,
-  workSummary,
-  showRetry,
-  onRetry,
-  retryDisabled,
-  turnStartedAt,
   streaming = false,
 }: {
   message: Message;
-  /** Meta footer (start time · run duration · Copy) on every committed reply. */
-  showMeta?: boolean;
-  workSummary?: string;
-  /** The turn's user message time; fallback start for old rows. */
-  turnStartedAt?: string;
-  showRetry?: boolean;
-  onRetry?: () => void | Promise<void>;
-  retryDisabled?: boolean;
   /** True while tokens are still arriving for this reply. */
   streaming?: boolean;
 }) {
   if (!message.content.trim()) return null;
 
   return (
-    <div className="min-w-0 max-w-full">
-      <article className="chat-prose type-body min-w-0 max-w-full">
-        <AgentMarkdown content={message.content} streaming={streaming} />
-      </article>
-      {showMeta ? (
-        <TurnFooter
-          message={message}
-          workSummary={workSummary}
-          turnStartedAt={turnStartedAt}
-          showRetry={showRetry}
-          onRetry={onRetry}
-          retryDisabled={retryDisabled}
-        />
-      ) : null}
-    </div>
+    <article className="chat-prose type-body min-w-0 max-w-full">
+      <AgentMarkdown content={message.content} streaming={streaming} />
+    </article>
   );
 });
 

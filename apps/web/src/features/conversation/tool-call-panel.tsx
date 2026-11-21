@@ -1,10 +1,12 @@
 'use client';
 
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { Ban, Check, ChevronDown, Copy, Loader2, X } from 'lucide-react';
 import { parseSubagentHeader, subagentDigestBody } from '@agent/agent-models';
 import type { ToolCallRow } from './turn-timeline';
 import { SubagentCard } from './subagent-card';
+import { TrailLine } from './trail-line';
+import { formatDuration } from '@/lib/format-relative-time';
 import type { SubagentActivity } from './chat-store';
 import { Button } from '@/components/ui/button';
 import { toastError } from '@/hooks/use-toast';
@@ -251,9 +253,15 @@ function groupHeader(rows: ToolCallRow[]): GroupHeader {
   };
 }
 
+/**
+ * Row status glyph. No spinners in the reading flow — the live dock owns the
+ * one moving indicator; a running row gets a still dot.
+ */
 function StatusIcon({ status }: { status: ToolCallRow['status'] }) {
   if (status === 'running') {
-    return <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />;
+    return (
+      <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground" />
+    );
   }
   if (status === 'failed') {
     return <X className="size-3.5 shrink-0 text-destructive" />;
@@ -265,15 +273,46 @@ function StatusIcon({ status }: { status: ToolCallRow['status'] }) {
   return null;
 }
 
+/** Present-tense verb for the line while a call is in flight. */
+const RUNNING_VERB: Record<string, string> = {
+  Read: 'Reading',
+  Edit: 'Editing',
+  Create: 'Creating',
+  Writing: 'Writing',
+  Glob: 'Searching',
+  Grep: 'Searching',
+  Search: 'Searching',
+  Terminal: 'Running',
+  Fetch: 'Fetching',
+  Plan: 'Planning',
+  Goal: 'Setting goal',
+  Todos: 'Updating todos',
+  Finding: 'Recording',
+};
+
+function runningLine(row: ToolCallRow, doneCount: number): string {
+  const summary = summarizeToolRow(row);
+  const verb = RUNNING_VERB[summary.action] ?? summary.action;
+  const what =
+    summary.kind === 'terminal' ? truncateMiddle(summary.title, 64) : summary.title;
+  const done = doneCount > 0 ? ` · ${doneCount} done` : '';
+  return `${verb} ${what}${done}`;
+}
+
+function truncateMiddle(text: string, max: number): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  if (oneLine.length <= max) return oneLine;
+  const half = Math.floor((max - 1) / 2);
+  return `${oneLine.slice(0, half)}…${oneLine.slice(-half)}`;
+}
+
 /**
- * One contiguous tool batch, lean: a single muted header line ("Read 2
- * files, edited ledger.ts +41 −3 ›") collapses the whole batch; clicking it
- * opens flat one-line rows, each of which expands to its per-type preview on
- * a second click. Assistant prose between batches stays full-width — prose
- * owns the reading path, tool detail is one deliberate click away.
- *
- * While any row is still running the group renders open with a pulse sweep
- * on the running row; it collapses to the header once everything settles.
+ * One group of consecutive tool calls (see turn-timeline's grouping rule),
+ * as one trail line: "Read 2 files, edited ledger.ts +41 −3". While a call
+ * is in flight the same line reads "Reading chat-store.ts · 2 done" — the
+ * text updates in place, nothing moves, nothing opens. Clicking opens flat
+ * rows (a hairline between model steps), each of which expands to its
+ * per-type preview. Open state is the reader's alone.
  */
 export const ToolStepList = memo(function ToolStepList({
   rows,
@@ -325,87 +364,72 @@ function SubagentRow({ row }: { row: ToolCallRow }) {
 }
 
 function ToolGroup({ rows }: { rows: ToolCallRow[] }) {
-  const runningRow = rows.find((row) => row.status === 'running');
-  const isRunning = runningRow !== undefined;
-  const [open, setOpen] = useState(isRunning);
-  const wasRunning = useRef(isRunning);
   const gh = useMemo(() => groupHeader(rows), [rows]);
+  const runningRow = rows.find((row) => row.status === 'running');
+  const doneCount = rows.filter((row) => row.status !== 'running').length;
+  const label = runningRow ? runningLine(runningRow, doneCount) : gh.text;
 
-  // A live batch mounts open and auto-collapses on the running→settled edge,
-  // when the ledger results have landed and the header line is final. A
-  // settled batch from the ledger starts collapsed.
-  useEffect(() => {
-    if (isRunning) {
-      wasRunning.current = true;
-      return;
-    }
-    if (wasRunning.current) {
-      wasRunning.current = false;
-      setOpen(false);
-    }
-  }, [isRunning]);
-
-  const toggle = () => setOpen((prev) => !prev);
-
-  return (
-    <div className="w-full min-w-0">
-      <button
-        type="button"
-        onClick={toggle}
-        aria-expanded={open}
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-1 text-left transition-colors hover:bg-accent/30"
-      >
-        {runningRow ? <StatusIcon status={runningRow.status} /> : null}
-        {open ? (
-          <span className="shrink-0 font-medium text-muted-foreground text-lg">
-            Details
-          </span>
-        ) : (
-          <span
-            className={cn(
-              'min-w-0 flex-1 truncate font-medium text-foreground py-1 text-lg cursor-pointer',
-              runningRow && 'tool-running',
-            )}
-          >
-            {gh.text}
-          </span>
-        )}
-        {!open && gh.plus > 0 ? (
-          <span className="type-ui shrink-0 font-mono tabular-nums text-[var(--status-ok)]">
-            +{gh.plus}
-          </span>
+  const meta =
+    gh.plus > 0 || gh.minus > 0 || gh.failed > 0 ? (
+      <>
+        {gh.plus > 0 ? (
+          <span className="font-mono text-[var(--status-ok)]">+{gh.plus}</span>
         ) : null}
-        {!open && gh.minus > 0 ? (
-          <span className="type-ui shrink-0 font-mono tabular-nums text-[var(--status-failed)]">
+        {gh.minus > 0 ? (
+          <span className="font-mono text-[var(--status-failed)]">
             −{gh.minus}
           </span>
         ) : null}
-        {!open && gh.failed > 0 ? (
-          <span className="type-ui shrink-0 font-mono tabular-nums text-destructive">
-            {gh.failed} failed
-          </span>
+        {gh.failed > 0 ? (
+          <span className="text-destructive">{gh.failed} failed</span>
         ) : null}
-        <ChevronDown
-          className={cn(
-            'size-3 shrink-0 text-muted-foreground transition-transform',
-            open && 'rotate-180',
-          )}
-        />
-      </button>
+      </>
+    ) : null;
 
-      {open ? (
-        <div className="mt-1 min-w-0 space-y-0.5 rounded-lg border border-border/40 bg-muted/20 px-2 py-1.5">
-          {rows.map((row) =>
-            row.toolName === 'delegate' &&
-            parseSubagentHeader(row.result ?? '') ? (
-              <SubagentRow key={row.toolCallId} row={row} />
-            ) : (
-              <ToolRow key={row.toolCallId} row={row} />
-            ),
-          )}
-        </div>
-      ) : null}
-    </div>
+  return (
+    <TrailLine
+      icon={
+        runningRow ? (
+          <StatusIcon status="running" />
+        ) : gh.failed > 0 ? (
+          <StatusIcon status="failed" />
+        ) : null
+      }
+      label={label}
+      meta={meta}
+      ariaLabel={`Tool calls: ${gh.text}`}
+    >
+      <div className="min-w-0 space-y-0.5">
+        {rows.map((row, i) => {
+          const stepChanged =
+            i > 0 &&
+            row.batch !== undefined &&
+            rows[i - 1]?.batch !== undefined &&
+            row.batch !== rows[i - 1]?.batch;
+          return (
+            <div key={row.toolCallId} className="min-w-0">
+              {stepChanged ? (
+                <div
+                  className="my-1 border-t border-border/60"
+                  aria-hidden
+                />
+              ) : null}
+              {isSettledDelegate(row) ? (
+                <SubagentRow row={row} />
+              ) : (
+                <ToolRow row={row} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </TrailLine>
+  );
+}
+
+function isSettledDelegate(row: ToolCallRow): boolean {
+  return (
+    row.toolName === 'delegate' && parseSubagentHeader(row.result ?? '') !== null
   );
 }
 
@@ -414,52 +438,41 @@ function ToolRow({ row }: { row: ToolCallRow }) {
   const summary = useMemo(() => summarizeToolRow(row), [row]);
   const [open, setOpen] = useState(false);
 
-  const toggle = () => setOpen((prev) => !prev);
-  const line = summary.action + ': ' + summary.title;
-
   return (
-    <div className="w-full">
+    <div className="w-full min-w-0">
       <button
         type="button"
-        onClick={toggle}
+        onClick={() => setOpen((prev) => !prev)}
         aria-expanded={open}
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-accent/30"
+        className="trail-line"
       >
-        <StatusIcon status={row.status} />
-        <span
-          className={cn(
-            'min-w-0 flex-1 truncate type-ui font-mono text-foreground',
-            row.status === 'running' && 'tool-running',
-          )}
-        >
-          {line}
-          {!open ? ' ›' : ''}
+        <span className="trail-icon" aria-hidden>
+          <StatusIcon status={row.status} />
         </span>
-        {summary.minus !== undefined ? (
-          <span className="type-ui shrink-0 font-mono tabular-nums text-[var(--status-failed)]">
-            −{summary.minus}
-          </span>
-        ) : null}
-        {summary.plus !== undefined ? (
-          <span className="type-ui shrink-0 font-mono tabular-nums text-[var(--status-ok)]">
-            +{summary.plus}
-          </span>
-        ) : null}
-        {row.durationMs !== undefined && row.status !== 'running' ? (
-          <span className="type-ui shrink-0 tabular-nums text-subtle-foreground">
-            {row.durationMs}ms
-          </span>
-        ) : null}
-        <ChevronDown
-          className={cn(
-            'size-3 shrink-0 text-muted-foreground transition-transform',
-            open && 'rotate-180',
-          )}
-        />
+        <span className="min-w-0 flex-1 truncate">
+          <span className="text-subtle-foreground">{summary.action}</span>{' '}
+          <span className="font-mono">{summary.title}</span>
+        </span>
+        <span className="type-caption flex shrink-0 items-center gap-2 tabular-nums text-subtle-foreground">
+          {summary.minus !== undefined ? (
+            <span className="font-mono text-[var(--status-failed)]">
+              −{summary.minus}
+            </span>
+          ) : null}
+          {summary.plus !== undefined ? (
+            <span className="font-mono text-[var(--status-ok)]">
+              +{summary.plus}
+            </span>
+          ) : null}
+          {row.durationMs !== undefined && row.status !== 'running' ? (
+            <span>{formatDuration(row.durationMs)}</span>
+          ) : null}
+        </span>
+        <ChevronDown className="trail-chevron size-3.5" aria-hidden />
       </button>
 
       {open ? (
-        <div className="min-w-0 max-h-[60vh] overflow-y-auto overflow-x-auto rounded-lg border border-border/40 bg-card">
+        <div className="my-1 min-w-0 max-h-[60vh] overflow-x-auto overflow-y-auto rounded-lg border border-border/60 bg-card">
           <ToolPreview row={teaserRow(row)} summary={summary} />
         </div>
       ) : null}

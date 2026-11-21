@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
+  Activity,
   Bell,
   Check,
   Monitor,
@@ -12,9 +13,18 @@ import {
   Settings,
   Sun,
   Trash2,
+  Type,
   UserRound,
   Volume2,
 } from 'lucide-react';
+import {
+  TEXT_SIZES,
+  setDiagnostics,
+  setTextSize,
+  useDiagnostics,
+  useTextSize,
+  type TextSize,
+} from '@/lib/reading-prefs';
 import {
   MODEL_SETTING_ROLES,
   SIDE_CALL_THINKING_LEVELS,
@@ -93,6 +103,8 @@ export function SidebarSettings({
   collapsed?: boolean;
 }) {
   const { preference, setPreference } = useTheme();
+  const textSize = useTextSize();
+  const diagnostics = useDiagnostics();
   const [profileOpen, setProfileOpen] = useState(false);
   const [soundOn, setSoundOn] = useState(true);
   const [notifyOn, setNotifyOn] = useState(false);
@@ -219,6 +231,43 @@ export function SidebarSettings({
               </DropdownMenuRadioGroup>
             </DropdownMenuSubContent>
           </DropdownMenuSub>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger className="gap-2">
+              <Type className="size-4 opacity-80" />
+              Text size
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent sideOffset={8} className="w-64">
+              <DropdownMenuRadioGroup
+                value={textSize}
+                onValueChange={(value) => setTextSize(value as TextSize)}
+              >
+                {TEXT_SIZES.map((option) => (
+                  <DropdownMenuRadioItem
+                    key={option.value}
+                    value={option.value}
+                    className="items-start gap-2.5 py-2"
+                  >
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="leading-none">{option.label}</span>
+                      <span className="type-caption leading-snug text-muted-foreground">
+                        {option.hint}
+                      </span>
+                    </span>
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          <DropdownMenuCheckboxItem
+            checked={diagnostics}
+            className="items-start gap-2 py-2 whitespace-normal"
+            onCheckedChange={(checked) => setDiagnostics(checked === true)}
+          >
+            <Activity className="mt-0.5 size-4 shrink-0 opacity-80" />
+            <span className="leading-snug">
+              Show run diagnostics (seq, tokens, timings, System 1)
+            </span>
+          </DropdownMenuCheckboxItem>
           <DropdownMenuSeparator />
           <DropdownMenuCheckboxItem
             checked={soundOn}
@@ -420,7 +469,9 @@ function ProfileDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
+      {/* Fixed size: switching tabs must never resize the dialog. The tab
+          body is the one flexible row and scrolls inside it. */}
+      <DialogContent className="h-[min(85vh,40rem)] grid-rows-[auto_auto_minmax(0,1fr)_auto] sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>User profile</DialogTitle>
           <DialogDescription>
@@ -455,6 +506,7 @@ function ProfileDialog({
           ))}
         </div>
 
+        <div role="tabpanel" className="-mx-1 min-h-0 overflow-y-auto px-1">
         {loading ? (
           <ProfileSkeleton />
         ) : tab === 'profile' ? (
@@ -520,6 +572,7 @@ function ProfileDialog({
             refreshing={refreshing}
           />
         )}
+        </div>
 
         <DialogFooter className="mt-2">
           {confirmDiscard ? (

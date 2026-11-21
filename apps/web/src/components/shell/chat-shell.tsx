@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/resizable';
 import { cn } from '../../lib/utils';
 import { getComposerFocus } from '../../features/composer/composer-focus';
+import { getChoiceHandle } from '../../features/conversation/choice-focus';
 import {
   RecentThreadsSwitcher,
   isTypeToFocusKey,
@@ -28,6 +29,17 @@ function TypeToFocusListener() {
         tag === 'textarea' ||
         (active as HTMLElement)?.isContentEditable
       ) {
+        return;
+      }
+      // An open question takes typed text into its note: the paused agent is
+      // waiting on that answer, not on a new message.
+      const choice = getChoiceHandle();
+      if (choice) {
+        e.preventDefault();
+        // Digits pick options (1 = first); everything else is note text.
+        const index = Number(e.key) - 1;
+        if (/^[1-9]$/.test(e.key) && choice.toggleOption(index)) return;
+        choice.addNote(e.key);
         return;
       }
       const composer = getComposerFocus();

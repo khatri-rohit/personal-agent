@@ -20,15 +20,44 @@ export type ToolCallRow = {
   result?: string;
   status: ToolStatus;
   durationMs?: number;
+  /**
+   * Which model step issued the call. A merged group can span several steps;
+   * the expanded view draws a hairline where the step changes. Live rows
+   * have no step id until the ledger lands.
+   */
+  batch?: string;
 };
 
 export type TimelineStep =
   | { type: 'assistant'; message: Message }
   | { type: 'snippet'; messageId: string; content: string }
   | { type: 'tools'; key: string; rows: ToolCallRow[] }
+  | { type: 'choice'; key: string; row: ToolCallRow }
   | { type: 'compaction'; notice: CompactionNotice }
   | { type: 'subagent'; activity: SubagentActivity }
   | { type: 'stream'; messageId: string; content: string };
+
+/**
+ * The one grouping rule, shared by the live and the ledger path:
+ * consecutive tool calls form one group until something the reader should
+ * see breaks it — assistant prose, a sub-agent, a question to the user, or
+ * compaction. Parallel calls and back-to-back tool-only model steps land in
+ * the same group, so a finished run reads exactly like it did live.
+ *
+ * Groups are keyed by their first tool call id: the live group and the
+ * ledger group that replaces it at settle are the same React element, so
+ * nothing remounts and a group the user opened stays open.
+ */
+function groupKey(rows: ToolCallRow[]): string {
+  return `tools-${rows[0]?.toolCallId ?? 'empty'}`;
+}
+
+/** A settled delegate with a digest header renders as its own card. */
+function isSubagentRow(row: ToolCallRow): boolean {
+  return (
+    row.toolName === 'delegate' && parseSubagentHeader(row.result ?? '') !== null
+  );
+}
 
 function previewToArgs(value: unknown): string | undefined {
   if (value == null) return undefined;
@@ -119,8 +148,23 @@ export function buildTurnTimeline(input: {
   const seenToolIds = new Set<string>();
   const replies = input.replies;
   let index = 0;
-  let toolsStepIndex = 0;
   const snippets = input.snippets ?? [];
+
+  // The open group collects tool rows until something breaks it.
+  let openRows: ToolCallRow[] = [];
+  const flushTools = () => {
+    if (openRows.length === 0) return;
+    steps.push({ type: 'tools', key: groupKey(openRows), rows: openRows });
+    openRows = [];
+  };
+  const pushRow = (row: ToolCallRow) => {
+    if (row.toolName === 'offer_choice') {
+      flushTools();
+      steps.push({ type: 'choice', key: `choice-${row.toolCallId}`, row });
+      return;
+    }
+    openRows.push(row);
+  };
 
   while (index < replies.length) {
     const message = replies[index];
@@ -143,6 +187,7 @@ export function buildTurnTimeline(input: {
     }
 
     if (message.content.trim()) {
+      flushTools();
       steps.push({ type: 'assistant', message });
     }
 
@@ -160,17 +205,23 @@ export function buildTurnTimeline(input: {
 
       const rows = calls.map((call) => {
         seenToolIds.add(call.id);
-        return rowFromCall(
-          call,
-          results.get(call.id),
-          activityMap.get(call.id),
-        );
+        return {
+          ...rowFromCall(call, results.get(call.id), activityMap.get(call.id)),
+          batch: message.id,
+        };
       });
-      steps.push({
-        type: 'tools',
-        key: `tools-${message.id}-${toolsStepIndex++}`,
-        rows,
-      });
+      // Same order the live path shows: the batch's ordinary tools join the
+      // open group, then each settled delegate follows as its own card
+      // (live, the sub-agent step arrives after the batch's tool.started).
+      const delegates: ToolCallRow[] = [];
+      for (const row of rows) {
+        if (isSubagentRow(row)) delegates.push(row);
+        else pushRow(row);
+      }
+      if (delegates.length > 0) {
+        flushTools();
+        steps.push({ type: 'tools', key: groupKey(delegates), rows: delegates });
+      }
       index = cursor;
       continue;
     }
@@ -213,18 +264,8 @@ export function buildTurnTimeline(input: {
 
   pending.sort((a, b) => a.seq - b.seq);
 
-  // Render in seq order, merging adjacent tool items into one tools step —
-  // matching how the ledger groups a tool_calls row with its tool results.
-  let pendingTools: ToolActivity[] = [];
-  const flushTools = () => {
-    if (pendingTools.length === 0) return;
-    steps.push({
-      type: 'tools',
-      key: `tools-live-${toolsStepIndex++}`,
-      rows: pendingTools.map(rowFromLive),
-    });
-    pendingTools = [];
-  };
+  // Live items continue the same open group the ledger walk left (a run
+  // that resumes mid-turn keeps one group), under the same rule.
   for (const item of pending) {
     if (item.kind === 'snippet') {
       flushTools();
@@ -239,16 +280,17 @@ export function buildTurnTimeline(input: {
       flushTools();
       steps.push({ type: 'subagent', activity: item.activity });
     } else {
-      pendingTools.push(item.activity);
+      pushRow(rowFromLive(item.activity));
     }
   }
-  flushTools();
 
   const stream = input.streaming;
   const streamContent = stream?.content.trim();
   if (stream && streamContent) {
+    flushTools();
     steps.push({ type: 'stream', messageId: stream.id, content: streamContent });
   }
+  flushTools();
 
   if (input.compaction) {
     steps.push({ type: 'compaction', notice: input.compaction });

@@ -199,9 +199,9 @@ function rereadFollowed(
   cardIteration: number,
 ): boolean {
   // The card names exact restores only (task-state.ts), so only those count here.
-  const restores = linesOf(lines, 'context_restored')
-    .filter((line) => restoreKind(line) === 'exact' && line.path)
-    .map((line) => ({ iteration: line.iteration, path: normalPath(line.path!) }));
+  const restores = linesOf(lines, 'context_restored').flatMap((line) =>
+    restoreKind(line) === 'exact' && line.path ? [{ iteration: line.iteration, path: normalPath(line.path) }] : [],
+  );
   const before = iterations.filter((iteration) => iteration < cardIteration).flatMap((iteration) => byStep.get(iteration) ?? []);
   const paths = new Set(
     restores

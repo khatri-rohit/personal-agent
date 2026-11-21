@@ -1,210 +1,102 @@
 'use client';
 
-import { useState } from 'react';
-import { Check, ChevronDown, Circle, ListTodo, Loader2 } from 'lucide-react';
+import { Check, Circle, CircleDot, ListTodo } from 'lucide-react';
 import {
   isThreadPlanEmpty,
   planScopedTodos,
   planTodoCounts,
   type ThreadPlan,
 } from '@agent/agent-models';
+import { TrailLine, TrailSection } from './trail-line';
 import { cn } from '@/lib/utils';
 
-/**
- * Live plan card while a run is active: journal + final + todos. Rendered as
- * an overlay above the composer, so it is collapsed by default (slim bar),
- * opaque, and height-capped — it must never read as a transparent popover
- * sitting on the transcript.
- */
-export function ThreadPlanCard({ plan }: { plan: ThreadPlan | null }) {
-  const [open, setOpen] = useState(false);
+/** One-line progress for the live dock: "Plan 3/7" / "Planning". */
+export function planProgressLabel(plan: ThreadPlan | null): string | null {
   if (!plan || isThreadPlanEmpty(plan)) return null;
-
   const counts = planTodoCounts(plan);
-  const locked = Boolean(plan.final?.trim());
-  const label = locked ? 'Plan' : 'Planning';
-  const todoHint =
-    plan.todos.length > 0 ? `${counts.completed}/${plan.todos.length}` : null;
-
-  return (
-    <section
-      className="min-w-0 overflow-hidden rounded-lg border border-border/60 bg-card shadow-sm"
-      aria-label={label}
-    >
-      <button
-        type="button"
-        className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <ListTodo className="size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
-        <span className="type-ui min-w-0 flex-1 truncate text-foreground/90">
-          {plan.goal.trim() || label}
-        </span>
-        {scopeLabel(plan) ? (
-          <span className="type-caption shrink-0 truncate text-muted-foreground" title="What the current request covers">
-            Scope: {scopeLabel(plan)}
-          </span>
-        ) : null}
-        {todoHint ? (
-          <span className="type-caption shrink-0 tabular-nums text-muted-foreground">
-            {todoHint}
-          </span>
-        ) : (
-          <span className="type-caption shrink-0 text-muted-foreground">
-            {locked ? 'Final' : 'Journal'}
-          </span>
-        )}
-        <ChevronDown
-          className={cn(
-            'size-3.5 shrink-0 transition-transform',
-            open && 'rotate-180',
-          )}
-          strokeWidth={1.75}
-        />
-      </button>
-      {open ? (
-        <div className="max-h-56 space-y-2 overflow-y-auto border-t border-border/60 px-3 py-2">
-          {plan.decisions.length > 0 ? (
-            <section>
-              <p className="type-ui mb-1 font-medium text-muted-foreground">
-                Decisions
-              </p>
-              <ul className="space-y-0.5">
-                {plan.decisions.map((decision) => (
-                  <li
-                    key={decision.id}
-                    className="type-ui leading-relaxed text-foreground/85"
-                  >
-                    {decision.text}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
-          {plan.final?.trim() ? (
-            <section>
-              <p className="type-ui mb-1 font-medium text-muted-foreground">
-                Final plan
-              </p>
-              <pre className="type-ui max-h-36 overflow-auto whitespace-pre-wrap break-words leading-relaxed text-foreground/85">
-                {plan.final}
-              </pre>
-            </section>
-          ) : plan.notes.length > 0 ? (
-            <section>
-              <p className="type-ui mb-1 font-medium text-muted-foreground">
-                Journal
-              </p>
-              <ul className="space-y-0.5">
-                {plan.notes.slice(-6).map((note) => (
-                  <li
-                    key={note.id}
-                    className="type-ui leading-relaxed text-foreground/85"
-                  >
-                    <span className="text-muted-foreground">{note.kind}: </span>
-                    {note.text}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
-          <TodoList plan={plan} />
-        </div>
-      ) : null}
-    </section>
-  );
+  if (plan.todos.length > 0) {
+    return `Plan ${counts.completed}/${plan.todos.length}`;
+  }
+  return plan.final?.trim() ? 'Plan ready' : 'Planning';
 }
 
 /**
- * Settled plan pinned under its anchor user message. Collapsed to one line;
- * expands in place on click. Expansion lives in the transcript, so it never
- * moves the composer.
+ * Settled plan in the reading flow, under the user message that anchored
+ * it: one trail line ("3 of 7 to-dos done"), expanding in place.
  */
 export function PlanChip({ plan }: { plan: ThreadPlan | null }) {
-  const [open, setOpen] = useState(false);
   if (!plan || isThreadPlanEmpty(plan)) return null;
 
   const counts = planTodoCounts(plan);
   const allDone =
     plan.todos.length > 0 && counts.completed === plan.todos.length;
+  const label =
+    plan.todos.length > 0
+      ? allDone
+        ? `All ${plan.todos.length} to-dos done`
+        : `${counts.completed} of ${plan.todos.length} to-dos done`
+      : 'Plan finalized';
 
   return (
-    <section
-      className="min-w-0 overflow-hidden rounded-lg border border-border/60 bg-muted/25"
-      aria-label="Plan"
-    >
-      <button
-        type="button"
-        className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        {allDone ? (
-          <Check
-            className="size-3.5 shrink-0 text-subtle-foreground"
-            strokeWidth={2}
-          />
+    <TrailLine
+      icon={
+        allDone ? (
+          <Check className="size-3.5" strokeWidth={2} />
         ) : (
-          <ListTodo
-            className="size-3.5 shrink-0 opacity-80"
-            strokeWidth={1.75}
-          />
-        )}
-        <span className="type-ui min-w-0 flex-1 truncate text-foreground/90">
-          {plan.todos.length > 0
-            ? `${counts.completed} of ${plan.todos.length} To-dos${
-                allDone ? ' Completed' : ''
-              }`
-            : 'Plan finalized'}
-        </span>
-        <ChevronDown
-          className={cn(
-            'size-3.5 shrink-0 transition-transform',
-            open && 'rotate-180',
-          )}
-          strokeWidth={1.75}
-        />
-      </button>
-      {open ? <PlanChipBody plan={plan} /> : null}
-    </section>
+          <ListTodo className="size-3.5" strokeWidth={1.75} />
+        )
+      }
+      label={label}
+      ariaLabel="Plan"
+    >
+      <PlanDetail plan={plan} />
+    </TrailLine>
   );
 }
 
-function PlanChipBody({ plan }: { plan: ThreadPlan }) {
+/** Goal, decisions, final plan or journal, and to-dos — shared by chip and dock. */
+export function PlanDetail({ plan }: { plan: ThreadPlan }) {
   return (
-    <div className="max-h-72 space-y-2 overflow-y-auto border-t border-border/60 px-3 py-2">
+    <div className="min-w-0 space-y-1">
       {plan.goal.trim() ? (
-        <p className="type-ui leading-relaxed text-foreground/85">
+        <p className="type-ui leading-relaxed text-[var(--reading-foreground)]">
           {plan.goal}
         </p>
       ) : null}
       {plan.decisions.length > 0 ? (
-        <section>
-          <p className="type-ui mb-1 font-medium text-muted-foreground">
-            Decisions
-          </p>
+        <TrailSection title="Decisions">
           <ul className="space-y-0.5">
             {plan.decisions.map((decision) => (
               <li
                 key={decision.id}
-                className="type-ui leading-relaxed text-foreground/85"
+                className="type-ui leading-relaxed text-[var(--reading-foreground)]"
               >
                 {decision.text}
               </li>
             ))}
           </ul>
-        </section>
+        </TrailSection>
       ) : null}
       {plan.final?.trim() ? (
-        <section>
-          <p className="type-ui mb-1 font-medium text-muted-foreground">
-            Final plan
-          </p>
-          <pre className="type-ui whitespace-pre-wrap break-words leading-relaxed text-foreground/85">
+        <TrailSection title="Final plan">
+          <pre className="type-ui max-h-48 overflow-auto whitespace-pre-wrap break-words font-sans leading-relaxed text-[var(--reading-foreground)]">
             {plan.final}
           </pre>
-        </section>
+        </TrailSection>
+      ) : plan.notes.length > 0 ? (
+        <TrailSection title="Journal">
+          <ul className="space-y-0.5">
+            {plan.notes.slice(-6).map((note) => (
+              <li
+                key={note.id}
+                className="type-ui leading-relaxed text-[var(--reading-foreground)]"
+              >
+                <span className="text-subtle-foreground">{note.kind}: </span>
+                {note.text}
+              </li>
+            ))}
+          </ul>
+        </TrailSection>
       ) : null}
       <TodoList plan={plan} />
     </div>
@@ -228,10 +120,7 @@ function TodoList({ plan }: { plan: ThreadPlan }) {
   const inScope = new Set((scoped ?? []).map((todo) => todo.id));
   const label = scopeLabel(plan);
   return (
-    <section>
-      <p className="type-ui mb-1 font-medium text-muted-foreground">
-        Todos{label ? ` · scope: ${label}` : ''}
-      </p>
+    <TrailSection title={`To-dos${label ? ` · scope: ${label}` : ''}`}>
       <ul className="space-y-1">
         {plan.todos.map((todo) => (
           <li
@@ -244,9 +133,9 @@ function TodoList({ plan }: { plan: ThreadPlan }) {
             <TodoMark status={todo.status} />
             <span
               className={cn(
-                'min-w-0 flex-1 text-foreground/85',
+                'min-w-0 flex-1 text-[var(--reading-foreground)]',
                 todo.status === 'completed' &&
-                  'text-muted-foreground line-through',
+                  'text-subtle-foreground line-through',
               )}
             >
               {todo.content}
@@ -254,26 +143,23 @@ function TodoList({ plan }: { plan: ThreadPlan }) {
           </li>
         ))}
       </ul>
-    </section>
+    </TrailSection>
   );
 }
 
+/** Still marks only: the dock's spinner is the run's one moving thing. */
 function TodoMark({
   status,
 }: {
   status: ThreadPlan['todos'][number]['status'];
 }) {
   if (status === 'completed') {
-    return (
-      <Check className="mt-0.5 size-3.5 shrink-0 text-subtle-foreground" />
-    );
+    return <Check className="mt-1 size-3.5 shrink-0 text-subtle-foreground" />;
   }
   if (status === 'in_progress') {
     return (
-      <Loader2 className="mt-0.5 size-3.5 shrink-0 animate-spin text-primary" />
+      <CircleDot className="mt-1 size-3.5 shrink-0 text-foreground/80" />
     );
   }
-  return (
-    <Circle className="mt-0.5 size-3.5 shrink-0 text-subtle-foreground" />
-  );
+  return <Circle className="mt-1 size-3.5 shrink-0 text-subtle-foreground" />;
 }

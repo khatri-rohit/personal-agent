@@ -94,9 +94,10 @@ export function ConversationRail({
 
   return (
     <div
-      // Hug the reading column (max-w-4xl = 56rem) instead of the window
-      // edge, so the ticks read as part of the conversation.
-      className="pointer-events-none absolute inset-y-0 left-[max(1.25rem,calc(50%-30.5rem))] z-20 hidden w-20 sm:block cursor-pointer"
+      // Positioned off the reading column's left edge (.conversation-rail in
+      // global.css follows --reading-column), with room so it sits in the
+      // margin rather than against the text being read.
+      className="conversation-rail pointer-events-none absolute inset-y-0 z-20 hidden w-20 sm:block cursor-pointer"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -161,9 +162,11 @@ export function ConversationRail({
                     onClick={() => scrollToAnchor(anchor.id)}
                     className={cn(
                       'shrink-0 rounded-[1px] transition-colors hover:bg-foreground/70',
+                      // Active tick only a step brighter: it changes as you
+                      // scroll, so it must not flash in side vision.
                       activeId === anchor.id
-                        ? 'bg-foreground/80'
-                        : 'bg-muted-foreground/40',
+                        ? 'bg-muted-foreground'
+                        : 'bg-muted-foreground/35',
                     )}
                     style={{
                       width: MARKER_WIDTH_PX,
