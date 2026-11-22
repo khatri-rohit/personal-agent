@@ -4,7 +4,9 @@ import cors from 'cors';
 import { memoryRouter } from './memory/memory.routes';
 import { warnRoleModelsWithoutTools } from './models/model-runtime';
 import { modelsRouter } from './models/models.routes';
+import { accessGuard, accessPolicyFromEnv, API_TOKEN_FILE, isAllowedOrigin, loadOrCreateApiToken } from './platform/access';
 import { errorHandler } from './platform/http-errors';
+import { getAgentHome } from './platform/instances';
 import { createLogger, createHttpLogger } from './platform/logger';
 import { runsRouter } from './runs/runs.routes';
 import { initSystem1 } from './runs/system1-runtime';
@@ -19,9 +21,15 @@ const logger = createLogger('api');
 
 const app = express();
 
+// Only this machine's own apps drive the API (platform/access.ts): a loopback
+// Host, and either the web app's origin or the token in AGENT_HOME/api-token.
+const access = accessPolicyFromEnv(loadOrCreateApiToken(getAgentHome()));
+app.use(accessGuard(access));
+
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN ?? true, // true = reflect request origin (dev-friendly)
+    // Reflects only origins the guard let in; never an arbitrary site.
+    origin: (origin, callback) => callback(null, origin === undefined || isAllowedOrigin(origin, access)),
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
       'Content-Type',
@@ -57,7 +65,7 @@ app.use(errorHandler);
 
 app.listen(port, host, () => {
   logger.info(
-    { host, port, voice: voiceProviders },
+    { host, port, voice: voiceProviders, tokenFile: `${getAgentHome()}/${API_TOKEN_FILE}` },
     'api ready',
   );
   // Logs the System 1 setup and warms the scorer; never blocks or throws.

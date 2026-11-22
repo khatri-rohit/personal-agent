@@ -11,12 +11,17 @@ export class ApiClient {
   constructor(
     private readonly base: string,
     private readonly pollMs = POLL_MS,
+    /** The API's token (`<eval home>/api-token`): requests without an Origin need it. */
+    private readonly token?: string,
   ) {}
 
   private async json<T>(method: string, route: string, body?: unknown): Promise<T> {
     const response = await fetch(`${this.base}${route}`, {
       method,
-      headers: body === undefined ? {} : { 'content-type': 'application/json' },
+      headers: {
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+      },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(60_000),
     });

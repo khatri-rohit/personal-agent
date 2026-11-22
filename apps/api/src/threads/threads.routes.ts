@@ -8,7 +8,9 @@ import {
   parseContextWindowMode,
   parseThreadKind,
 } from '@agent/agent-models';
-import { getThreadStore, runManager } from '../platform/instances';
+import type { ApiClientKind } from '../platform/access';
+import { getAgentHome, getThreadStore, runManager } from '../platform/instances';
+import { isAllowedWorkspace, rememberWorkspace, WORKSPACE_NOT_PICKED } from './workspace-allowlist';
 import { asyncRoute } from '../platform/http-errors';
 import { cancelLearningReview } from '../memory/learning-loop';
 import { readSettledLastRun } from '../runs/run-context';
@@ -29,6 +31,20 @@ async function resolveWorkspaceDir(
     return { ok: false, error: `workspaceRoot does not exist: ${root}` };
   }
   return { ok: true, root: path.normalize(root) };
+}
+
+/**
+ * A browser request may open only a folder a person chose (B1,
+ * workspace-allowlist.ts); a token client may open any existing folder.
+ */
+async function workspaceAllowed(res: Response, root: string): Promise<boolean> {
+  if ((res.locals.client as ApiClientKind | undefined) === 'token') return true;
+  const store = await getThreadStore();
+  return isAllowedWorkspace({
+    agentHome: getAgentHome(),
+    root,
+    threadRoots: store.listThreads({ includeSubagents: true }).map((thread) => thread.workspaceRoot),
+  });
 }
 
 /**
@@ -56,6 +72,8 @@ router.post('/workspace/pick', asyncRoute(async (req: Request, res: Response) =>
   if (!resolved.ok) {
     return res.status(400).json({ error: resolved.error });
   }
+  // A person chose it in the dialog: browser requests may now open it.
+  await rememberWorkspace(getAgentHome(), resolved.root);
   return res.json({ workspaceRoot: resolved.root });
 }));
 
@@ -98,6 +116,7 @@ router.post('/threads', asyncRoute(async (req: Request, res: Response) => {
     }
     const resolved = await resolveWorkspaceDir(raw);
     if (!resolved.ok) return res.status(400).json({ error: resolved.error });
+    if (!(await workspaceAllowed(res, resolved.root))) return res.status(403).json({ error: WORKSPACE_NOT_PICKED });
     workspaceRoot = resolved.root;
   }
   const store = await getThreadStore();
@@ -145,6 +164,7 @@ router.patch('/threads/:id', asyncRoute(async (req: Request, res: Response) => {
   if (typeof workspaceRoot === 'string' && workspaceRoot.trim()) {
     const resolved = await resolveWorkspaceDir(workspaceRoot);
     if (!resolved.ok) return res.status(400).json({ error: resolved.error });
+    if (!(await workspaceAllowed(res, resolved.root))) return res.status(403).json({ error: WORKSPACE_NOT_PICKED });
     workspaceRoot = resolved.root;
   }
   const kind = parseThreadKind(body.kind);

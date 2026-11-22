@@ -234,6 +234,17 @@ export class TaskStateTracker {
     return this.unverifiedSince !== null;
   }
 
+  /**
+   * The run edited, no edit came after its last check, and that check
+   * failed: the code as it stands is red. The command, or null. (A failed
+   * check clears `unchecked` by design; the card then says check_failed.)
+   */
+  get failedCheckAfterEdits(): TaskCommand | null {
+    const check = this.lastCheck;
+    if (this.edits === 0 || this.unverifiedSince !== null || !check) return null;
+    return check.exitCode !== undefined && check.exitCode !== 0 ? check : null;
+  }
+
   /** Iteration a tool call started in. */
   callIteration(toolCallId: string): number | undefined {
     return this.calls.get(toolCallId)?.iteration;

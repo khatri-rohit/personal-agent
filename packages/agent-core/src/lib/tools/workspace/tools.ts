@@ -22,6 +22,8 @@ import {
 } from '@agent/agent-models';
 
 import type { Tool } from '../types';
+import { exitCodeMasked, MASKED_CHECK_NOTE, namesCheck, terminalRan } from '../traits';
+import { commandEnv } from './command-env';
 import { isOutboundHttpShellCommand } from '../web/trust';
 import {
   globMatch,
@@ -849,7 +851,9 @@ export const runTerminalTool: Tool = {
     const command = asString(args.command).trim();
     const denied = deniedTerminalCommand(command);
     if (denied) return `Command blocked: ${denied}`;
-    return runWorkspaceCommand(command, root, ctx.signal, WORKSPACE_TERMINAL_MAX_CHARS, terminalTimeoutMs(args.timeoutSec));
+    const result = await runWorkspaceCommand(command, root, ctx.signal, WORKSPACE_TERMINAL_MAX_CHARS, terminalTimeoutMs(args.timeoutSec));
+    // A check whose exit code can be hidden does not verify edits (traits.ts isCheckCommand).
+    return namesCheck(command) && exitCodeMasked(command) && terminalRan(result) ? `${result}\n\n${MASKED_CHECK_NOTE}` : result;
   },
 };
 
@@ -925,6 +929,8 @@ function runWorkspaceCommand(
     }
     const child = spawn(command, {
       cwd,
+      // Never the host's secrets or settings (command-env.ts).
+      env: commandEnv(),
       shell: true,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -987,7 +993,7 @@ function runGit(
   signal: AbortSignal,
 ): Promise<{ code: number; out: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, { cwd, windowsHide: true });
+    const child = spawn('git', args, { cwd, env: commandEnv(), windowsHide: true });
     let out = '';
     const onAbort = () => child.kill();
     signal.addEventListener('abort', onAbort, { once: true });

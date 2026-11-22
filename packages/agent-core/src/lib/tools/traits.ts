@@ -97,8 +97,34 @@ const LOOK_ONLY_RE = /^(ls|dir|cat|type|head|tail|echo|pwd|cd|find|git|which|whe
  * Heuristic by design (word match on the command), kept in one place.
  */
 export function isCheckCommand(command: string): boolean {
+  return namesCheck(command) && !exitCodeMasked(command.trim());
+}
+
+/** The command names a check (build, test, …), whether or not its exit code can be trusted. */
+export function namesCheck(command: string): boolean {
   const trimmed = command.trim();
   return trimmed.length > 0 && !LOOK_ONLY_RE.test(trimmed) && CHECK_RE.test(trimmed);
+}
+
+/** Appended to a check whose exit code is masked, so the model knows why it did not count. */
+export const MASKED_CHECK_NOTE =
+  '(note) This does not count as a check: `||`, `;`, `&` or `|` can hide the check\'s own exit code. Run the check command on its own.';
+
+/** Redirections whose `&` is not a command separator: `2>&1`, `>&2`, `&>`, `&>>`. */
+const AMPERSAND_REDIRECT_RE = /\d*>&\d*|&>>?/g;
+
+/**
+ * The command's exit code may not be the check's: `npm test || echo FAIL`
+ * exits 0 on a failing test, as do `npm test; echo done`, cmd's
+ * `npm test & echo done` and a pipe into another command (the pipe's exit is
+ * the last command's in cmd and /bin/sh). Such a command is not a check, so
+ * its edits stay unchecked and the card keeps asking for the plain command.
+ * `&&` is fine: it stops at the first failure and exits with its code.
+ * Quoted text is ignored (`--grep "a|b"`).
+ */
+export function exitCodeMasked(command: string): boolean {
+  const unquoted = command.replace(/"[^"]*"|'[^']*'/g, '""').replace(AMPERSAND_REDIRECT_RE, ' ');
+  return /\|\||;|\|/.test(unquoted) || /(^|[^&])&([^&]|$)/.test(unquoted);
 }
 
 /** The window a file read shows, from its `[lines a–b of N]` header. */

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { isPauseStop, isResumableStop, limitMessage, RUN_CANCELLED_REASON, RUN_PAUSED_PREFIX, type ThinkingValue, type ThreadLastRun } from '@agent/agent-models';
@@ -415,7 +415,10 @@ export async function runSuite(opts: RunnerOptions): Promise<SuiteRun> {
   if (seed.drifted) throw new Error('The eval home changed since it was seeded. Re-run agent-eval seed.');
   if (opts.tasks.length === 0) throw new Error('No tasks selected.');
 
-  const api = new ApiClient(opts.apiBase);
+  // The API writes its token into its AGENT_HOME, which is the eval home.
+  const tokenFile = path.join(opts.evalHome, 'api-token');
+  const token = existsSync(tokenFile) ? (await readFile(tokenFile, 'utf8')).trim() : undefined;
+  const api = new ApiClient(opts.apiBase, undefined, token);
   const harness = await harnessVersion(opts.harnessRoot);
   const workdirs = path.join(opts.evalHome, 'workdirs');
   await mkdir(workdirs, { recursive: true });

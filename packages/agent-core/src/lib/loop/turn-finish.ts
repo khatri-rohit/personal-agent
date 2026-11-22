@@ -21,7 +21,7 @@ import {
   type RunState,
 } from './run-state';
 import type { RunBudget } from './run-budget';
-import { changeGate, planGate } from '../policy';
+import { changeGate, failedCheckGate, planGate } from '../policy';
 import { measureContextShape } from './context-shape';
 import { tracePolicyDecision } from './policy-trace';
 import { OPEN_PLAN_WORK_NUDGE } from './steering-notes';
@@ -74,7 +74,7 @@ export type FinishView = Pick<
 > & {
   readonly config: Pick<LoopConfig, 'model' | 'onMessage' | 'contextReport' | 'hasOpenPlanWork' | 'isPlanScoped'>;
   readonly budget: Pick<RunBudget, 'chargeOwn'>;
-  readonly task: Pick<RunState['task'], 'unchecked'>;
+  readonly task: Pick<RunState['task'], 'unchecked' | 'failedCheckAfterEdits'>;
   readonly can: Pick<RunState['can'], 'check'>;
 };
 
@@ -100,6 +100,11 @@ function endRun(
     ...limit,
   });
   return { runId: s.runId, content, iterations: s.iterations, toolCalls: s.totalToolCalls, status, ...limit };
+}
+
+/** The failed-check note: names the command that is red, so the model knows what to fix or report. */
+function failedCheckNote(command: string, exitCode: number | undefined): string {
+  return `Your answer reports success, but the last check after your edits failed (\`${command}\` exited ${exitCode ?? 'non-zero'}). Fix it and run the check again, or say plainly what still fails.`;
 }
 
 /** The change done gate (policy/finish changeGate) over this run's state. */
@@ -272,6 +277,24 @@ export async function settleFinalAnswer(
       pushHarnessNote(s, STOP_CHECK_NOTE);
       s.trace({ type: 'stop_check', runId, iteration: s.iterations });
       tracePolicyDecision(s, 'finish', ['done_gate:unchecked'], 'claims success with edits not followed by a check');
+      emitTurnCompleted(s, s.iterations, turn.usage);
+      return null;
+    }
+    const failed = s.task.failedCheckAfterEdits;
+    if (
+      failed &&
+      failedCheckGate({
+        enabled: s.flags.stopCheck,
+        alreadySent: s.stopChecked,
+        posture: s.posture,
+        failedCheck: true,
+        answer: result,
+      })
+    ) {
+      s.stopChecked = true;
+      pushHarnessNote(s, failedCheckNote(failed.command, failed.exitCode));
+      s.trace({ type: 'stop_check', runId, iteration: s.iterations });
+      tracePolicyDecision(s, 'finish', ['done_gate:check_failed'], 'claims success after the last check failed');
       emitTurnCompleted(s, s.iterations, turn.usage);
       return null;
     }
