@@ -13,10 +13,12 @@ const LIMIT_LABELS: Record<string, string> = {
   'limit.read_storm': 'Too many reads without progress, so the run stopped.',
   'limit.terminal': 'The run hit a terminal limit.',
   'limit.unknown': 'The run stopped for an unknown reason.',
-  'limit.outcome': 'The run stopped without a clear outcome.',
+  'limit.outcome': 'A tool kept returning the same result, so the run stopped.',
   'limit.iterations': 'Step limit reached.',
   'limit.plan': 'The plan gate stopped this run.',
-  'limit.finish': 'The run finished its plan.',
+  // Only a model turn that ended for a reason other than "stop" (cut off at
+  // the output limit, filtered): the answer above is not complete.
+  'limit.finish': 'The answer was cut off before it finished, so it may be incomplete.',
   'limit.tokens': 'Token budget reached.',
   'limit.wall': 'Time limit reached.',
   'limit.research': 'Research budget reached.',

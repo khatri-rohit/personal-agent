@@ -15,12 +15,36 @@ import { BUDGET_WARN_RATIO, type AgentLimits } from './limits';
  */
 export class RunBudget {
   private warned = false;
+  /** Time spent waiting on the user (a choice, an approval): not the run's to spend. */
+  private waitedMs = 0;
+  private waits = 0;
+  private waitStartedAt = 0;
 
   constructor(
     private readonly usage: RunUsage,
     private readonly limits: AgentLimits,
     private readonly startedAt: number,
   ) {}
+
+  /**
+   * The wall clock stops while `pending` waits on the user, so a slow answer
+   * does not end the run on `limit.wall` right after. Overlapping waits
+   * (parallel tool calls) count once.
+   */
+  async waitingOnUser<T>(pending: Promise<T>): Promise<T> {
+    if (this.waits++ === 0) this.waitStartedAt = Date.now();
+    try {
+      return await pending;
+    } finally {
+      if (--this.waits === 0) this.waitedMs += Date.now() - this.waitStartedAt;
+    }
+  }
+
+  /** Wall time the run itself has used (waits on the user excluded). */
+  private workedMs(): number {
+    const ongoing = this.waits > 0 ? Date.now() - this.waitStartedAt : 0;
+    return Date.now() - this.startedAt - this.waitedMs - ongoing;
+  }
 
   get maxPromptTokens(): number | undefined {
     return this.limits.maxPromptTokens;
@@ -104,7 +128,7 @@ export class RunBudget {
         `prompt token budget nearly spent: the next call (~${nextCall}) would pass the cap (${spent} of ${maxPromptTokens})`,
       );
     }
-    if (maxWallMs !== undefined && Date.now() - this.startedAt >= maxWallMs) {
+    if (maxWallMs !== undefined && this.workedMs() >= maxWallMs) {
       return limitMessage(
         'limit.wall',
         `wall clock budget spent (${Math.round(maxWallMs / 1000)}s)`,

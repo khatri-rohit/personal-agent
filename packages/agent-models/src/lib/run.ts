@@ -170,6 +170,12 @@ export type StartRunRequest = {
    * Used for retry (keep last user) and edit (keep the turn before that user).
    */
   rewindThroughSeq?: number;
+  /**
+   * With `rewindThroughSeq`: before the cut, put back the files the cut runs
+   * changed (each only while it still matches what that run left). Without
+   * it the files stay as they are and only the conversation is cut.
+   */
+  restoreFiles?: boolean;
   model?: string;
   /**
    * When true, route chat completions and /api/show to local Ollama
@@ -205,9 +211,10 @@ export function parseStartRunRequest(raw: unknown): StartRunRequest | string {
   if (
     !isOptional(body.model, 'string') ||
     !isOptional(body.local, 'boolean') ||
-    !isOptional(body.webSearch, 'boolean')
+    !isOptional(body.webSearch, 'boolean') ||
+    !isOptional(body.restoreFiles, 'boolean')
   ) {
-    return 'model must be a string; local and webSearch must be booleans';
+    return 'model must be a string; local, webSearch and restoreFiles must be booleans';
   }
   if (
     body.thinking !== undefined &&
@@ -251,6 +258,7 @@ export function parseStartRunRequest(raw: unknown): StartRunRequest | string {
     ...(body.rewindThroughSeq !== undefined
       ? { rewindThroughSeq: body.rewindThroughSeq as number }
       : {}),
+    ...(body.restoreFiles === true ? { restoreFiles: true } : {}),
     ...(body.model !== undefined ? { model: body.model as string } : {}),
     ...(body.local !== undefined ? { local: body.local as boolean } : {}),
     ...(body.webSearch !== undefined ? { webSearch: body.webSearch as boolean } : {}),

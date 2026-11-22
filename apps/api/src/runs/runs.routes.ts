@@ -32,7 +32,7 @@ router.post('/run', asyncRoute(async (req: Request, res: Response) => {
   const request = parseStartRunRequest(req.body);
   if (typeof request === 'string') return res.status(400).json({ error: request });
   const result = await startThreadRun(request);
-  if (result.ok) return res.json({ runId: result.runId });
+  if (result.ok) return res.json({ runId: result.runId, ...(result.restore ? { restore: result.restore } : {}) });
   return res.status(REJECTION_STATUS[result.reason]).json({
     error: result.error,
     ...(result.runId !== undefined ? { runId: result.runId } : {}),

@@ -249,7 +249,10 @@ function buildToolContext(s: RunState, toolCallId?: string): ToolContext {
     ...(config.workspaceRoot !== undefined
       ? { workspaceRoot: config.workspaceRoot }
       : {}),
-    ...(config.offerChoice ? { offerChoice: config.offerChoice } : {}),
+    // The run's wall clock stops while the user decides.
+    ...(config.offerChoice
+      ? { offerChoice: (request: Parameters<NonNullable<typeof config.offerChoice>>[0]) => s.budget.waitingOnUser(config.offerChoice!(request)) }
+      : {}),
     ...(config.subagents && s.can.delegate
       ? {
           spawnSubagent: (spec) =>

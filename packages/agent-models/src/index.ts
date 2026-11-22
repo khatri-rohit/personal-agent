@@ -197,6 +197,8 @@ export {
 export type { TraceCallInput, TraceEvent, TraceMessageRef } from './lib/trace.js';
 export { TRACE_SCHEMA_VERSION } from './lib/trace.js';
 
+export type { FileChange, RevertResult, RunChanges } from './lib/checkpoint.js';
+export { CHECKPOINT_EXCLUDES, CHECKPOINT_NOT_COVERED, revertSummary } from './lib/checkpoint.js';
 export type { ModelPrice } from './lib/pricing.js';
 export { callCostUsd, MODEL_PRICES, MODEL_PRICES_SOURCE, modelPrice } from './lib/pricing.js';
 export type { HarnessFlags } from './lib/flags.js';

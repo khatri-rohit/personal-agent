@@ -12,6 +12,8 @@ import type { Dirent } from 'node:fs';
 import path from 'node:path';
 
 import {
+  ChoiceSkipped,
+  type ToolContext,
   DIFF_MAX_CHARS,
   GLOB_MAX_RESULTS,
   GREP_WINDOW,
@@ -23,6 +25,7 @@ import {
 
 import type { Tool } from '../types';
 import { exitCodeMasked, MASKED_CHECK_NOTE, namesCheck, terminalRan } from '../traits';
+import { askFirstReason } from './ask-first';
 import { commandEnv } from './command-env';
 import { isOutboundHttpShellCommand } from '../web/trust';
 import {
@@ -210,8 +213,9 @@ async function walkFiles(
   rootReal: string,
   signal: AbortSignal | undefined,
   acc: string[],
+  start: string = rootReal,
 ): Promise<void> {
-  const stack = [rootReal];
+  const stack = [start];
   while (stack.length > 0) {
     if (signal?.aborted) throw new Error('Run cancelled');
     if (acc.length >= WORKSPACE_WALK_MAX_FILES) return;
@@ -250,6 +254,87 @@ async function walkFiles(
       if (info.isFile()) acc.push(real);
     }
   }
+}
+
+/**
+ * The file's text when it is valid UTF-8, else null. Strict: Node's default
+ * decoding turns Latin-1 bytes into U+FFFD, and writing that back destroys
+ * the original characters. A UTF-8 BOM is kept (written back as it was).
+ */
+function decodeUtf8Strict(bytes: Buffer): string | null {
+  try {
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/** A folder name the search never enters: dependency and build output, dot folders (but `.github`). */
+function skippedSegment(name: string): boolean {
+  return SKIP_DIRS.has(name) || (name.startsWith('.') && name !== '.github');
+}
+
+/** Paths git would list for the folder (tracked, plus untracked not ignored), or null outside a git work tree. */
+function gitListedFiles(rootReal: string, signal: AbortSignal | undefined): Promise<string[] | null> {
+  return new Promise((resolve) => {
+    const child = spawn(
+      'git',
+      ['-c', 'core.quotepath=false', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'],
+      { cwd: rootReal, env: commandEnv(), windowsHide: true, ...(signal ? { signal } : {}) },
+    );
+    const chunks: Buffer[] = [];
+    let size = 0;
+    child.stdout.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= 64 * 1024 * 1024) chunks.push(chunk);
+    });
+    child.on('error', () => resolve(null));
+    child.on('close', (code) => {
+      if (code !== 0) return resolve(null);
+      resolve(Buffer.concat(chunks).toString('utf8').split('\0').filter(Boolean));
+    });
+  });
+}
+
+/**
+ * The files glob and grep search. In a git work tree that is git's own list,
+ * so what `.gitignore` ignores (a big `build/`, `target/`, `venv/`) never
+ * fills the file cap and hides real code; a nested repository's folder is
+ * walked. Outside git, the walk with its fixed skip list. Either way a path
+ * whose real location leaves the folder is dropped (the path jail).
+ */
+async function listWorkspaceFiles(rootReal: string, signal: AbortSignal | undefined): Promise<string[]> {
+  const acc: string[] = [];
+  const listed = await gitListedFiles(rootReal, signal);
+  if (!listed) {
+    await walkFiles(rootReal, signal, acc);
+    return acc;
+  }
+  for (const rel of listed) {
+    if (acc.length >= WORKSPACE_WALK_MAX_FILES) break;
+    if (signal?.aborted) throw new Error('Run cancelled');
+    const nestedRepo = rel.endsWith('/');
+    const parts = rel.replace(/\/$/, '').split('/');
+    if (parts.some(skippedSegment)) continue;
+    const abs = path.join(rootReal, ...parts);
+    let real: string;
+    try {
+      real = await realpath(abs);
+    } catch {
+      continue; // tracked but deleted on disk
+    }
+    if (!isPathInside(rootReal, real)) continue;
+    if (nestedRepo) {
+      await walkFiles(rootReal, signal, acc, real);
+      continue;
+    }
+    try {
+      if ((await stat(real)).isFile()) acc.push(real);
+    } catch {
+      /* gone meanwhile */
+    }
+  }
+  return acc;
 }
 
 async function workspaceRootReal(
@@ -301,8 +386,7 @@ export const globTool: Tool = {
     const root = await workspaceRootReal(ctx.workspaceRoot);
     if (!root) return 'No workspace is bound to this run';
     const pattern = asString(args.pattern).trim() || '**/*';
-    const files: string[] = [];
-    await walkFiles(root, ctx.signal, files);
+    const files = await listWorkspaceFiles(root, ctx.signal);
     const matches: string[] = [];
     for (const abs of files) {
       const rel = toPosixRelative(root, abs);
@@ -385,8 +469,7 @@ export const grepTool: Tool = {
       askedContext > context
         ? `\n(context capped at ${WORKSPACE_GREP_MAX_CONTEXT} lines; use read_file with offset for a wider window)`
         : '';
-    const files: string[] = [];
-    await walkFiles(root, ctx.signal, files);
+    const files = await listWorkspaceFiles(root, ctx.signal);
     // A walk that stopped early searched only part of the workspace: say so,
     // above all on "no matches", which would otherwise read as an absence.
     const walkNote =
@@ -692,9 +775,14 @@ export const editFileTool: Tool = {
     if (!resolved.ok) return resolved.error;
     const newText = asString(args.newText);
     const oldText = asString(args.oldText);
+    const relPath = asString(args.path);
     let existing: string | null = null;
     try {
-      existing = await readFile(resolved.abs, 'utf8');
+      const bytes = await readFile(resolved.abs);
+      existing = decodeUtf8Strict(bytes);
+      if (existing === null) {
+        return `Not edited: ${relPath} is not UTF-8 text (it may be Latin-1, Windows-1252, UTF-16 or binary). Saving it through edit_file would corrupt its non-ASCII characters. Leave this file as it is, or tell the user it needs converting to UTF-8 first.`;
+      }
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
       if (err.code !== 'ENOENT') {
@@ -702,7 +790,6 @@ export const editFileTool: Tool = {
       }
     }
 
-    const relPath = asString(args.path);
     if (existing === null) {
       if (oldText) return 'File not found; omit oldText to create it';
       await mkdir(path.dirname(resolved.abs), { recursive: true });
@@ -851,11 +938,41 @@ export const runTerminalTool: Tool = {
     const command = asString(args.command).trim();
     const denied = deniedTerminalCommand(command);
     if (denied) return `Command blocked: ${denied}`;
+    const ask = askFirstReason(command, root);
+    if (ask) {
+      const approval = await askToRun(command, ask, ctx);
+      if (approval) return approval;
+    }
     const result = await runWorkspaceCommand(command, root, ctx.signal, WORKSPACE_TERMINAL_MAX_CHARS, terminalTimeoutMs(args.timeoutSec));
     // A check whose exit code can be hidden does not verify edits (traits.ts isCheckCommand).
     return namesCheck(command) && exitCodeMasked(command) && terminalRan(result) ? `${result}\n\n${MASKED_CHECK_NOTE}` : result;
   },
 };
+
+/**
+ * The user's yes for a command on the ask-first list. Null: approved, run
+ * it. Otherwise the tool result (declined, skipped, or nobody to ask): the
+ * run goes on without the command, so a denial never ends it.
+ */
+async function askToRun(command: string, reason: string, ctx: ToolContext): Promise<string | null> {
+  const notRun = 'Command not run';
+  const next = 'Do the rest of the task without it, and say in your answer which step still needs the user.';
+  if (!ctx.offerChoice) return `${notRun}: ${reason}. It needs the user's approval and nobody can give it in this run. ${next}`;
+  try {
+    const answer = await ctx.offerChoice({
+      question: `Run this command? It ${reason.replace(/^it /, '')}.\n\n${command}`,
+      options: [
+        { id: 'run', label: 'Run it' },
+        { id: 'deny', label: "Don't run it" },
+      ],
+    });
+    if (answer.optionIds.includes('run')) return null;
+    return `${notRun}: the user declined.${answer.text ? ` They said: ${answer.text}` : ''} ${next}`;
+  } catch (error) {
+    if (error instanceof ChoiceSkipped) return `${notRun}: the user skipped the approval. ${next}`;
+    throw error;
+  }
+}
 
 function killProcessTree(pid: number): void {
   if (process.platform === 'win32') {

@@ -14,12 +14,15 @@ export const UserMessage = memo(function UserMessage({
   message,
   canEdit,
   hasResponseBelow,
+  changedFiles = 0,
   onEditSubmit,
 }: {
   message: Message;
   canEdit: boolean;
   hasResponseBelow: boolean;
-  onEditSubmit: (messageId: string, content: string) => void | Promise<void>;
+  /** Files the reply below changed (checkpoint): resending offers to put them back. */
+  changedFiles?: number;
+  onEditSubmit: (messageId: string, content: string, restoreFiles?: boolean) => void | Promise<void>;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
@@ -51,12 +54,12 @@ export const UserMessage = memo(function UserMessage({
   const canResend = Boolean(draft.trim()) || hasAttachments;
   const sentAt = formatMessageTime(message.createdAt);
 
-  const runSubmit = useCallback(async () => {
+  const runSubmit = useCallback(async (restoreFiles = false) => {
     const trimmed = draft.trim();
     if ((!trimmed && !hasAttachments) || submitting) return;
     setSubmitting(true);
     try {
-      await onEditSubmit(message.id, trimmed);
+      await onEditSubmit(message.id, trimmed, restoreFiles);
       setIsEditing(false);
       setConfirmClear(false);
     } finally {
@@ -134,8 +137,9 @@ export const UserMessage = memo(function UserMessage({
                 Resending will remove the assistant response for this turn.
               </p>
               <p className="type-caption text-muted-foreground">
-                Your edited prompt will be sent again from this point in the
-                thread.
+                {changedFiles > 0
+                  ? `That response changed ${changedFiles} file${changedFiles === 1 ? '' : 's'}. Put them back as they were, or keep them as they are now?`
+                  : 'Your edited prompt will be sent again from this point in the thread.'}
               </p>
               <div className="flex flex-wrap justify-end gap-1.5">
                 <Button
@@ -148,15 +152,39 @@ export const UserMessage = memo(function UserMessage({
                 >
                   Cancel
                 </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  disabled={submitting || !canResend}
-                  onClick={() => void runSubmit()}
-                >
-                  {submitting ? 'Sending…' : 'Proceed'}
-                </Button>
+                {changedFiles > 0 ? (
+                  <>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      disabled={submitting || !canResend}
+                      onClick={() => void runSubmit(false)}
+                    >
+                      Keep files and resend
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      disabled={submitting || !canResend}
+                      onClick={() => void runSubmit(true)}
+                    >
+                      {submitting ? 'Sending…' : 'Restore files and resend'}
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={submitting || !canResend}
+                    onClick={() => void runSubmit()}
+                  >
+                    {submitting ? 'Sending…' : 'Proceed'}
+                  </Button>
+                )}
               </div>
             </div>
           ) : (
