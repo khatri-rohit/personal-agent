@@ -41,6 +41,7 @@ import {
 } from '../platform/instances';
 import { threadTraceSink } from '../platform/trace-sink.js';
 import { checkpointAfter, checkpointBefore, folderWriter, revertRuns } from '../threads/checkpoints';
+import { harnessVersion } from '../platform/harness-version';
 import { compactThread, emitCompacted, maybeCompactThread } from './compaction';
 import { rewindLearningCursor, scheduleLearningReview } from '../memory/learning-loop';
 import {
@@ -382,6 +383,7 @@ async function startClaimedRun(
   // on without undo (the Changes view then says no snapshot exists).
   const agentHome = getAgentHome();
   if (checkpointRoot) await checkpointBefore({ agentHome, root: checkpointRoot, runId, threadId });
+  const codeVersion = await harnessVersion();
 
   claim.start({
     model: useModel,
@@ -395,6 +397,7 @@ async function startClaimedRun(
     contextReport: prepared.report,
     contextBudget: prepared.report.budget,
     flags: prepared.flags,
+    ...(codeVersion ? { harnessVersion: codeVersion } : {}),
     modelSettings,
     ...(thread.workspaceRoot ? { workspaceRoot: thread.workspaceRoot } : {}),
     putBlob: (text) => store.putBlob(threadId, text),

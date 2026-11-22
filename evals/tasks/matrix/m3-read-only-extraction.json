@@ -8,11 +8,15 @@
   "files": [],
   "answer": [
     { "mustMatch": "state-card\\.ts" },
+    { "mustMatch": "state-card\\.ts:\\d+" },
     { "mustMatch": "SERIAL_READ_ADVICE_AFTER[^\\n]*\\b4\\b|\\b4\\b[^\\n]*SERIAL_READ_ADVICE_AFTER" },
     { "mustMatch": "READ_CREEP_ADVICE_AFTER[^\\n]*\\b3\\b|\\b3\\b[^\\n]*READ_CREEP_ADVICE_AFTER" },
     { "mustMatch": "QUIET_STEPS[^\\n]*\\b2\\b|\\b2\\b[^\\n]*QUIET_STEPS" },
     { "mustMatch": "WORKING_SET_MAX[^\\n]*\\b6\\b|\\b6\\b[^\\n]*WORKING_SET_MAX" }
   ],
+  "reference": {
+    "answer": "(1) packages/agent-core/src/lib/loop/state-card.ts:16 builds it (CARD_HEADER).\n(2) SERIAL_READ_ADVICE_AFTER = 4 (state-card.ts:19).\n(3) READ_CREEP_ADVICE_AFTER = 3 (state-card.ts:21).\n(4) QUIET_STEPS = 2 (state-card.ts:23).\n(5) WORKING_SET_MAX = 6 (state-card.ts:24)."
+  },
   "scope": { "allow": [] },
   "budget": { "maxPromptTokens": 600000, "maxMinutes": 10 }
 }

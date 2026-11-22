@@ -23,19 +23,73 @@ import { flattenRuns, loadRunMetrics } from '../metrics/load.js';
 import { signalsOf } from '../metrics/areas.js';
 import type { RunMetrics } from '../metrics/run-metrics.js';
 import { listRuns, type RunSummary } from '../read/runs.js';
+import { linesOf, readRunTrace } from '../read/trace.js';
 
 export type ReviewExcerpt = { source: string; text: string };
+
+/**
+ * What the judge needs to grade the outcome, not just the process: what the
+ * user asked, what the agent answered, and the steps it took with their
+ * outcomes. Capped, never the raw trace.
+ */
+export type ReviewEvidence = {
+  /** The user's messages, in order. */
+  request: string;
+  /** The last assistant answer. */
+  answer: string;
+  /** One line per tool call: `name(args) → ok | error | exit N`, oldest first. */
+  steps: string[];
+  /** Set when the answer or steps were cut to fit. */
+  clipped: boolean;
+};
 
 export type ReviewModelInput = {
   digest: ReviewDigest;
   excerpts: ReviewExcerpt[];
+  evidence?: ReviewEvidence;
 };
 
 export type ThreadReviewAnalysis = {
   fingerprint: ReviewFingerprint;
   digest: ReviewDigest;
   excerpts: ReviewExcerpt[];
+  evidence?: ReviewEvidence;
 };
+
+const REQUEST_MAX = 4_000;
+const ANSWER_MAX = 8_000;
+const STEPS_MAX = 120;
+const STEP_ARGS_MAX = 120;
+
+/** The judge's evidence from the ledger and every run's trace (sub-agents included). */
+export async function reviewEvidence(ledger: LedgerEnvelope[], runs: RunSummary[]): Promise<ReviewEvidence> {
+  const request = texts(ledger, 'user').join('\n---\n');
+  const answer = lastAssistant(ledger);
+  const steps: string[] = [];
+  for (const run of [...runs].sort((a, b) => (a.startedAt ?? '').localeCompare(b.startedAt ?? ''))) {
+    const { lines } = await readRunTrace(run.tracePath);
+    const starts = new Map(linesOf(lines, 'tool_start').map((line) => [line.toolCallId, line]));
+    const who = run.depth > 0 ? 'sub-agent ' : '';
+    for (const line of lines) {
+      if (line.type === 'tool_complete') {
+        const start = line.toolCallId ? starts.get(line.toolCallId) : undefined;
+        const args = start?.args === undefined ? '' : clip(JSON.stringify(start.args), STEP_ARGS_MAX);
+        const outcome = line.exitCode !== undefined ? `exit ${line.exitCode}` : (line.outcome ?? 'done');
+        steps.push(`${who}${line.toolName}(${args}) → ${outcome}`);
+      } else if (line.type === 'tool_error' && line.toolName !== 'agent') {
+        steps.push(`${who}${line.toolName} → threw: ${clip(line.error, 160)}`);
+      }
+    }
+  }
+  const clipped = request.length > REQUEST_MAX || answer.length > ANSWER_MAX || steps.length > STEPS_MAX;
+  return {
+    request: request.slice(0, REQUEST_MAX),
+    answer: answer.slice(0, ANSWER_MAX),
+    // Keep both ends: the start shows the approach, the end how it finished.
+    steps: steps.length > STEPS_MAX ? [...steps.slice(0, STEPS_MAX / 2), `… ${steps.length - STEPS_MAX} steps omitted …`, ...steps.slice(-STEPS_MAX / 2)] : steps,
+    clipped,
+  };
+}
 
 const ASK_RE =
   /^(what|why|how|when|where|who|which|explain|summarize|describe)\b|\?$/i;
@@ -103,6 +157,8 @@ export function reviewFingerprint(input: {
   threadId: string;
   ledger: LedgerEnvelope[];
   runs: Array<{ runId: string; status: string }>;
+  /** `<digest version>|<model>|<prompt sha>`: a new judge or digest code rebuilds the review. */
+  reviewer?: string;
 }): ReviewFingerprint {
   const last = input.ledger.at(-1);
   return {
@@ -112,6 +168,7 @@ export function reviewFingerprint(input: {
     runs: [...input.runs]
       .map((run) => ({ runId: run.runId, status: run.status }))
       .sort((a, b) => a.runId.localeCompare(b.runId)),
+    ...(input.reviewer ? { reviewer: input.reviewer } : {}),
   };
 }
 
@@ -340,9 +397,13 @@ function pickExcerpts(input: {
   return excerpts;
 }
 
-/** Digest + ≤5 excerpts for the narrative model. Never the raw trace. */
-export function buildReviewInput(digest: ReviewDigest, excerpts: ReviewExcerpt[]): ReviewModelInput {
-  return { digest, excerpts: excerpts.slice(0, EXCERPT_LIMIT) };
+/** Digest + ≤5 excerpts + the outcome evidence for the judge. Never the raw trace. */
+export function buildReviewInput(
+  digest: ReviewDigest,
+  excerpts: ReviewExcerpt[],
+  evidence?: ReviewEvidence,
+): ReviewModelInput {
+  return { digest, excerpts: excerpts.slice(0, EXCERPT_LIMIT), ...(evidence ? { evidence } : {}) };
 }
 
 export function analyzeThreadFrom(input: {
@@ -418,7 +479,7 @@ export async function analyzeThread(
   const runs = await listRuns(home, { threadId: owner.threadId });
   const metrics = await loadRunMetrics(home, flattenRuns(runs));
   const plan = await readPlan(home, owner.threadId);
-  return analyzeThreadFrom({
+  const analysis = analyzeThreadFrom({
     threadId: owner.threadId,
     title: owner.title,
     plan,
@@ -427,4 +488,5 @@ export async function analyzeThread(
     metrics,
     ...(focusRunId ? { focusRunId } : {}),
   });
+  return { ...analysis, evidence: await reviewEvidence(ledger, flattenRuns(runs)) };
 }

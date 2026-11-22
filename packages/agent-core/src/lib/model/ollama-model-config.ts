@@ -3,14 +3,14 @@
  * Chat still uses the OpenAI-compatible /v1 client.
  */
 
-import type {
-  OllamaEndpoint,
-  OllamaListedModel,
-  OllamaModelConfig,
-  OllamaThinkingConfig,
-  SideCallThinking,
-  ThinkingMode,
-  ThinkingValue,
+import {
+  classifyThinking,
+  resolveReasoningEffort,
+  type OllamaEndpoint,
+  type OllamaListedModel,
+  type OllamaModelConfig,
+  type SideCallThinking,
+  type ThinkingValue,
 } from '@agent/agent-models';
 
 import { nativeOllamaBaseUrl } from './client';
@@ -52,62 +52,8 @@ function contextLength(
   return null;
 }
 
-function classifyThinking(
-  thinking?: ShowResponse['thinking'],
-): OllamaThinkingConfig {
-  const values = thinking?.values ?? [];
-  const fallback = thinking?.default ?? null;
-
-  if (values.length === 0 || (values.length === 1 && values[0] === false)) {
-    return {
-      supported: false,
-      values,
-      default: fallback,
-      mode: 'none',
-    };
-  }
-
-  const hasBool = values.some((v) => typeof v === 'boolean');
-  const hasStr = values.some((v) => typeof v === 'string');
-  const mode: ThinkingMode =
-    hasBool && hasStr ? 'mixed' : hasStr ? 'levels' : 'boolean';
-
-  return {
-    supported: true,
-    values,
-    default: fallback,
-    mode,
-  };
-}
-
-/** Map UI/API thinking choice → OpenAI-compat `reasoning_effort`. */
-export function resolveReasoningEffort(
-  cfg: OllamaModelConfig,
-  requested: ThinkingValue | undefined,
-): string | undefined {
-  if (!cfg.thinking.supported) return undefined;
-
-  const req = requested ?? cfg.thinking.default;
-  if (req === undefined || req === null) return undefined;
-
-  const off = req === false || req === 'none';
-  if (cfg.thinking.mode === 'boolean') {
-    return off ? 'none' : 'medium';
-  }
-  if (off) {
-    return cfg.thinking.values.includes(false) ? 'none' : undefined;
-  }
-  if (req === true) {
-    const def = cfg.thinking.default;
-    return typeof def === 'string' ? def : 'medium';
-  }
-
-  const asStr = String(req);
-  if (cfg.thinking.values.includes(asStr)) return asStr;
-  return typeof cfg.thinking.default === 'string'
-    ? cfg.thinking.default
-    : undefined;
-}
+// Pure thinking helpers live in agent-models so the eval app shares them.
+export { resolveReasoningEffort } from '@agent/agent-models';
 
 function cacheKey(endpoint: OllamaEndpoint, model: string): string {
   return `${endpoint}:${model}`;

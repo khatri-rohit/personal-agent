@@ -5,6 +5,7 @@ import { memoryRouter } from './memory/memory.routes';
 import { warnRoleModelsWithoutTools } from './models/model-runtime';
 import { modelsRouter } from './models/models.routes';
 import { accessGuard, accessPolicyFromEnv, API_TOKEN_FILE, isAllowedOrigin, loadOrCreateApiToken } from './platform/access';
+import { harnessVersion } from './platform/harness-version';
 import { errorHandler } from './platform/http-errors';
 import { getAgentHome } from './platform/instances';
 import { createLogger, createHttpLogger } from './platform/logger';
@@ -47,6 +48,14 @@ app.use(express.json({ limit: '25mb' }));
 // SSE event streams and OPTIONS preflight are skipped (see createHttpLogger).
 app.use(createHttpLogger(logger));
 
+// What this process runs and where it writes: the eval runner checks both
+// before a suite (a stale API, or one on the wrong home, measures the wrong thing).
+app.get('/api/agent/version', (_req, res, next) => {
+  harnessVersion()
+    .then((version) => res.json({ harnessVersion: version, agentHome: getAgentHome() }))
+    .catch(next);
+});
+
 // Agent endpoints (no two routers share a path, so order does not matter)
 app.use(
   '/api/agent',
@@ -68,6 +77,8 @@ app.listen(port, host, () => {
     { host, port, voice: voiceProviders, tokenFile: `${getAgentHome()}/${API_TOKEN_FILE}` },
     'api ready',
   );
+  // Read the running code's version now, so later edits are not mistaken for it.
+  void harnessVersion().then((version) => logger.info({ harnessVersion: version }, 'harness version'));
   // Logs the System 1 setup and warms the scorer; never blocks or throws.
   initSystem1();
   void warnRoleModelsWithoutTools();

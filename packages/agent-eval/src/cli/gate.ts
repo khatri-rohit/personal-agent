@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { readBaseline, recordBaseline } from '../gate/baseline.js';
 import { compareToBaseline, type GateCompare, type GateResult } from '../gate/gate.js';
-import { readResults, summarizeSuite, type SuiteStats } from '../gate/summary.js';
+import { PASS_POW_K, readResults, summarizeSuite, type SuiteStats } from '../gate/summary.js';
 import type { TaskSuite } from '../runner/task.js';
 import { flag, type Args } from './args.js';
 import { table, tokens } from './format.js';
@@ -39,10 +39,14 @@ function printVerdict(result: GateResult): void {
   }
   console.log(
     table(
-      ['task', 'passes base → cand', 'median tokens base → cand', 'stable', 'scope', 'verdict'],
+      ['task', 'passes base → cand', 'cand 95%', `pass^${PASS_POW_K}`, 'median tokens base → cand', 'stable', 'scope', 'verdict'],
       result.tasks.map((task) => [
         task.taskId,
         task.baseline ? `${task.baseline.passes}/${task.baseline.trials} → ${task.candidate!.passes}/${task.candidate!.trials}` : `new: ${task.candidate!.passes}/${task.candidate!.trials}`,
+        task.candidate?.passInterval
+          ? `${Math.round(task.candidate.passInterval[0] * 100)}–${Math.round(task.candidate.passInterval[1] * 100)}%`
+          : '-',
+        task.candidate?.passPowK == null ? '-' : `${Math.round(task.candidate.passPowK * 100)}%`,
         `${tokens(task.baseline?.medianPromptTokens ?? undefined)} → ${tokens(task.candidate?.medianPromptTokens ?? undefined)}`,
         `${task.baseline?.stable ? 'y' : 'n'}/${task.candidate?.stable ? 'y' : 'n'}`,
         `${task.baseline?.scopeViolations ?? '-'} → ${task.candidate?.scopeViolations ?? '-'}`,

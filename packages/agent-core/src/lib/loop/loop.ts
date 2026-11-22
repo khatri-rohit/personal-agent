@@ -243,6 +243,7 @@ async function runLoopCore(
     posture: s.posture,
     windowTokens: s.contextBudget.windowTokens,
     flags: s.flags,
+    ...(config.harnessVersion ? { harnessVersion: config.harnessVersion } : {}),
     taskShape: inferTaskShape(config.mode === 'workspace', s.posture),
     ...(config.modelSettings ? { modelSettings: config.modelSettings } : {}),
     ...(config.contextReport?.windowSource

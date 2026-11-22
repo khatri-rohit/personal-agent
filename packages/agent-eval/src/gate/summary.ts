@@ -33,7 +33,39 @@ export type TaskStats = {
   /** At least two trials and spread ≤ UNSTABLE_SPREAD. */
   stable: boolean;
   scopeViolations: number;
+  /** 95% Wilson interval of the pass rate: with 3 trials, 2/3 is 21%–94%. Absent on older baselines. */
+  passInterval?: [number, number];
+  /** pass^k at k = PASS_POW_K: the chance every one of k trials passes (consistency). Null under k trials. */
+  passPowK?: number | null;
+  /**
+   * Total USD of every trial that ran ÷ passes: what one success costs,
+   * failures included. Null when any trial is unpriced or nothing passed.
+   */
+  costPerSuccess?: number | null;
+  /** Trials that went over the task's token or time budget. */
+  overBudget?: number;
 };
+
+/** k for pass^k: three runs in a row, the consistency a person notices. */
+export const PASS_POW_K = 3;
+
+/** 95% Wilson score interval for `passes` of `trials`. */
+export function wilsonInterval(passes: number, trials: number, z = 1.96): [number, number] {
+  if (trials === 0) return [0, 1];
+  const p = passes / trials;
+  const z2 = z * z;
+  const center = (p + z2 / (2 * trials)) / (1 + z2 / trials);
+  const half = (z * Math.sqrt((p * (1 - p)) / trials + z2 / (4 * trials * trials))) / (1 + z2 / trials);
+  return [Math.max(0, center - half), Math.min(1, center + half)];
+}
+
+/** Unbiased pass^k from c passes of n trials: C(c,k) / C(n,k). Null when n < k. */
+export function passPow(passes: number, trials: number, k = PASS_POW_K): number | null {
+  if (trials < k) return null;
+  let value = 1;
+  for (let i = 0; i < k; i++) value *= (passes - i) / (trials - i);
+  return Math.max(0, value);
+}
 
 export type SuiteStats = {
   /** Absent on baselines recorded before it was tracked. */
@@ -155,6 +187,16 @@ export function summarizeSuite(results: TrialResult[]): SuiteStats {
       spread,
       stable: trials.length >= 2 && spread !== null && spread <= UNSTABLE_SPREAD,
       scopeViolations: trials.reduce((sum, trial) => sum + (trial.scopeViolations?.length ?? 0), 0),
+      passInterval: wilsonInterval(passing.length, trials.length),
+      passPowK: passPow(passing.length, trials.length),
+      // Over graded trials: an infra error has no spend to count.
+      costPerSuccess: (() => {
+        const graded = trials.filter((trial) => trial.status !== 'error');
+        return passing.length > 0 && graded.every((trial) => typeof trial.cost?.costUsd === 'number')
+          ? graded.reduce((sum, trial) => sum + trial.cost!.costUsd!, 0) / passing.length
+          : null;
+      })(),
+      overBudget: trials.filter((trial) => trial.budgetOk === false).length,
     };
   }
   return {

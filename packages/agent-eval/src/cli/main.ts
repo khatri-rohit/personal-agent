@@ -4,6 +4,8 @@ import { BASELINE_HELP, GATE_HELP, baselineCommand, gateCommand } from './gate.j
 import { METRICS_HELP, metricsCommand } from './metrics.js';
 import { RUNS_HELP, runsCommand } from './runs.js';
 import { RUN_HELP, SEED_HELP, runCommand, seedCommand } from './trials.js';
+import { UP_HELP, upCommand } from './up.js';
+import { VALIDATE_HELP, validateCommand } from './validate.js';
 
 type Command = { help: string; run: (args: Args) => Promise<void | number> };
 
@@ -12,9 +14,11 @@ const COMMANDS: Record<string, Command> = {
   metrics: { help: METRICS_HELP, run: metricsCommand },
   analyze: { help: ANALYZE_HELP, run: analyzeCommand },
   seed: { help: SEED_HELP, run: seedCommand },
+  up: { help: UP_HELP, run: upCommand },
   run: { help: RUN_HELP, run: runCommand },
   baseline: { help: BASELINE_HELP, run: baselineCommand },
   gate: { help: GATE_HELP, run: gateCommand },
+  validate: { help: VALIDATE_HELP, run: validateCommand },
 };
 
 function usage(): string {

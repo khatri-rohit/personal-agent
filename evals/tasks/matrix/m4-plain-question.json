@@ -8,9 +8,12 @@
   "checks": [],
   "files": [],
   "answer": [
-    { "mustMatch": "address space|memory" },
-    { "mustMatch": "thread" }
+    { "mustMatch": "\\b(own|separate|isolated|independent)\\b[^.\\n]*\\b(address space|memory)\\b" },
+    { "mustMatch": "\\bthreads?\\b[^.\\n]*\\bshar(e|es|ing)\\b" }
   ],
+  "reference": {
+    "answer": "A process is a running program with its own separate address space and resources. A thread is a unit of execution inside a process; threads of one process share its memory and resources, so they are cheaper to create and switch."
+  },
   "scope": { "allow": [] },
   "budget": { "maxPromptTokens": 60000, "maxMinutes": 3 }
 }

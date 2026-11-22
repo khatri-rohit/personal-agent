@@ -35,6 +35,16 @@ export class ApiClient {
     return this.json('POST', '/threads', { kind: input.workspaceRoot ? 'workspace' : 'home', ...input });
   }
 
+  /** What the API runs and which home it writes (`GET /version`); null on an API from before the route. */
+  async version(): Promise<{ harnessVersion: { sha: string; dirty: string | null } | null; agentHome: string } | null> {
+    try {
+      return await this.json('GET', '/version');
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('→ 404')) return null;
+      throw error;
+    }
+  }
+
   deleteThread(id: string): Promise<unknown> {
     return this.json('DELETE', `/threads/${id}`);
   }

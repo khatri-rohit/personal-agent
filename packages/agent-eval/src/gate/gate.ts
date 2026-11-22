@@ -5,8 +5,6 @@ import type { SuiteStats, TaskStats } from './summary.js';
 
 /** A task fails when it loses this many passing trials (scaled to its trial count). */
 export const MAX_LOST_TRIALS = 2;
-/** The suite fails when its pass rate drops by more than this many points. */
-export const MAX_SUITE_DROP_POINTS = 10;
 /** Median prompt tokens may rise this much on a stable task that passed in both. */
 export const MAX_TOKEN_RISE = 0.1;
 /** Median USD per passed trial may rise this much (the cost verdict, when both sides are priced). */
@@ -17,6 +15,31 @@ export const MAX_COST_RISE = 0.1;
  * cost-only gate would let the prompt grow unchecked; these catch that.
  */
 export const MAX_GUARD_RISE = 0.25;
+
+/**
+ * Paired suite difference over the tasks both sides ran: mean of per-task
+ * pass-rate differences (candidate − baseline), and its standard error from
+ * each task's trial variance. Pairing on tasks removes task difficulty from
+ * the noise (Miller, "Adding error bars to evals"). Rates are
+ * Agresti–Caffo adjusted ((passes+1)/(trials+2) per side) so a 3/3 task
+ * still carries variance.
+ */
+export function pairedSuiteDifference(
+  pairs: Array<{ base: TaskStats; cand: TaskStats }>,
+): { tasks: number; meanDiff: number; standardError: number; detectable: number } | null {
+  if (pairs.length === 0) return null;
+  let diff = 0;
+  let variance = 0;
+  for (const { base, cand } of pairs) {
+    diff += cand.passRate - base.passRate;
+    const pb = (base.passes + 1) / (base.trials + 2);
+    const pc = (cand.passes + 1) / (cand.trials + 2);
+    variance += (pb * (1 - pb)) / base.trials + (pc * (1 - pc)) / cand.trials;
+  }
+  const m = pairs.length;
+  const standardError = Math.sqrt(variance) / m;
+  return { tasks: m, meanDiff: diff / m, standardError, detectable: 1.96 * standardError };
+}
 
 /** The rise (a share) when `value` rose more than `limit` from `base`; null otherwise or when either is missing. */
 function rose(base: number | null | undefined, value: number | null | undefined, limit: number): number | null {
@@ -150,11 +173,20 @@ export function compareToBaseline(
     // would reward breaking the cache. Older baselines have no cost: the
     // prompt-token rule stays for them.
     const priced = base.medianCostUsd != null && cand.medianCostUsd != null;
+    // More trials over the task's budget is a regression even when they pass.
+    if (base.overBudget !== undefined && cand.overBudget !== undefined && cand.overBudget - base.overBudget >= MAX_LOST_TRIALS) {
+      verdict.failures.push(`over-budget trials rose ${base.overBudget} → ${cand.overBudget}`);
+    }
     if (base.stable && cand.stable) {
       if (priced) {
-        const costRise = rose(base.medianCostUsd, cand.medianCostUsd, MAX_COST_RISE);
+        // Cost per success (all spend ÷ passes) when both sides have it: a
+        // median over passing trials alone rewards failing cheaply.
+        const perSuccess = base.costPerSuccess != null && cand.costPerSuccess != null;
+        const baseCost = perSuccess ? base.costPerSuccess! : base.medianCostUsd!;
+        const candCost = perSuccess ? cand.costPerSuccess! : cand.medianCostUsd!;
+        const costRise = rose(baseCost, candCost, MAX_COST_RISE);
         if (costRise !== null) {
-          verdict.failures.push(`median cost per passed trial rose ${Math.round(costRise * 100)}% ($${base.medianCostUsd!.toFixed(4)} → $${cand.medianCostUsd!.toFixed(4)})`);
+          verdict.failures.push(`${perSuccess ? 'cost per success' : 'median cost per passed trial'} rose ${Math.round(costRise * 100)}% ($${baseCost.toFixed(4)} → $${candCost.toFixed(4)})`);
         }
         const p90Rise = rose(base.medianP90PromptPerCall, cand.medianP90PromptPerCall, MAX_GUARD_RISE);
         if (p90Rise !== null) {
@@ -188,16 +220,24 @@ export function compareToBaseline(
     tasks.push(verdict);
   }
 
-  // The suite rule also needs MAX_LOST_TRIALS lost trials overall: in a small
-  // suite one flipped trial is already >10 points, which is noise, not signal.
+  // Suite rule on paired per-task differences: a drop counts only when it
+  // is beyond the noise this run can resolve (1.96 SE) and at least
+  // MAX_LOST_TRIALS trials were lost. The verdict says what size of drop the
+  // run could have detected at all.
   const suiteFailures: string[] = [];
-  const drop = (baseline.passRate - candidate.passRate) * 100;
-  const candidateTrials = Object.values(candidate.tasks).reduce((sum, task) => sum + task.trials, 0);
-  const lostOverall = ((baseline.passRate - candidate.passRate) * candidateTrials);
-  if (drop > MAX_SUITE_DROP_POINTS && lostOverall >= MAX_LOST_TRIALS - 1e-9) {
-    suiteFailures.push(
-      `suite pass rate dropped ${Math.round(drop)} points (${Math.round(baseline.passRate * 100)}% → ${Math.round(candidate.passRate * 100)}%, ${Math.round(lostOverall)} trials)`,
+  const pairs = tasks.flatMap((task) => (task.baseline && task.candidate ? [{ base: task.baseline, cand: task.candidate }] : []));
+  const paired = pairedSuiteDifference(pairs);
+  if (paired) {
+    const lostOverall = pairs.reduce((sum, { base, cand }) => sum + Math.max(0, base.passes - cand.passes), 0);
+    const pts = (value: number) => Math.round(value * 100);
+    notes.push(
+      `paired over ${paired.tasks} task(s): pass rate ${paired.meanDiff >= 0 ? '+' : ''}${pts(paired.meanDiff)} points ± ${pts(paired.detectable)} (95%); drops smaller than ${pts(paired.detectable)} points cannot be told from noise in this run`,
     );
+    if (paired.meanDiff < 0 && -paired.meanDiff > paired.detectable && lostOverall >= MAX_LOST_TRIALS) {
+      suiteFailures.push(
+        `suite pass rate dropped ${pts(-paired.meanDiff)} points (paired, beyond ±${pts(paired.detectable)}; ${lostOverall} trial(s) lost)`,
+      );
+    }
   }
   if (tasks.some((task) => task.baseline?.medianCostUsd != null && task.candidate?.medianCostUsd != null)) {
     notes.push(

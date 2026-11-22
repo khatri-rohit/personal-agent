@@ -1,4 +1,12 @@
 /**
+ * The code a host runs, read once when it starts: the commit and a hash of
+ * uncommitted changes (null when clean). Recorded on `run_start`, so an eval
+ * attributes a trace to the code that produced it, not to the repo's state
+ * when the eval was read.
+ */
+export type HarnessVersion = { sha: string; dirty: string | null };
+
+/**
  * Harness behaviour switches, one per component that changes what the model
  * sees. Resolved once by the host when a run starts, recorded on the run's
  * `run_start` trace, and never flipped mid-run, so an eval can tell which

@@ -7,6 +7,7 @@ import type {
   ContextBudget,
   ContextReport,
   HarnessFlags,
+  HarnessVersion,
   LedgerAppendMeta,
   LedgerRecord,
   ResolvedModelSettings,
@@ -125,6 +126,11 @@ export type RunLoopConfig = {
   contextBudget?: ContextBudget;
   /** Harness switches resolved by the host at run start. Defaults to DEFAULT_HARNESS_FLAGS. */
   flags?: HarnessFlags;
+  /**
+   * The code the host is running (read once at host start), recorded on
+   * `run_start` so an eval knows what it measured, not what the repo says now.
+   */
+  harnessVersion?: HarnessVersion;
   /**
    * Model-role picks resolved by the host at run start (file > env > run's
    * model), recorded on run.started / run_start for eval attribution.

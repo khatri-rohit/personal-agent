@@ -5,7 +5,7 @@ import {
   reviewFingerprint,
   reviewOwnerThread,
 } from '@agent/agent-eval';
-import { sameReviewFingerprint } from '@agent/agent-models';
+import { sameReviewedThread } from '@agent/agent-models';
 
 import { ReviewButton } from './button';
 import { reviewHref } from './href';
@@ -36,7 +36,7 @@ export async function ReviewCta({
     runs: flattenRuns(runs),
   });
   const stored = await readReview(home, owner.threadId);
-  const stale = stored ? !sameReviewFingerprint(stored.fingerprint, fingerprint) : false;
+  const stale = stored ? !sameReviewedThread(stored.fingerprint, fingerprint) : false;
   const href = reviewHref(owner.threadId, { homeFlag, runId });
 
   if (stored && !stale) {

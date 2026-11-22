@@ -147,6 +147,7 @@ export type {
   OllamaBalanceModern,
   OllamaBalance,
 } from './lib/ollama-model.js';
+export { classifyThinking, middleThinking, resolveReasoningEffort } from './lib/ollama-model.js';
 
 export type {
   LedgerRecord,
@@ -201,7 +202,7 @@ export type { FileChange, RevertResult, RunChanges } from './lib/checkpoint.js';
 export { CHECKPOINT_EXCLUDES, CHECKPOINT_NOT_COVERED, revertSummary } from './lib/checkpoint.js';
 export type { ModelPrice } from './lib/pricing.js';
 export { callCostUsd, MODEL_PRICES, MODEL_PRICES_SOURCE, modelPrice } from './lib/pricing.js';
-export type { HarnessFlags } from './lib/flags.js';
+export type { HarnessFlags, HarnessVersion } from './lib/flags.js';
 export { DEFAULT_HARNESS_FLAGS, parseHarnessFlags } from './lib/flags.js';
 
 export type {
@@ -339,15 +340,18 @@ export {
 } from './lib/harness-limits.js';
 export type { ChildLimits } from './lib/harness-limits.js';
 
-export { REVIEW_FINDING_KINDS } from './lib/review.js';
+export { REVIEW_DIGEST_VERSION, REVIEW_DIMENSIONS, REVIEW_FINDING_KINDS } from './lib/review.js';
 export type {
   ReviewAlignment,
   ReviewAlignmentVerdict,
   ReviewDigest,
+  ReviewDimension,
   ReviewFinding,
   ReviewFindingKind,
   ReviewFingerprint,
+  ReviewJudgment,
   ReviewNarrative,
+  ReviewProvenance,
   ReviewNumbers,
   ReviewRunGlance,
   ReviewRunHealth,
@@ -357,6 +361,7 @@ export {
   parseReviewNarrative,
   parseThreadReview,
   reviewFingerprintKey,
+  sameReviewedThread,
   sameReviewFingerprint,
 } from './lib/review.js';
 export type { VoiceCapabilities, VoiceProvider } from './lib/voice.js';

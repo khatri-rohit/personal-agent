@@ -12,11 +12,12 @@ import {
   reviewFingerprint,
   reviewOwnerThread,
 } from '@agent/agent-eval';
-import { sameReviewFingerprint } from '@agent/agent-models';
+import { REVIEW_DIGEST_VERSION, sameReviewFingerprint, type ThinkingValue } from '@agent/agent-models';
 
 import { agentHome, evalHome } from '../lib/home';
 import { reviewHref } from './href';
-import { generateNarrative } from './narrative';
+import { listReviewers, type Reviewer } from './models';
+import { generateNarrative, REVIEW_PROMPT_SHA, reviewerFor, reviewerKey } from './narrative';
 import { readReview, writeReview } from './store';
 
 function safeId(value: string): string | null {
@@ -48,25 +49,53 @@ export async function requestReview(formData: FormData): Promise<void> {
 
   const home = homeOf(homeFlag);
   const { threadId, model } = reviewOwnerThread(home, rawThreadId);
+  const picked = String(formData.get('model') ?? '').trim();
+  const thinking = parseThinking(String(formData.get('thinking') ?? ''));
+  const reviewer = reviewerFor(model, picked || undefined);
+  // A new judge model, thinking level, prompt or digest code is a new review, not the stored one.
+  const key = reviewerKey(reviewer.model, thinking);
   const ledger = (await readLedger(home, threadId)).envelopes;
   const runs = flattenRuns(await listRuns(home, { threadId }));
-  const fingerprint = reviewFingerprint({ threadId, ledger, runs });
+  const fingerprint = reviewFingerprint({ threadId, ledger, runs, reviewer: key });
   const stored = await readReview(home, threadId);
-  if (stored && sameReviewFingerprint(stored.fingerprint, fingerprint)) {
+  // A stored review whose model call failed is retried, not served.
+  if (stored && stored.narrative && sameReviewFingerprint(stored.fingerprint, fingerprint)) {
     revalidateAndReturn(threadId, runId, homeFlag);
   }
 
   const analysis = await analyzeThread(home, rawThreadId, runId);
-  const narrative = await generateNarrative(
-    buildReviewInput(analysis.digest, analysis.excerpts),
-    model,
+  const outcome = await generateNarrative(
+    buildReviewInput(analysis.digest, analysis.excerpts, analysis.evidence),
+    reviewer.model,
+    thinking,
   );
   await writeReview(home, {
     threadId: analysis.digest.threadId,
-    fingerprint: analysis.fingerprint,
+    fingerprint: { ...analysis.fingerprint, reviewer: key },
     createdAt: new Date().toISOString(),
     digest: analysis.digest,
-    narrative,
+    narrative: outcome.narrative,
+    ...(outcome.error ? { narrativeError: outcome.error } : {}),
+    provenance: {
+      digestVersion: REVIEW_DIGEST_VERSION,
+      model: reviewer.model,
+      promptSha: REVIEW_PROMPT_SHA,
+      selfReview: reviewer.selfReview,
+      ...(thinking !== undefined ? { thinking } : {}),
+    },
   });
   revalidateAndReturn(analysis.digest.threadId, runId, homeFlag);
+}
+
+/** Form value → thinking: `true`/`false`, a level name, or the model default (empty). */
+function parseThinking(value: string): ThinkingValue | undefined {
+  if (!value) return undefined;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return value;
+}
+
+/** The judge models and their thinking levels, for the Review button's pickers. */
+export async function reviewerOptions(): Promise<{ reviewers: Reviewer[]; defaultModel: string | null }> {
+  return { reviewers: await listReviewers(), defaultModel: process.env.REVIEW_MODEL?.trim() || null };
 }

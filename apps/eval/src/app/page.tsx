@@ -1,20 +1,30 @@
 import { listRuns, readCatalog, stopLabel, type RunSummary } from '@agent/agent-eval';
 
-import { agentHome } from '../lib/home';
+import { homeFor } from '../lib/home';
 import { tokens, when } from '../lib/format';
 import { reviewHref } from '../review/href';
 import { readReview } from '../review/store';
 
 export const dynamic = 'force-dynamic';
 
-export default async function ThreadsPage() {
-  const home = agentHome();
-  const threads = readCatalog(home).filter((thread) => !thread.parentThreadId);
+export default async function ThreadsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ home?: string; all?: string }>;
+}) {
+  const search = await searchParams;
+  const { home, query } = homeFor(search.home);
+  const showAll = search.all === '1';
   const runs = await listRuns(home);
   const byThread = new Map<string, RunSummary[]>();
   for (const run of runs) {
     byThread.set(run.threadId, [...(byThread.get(run.threadId) ?? []), run]);
   }
+  // Threads with traces, newest first; ?all=1 lists threads whose traces were cleared too.
+  const threads = readCatalog(home)
+    .filter((thread) => !thread.parentThreadId && (showAll || byThread.has(thread.id)))
+    .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+  const hidden = readCatalog(home).filter((thread) => !thread.parentThreadId && !byThread.has(thread.id)).length;
   const reviewByThread = new Map(
     await Promise.all(
       threads.map(async (thread) => [thread.id, await readReview(home, thread.id)] as const),
@@ -24,7 +34,19 @@ export default async function ThreadsPage() {
   return (
     <>
       <h1>Threads</h1>
-      <p className="muted">{home}</p>
+      <p className="muted">
+        {home} · <a href={search.home === 'eval' ? '/' : '/?home=eval'}>{search.home === 'eval' ? 'personal home' : 'eval home'}</a>
+        {hidden > 0 ? (
+          <>
+            {' · '}
+            {showAll ? (
+              <a href={`/${query}`}>hide {hidden} without traces</a>
+            ) : (
+              <a href={`/${query ? `${query}&` : '?'}all=1`}>show {hidden} without traces</a>
+            )}
+          </>
+        ) : null}
+      </p>
       <div className="scroll">
         <table>
           <thead>
@@ -52,7 +74,7 @@ export default async function ThreadsPage() {
               return (
                 <tr key={thread.id}>
                   <td className="wrap">
-                    <a href={`/threads/${thread.id}`}>{thread.title || thread.id}</a>
+                    <a href={`/threads/${thread.id}${query}`}>{thread.title || thread.id}</a>
                   </td>
                   <td>{thread.kind}</td>
                   <td>{thread.model}</td>
@@ -63,7 +85,7 @@ export default async function ThreadsPage() {
                   <td>{tokens(prompt)}</td>
                   <td>{when(thread.updatedAt)}</td>
                   <td>
-                    <a href={reviewHref(thread.id)}>{reviewed ? 'Open review' : 'Review'}</a>
+                    <a href={reviewHref(thread.id, { homeFlag: search.home === 'eval' ? 'eval' : '' })}>{reviewed ? 'Open review' : 'Review'}</a>
                   </td>
                 </tr>
               );

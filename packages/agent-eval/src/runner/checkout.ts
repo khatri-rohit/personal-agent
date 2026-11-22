@@ -74,14 +74,19 @@ export async function checkout(input: { source: string; commit: string; dir: str
   // A workdir deleted by hand stays registered; `worktree add` would refuse it.
   if (sourceRoot) await git(sourceRoot, ['worktree', 'prune']);
 
+  // A standalone clone with its own .git (refs, index, stash), never a
+  // worktree of the source: an agent's `git branch -D`, `git stash` or commit
+  // in a trial must not reach the source repository. `--shared` only reads
+  // the source's objects (instant, and works across drives, where
+  // `--local` hardlinks fail on Windows).
   const created = sourceRoot
-    ? await git(sourceRoot, ['worktree', 'add', '--detach', input.dir, input.commit])
-    : await git(path.dirname(input.dir), ['clone', '--quiet', input.source, input.dir]);
+    ? await git(path.dirname(input.dir), ['clone', '--shared', '--no-checkout', '--quiet', sourceRoot, input.dir])
+    : await git(path.dirname(input.dir), ['clone', '--no-checkout', '--quiet', input.source, input.dir]);
   if (created.code !== 0) throw new Error(`checkout failed: ${created.out.trim()}`);
-  if (!sourceRoot) {
-    const detached = await git(input.dir, ['checkout', '--quiet', '--detach', input.commit]);
-    if (detached.code !== 0) throw new Error(`checkout of ${input.commit} failed: ${detached.out.trim()}`);
-  }
+  const detached = await git(input.dir, ['checkout', '--quiet', '--detach', input.commit]);
+  if (detached.code !== 0) throw new Error(`checkout of ${input.commit} failed: ${detached.out.trim()}`);
+  // No way back to the source: a `git push` from the trial has nowhere to go.
+  await git(input.dir, ['remote', 'remove', 'origin']);
 
   const lockfile = path.join(input.dir, 'package-lock.json');
   try {
