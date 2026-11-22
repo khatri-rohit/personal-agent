@@ -14,8 +14,8 @@ export const BASELINE_HELP = `baseline --suite regression ${RUN_OPTIONS} [--acce
   Record the suite's baseline. Refuses to replace one unless the candidate passes the gate or --accept is given.`;
 
 export const GATE_HELP = `gate --suite regression ${RUN_OPTIONS} [--baselines evals/baselines] [--compare system1]
-  Compare a suite run with the baseline. Exit 0 pass, 1 fail, 2 refused (model, seed, tasks or System 1 setup differ).
-  --compare system1: the setups must differ; passes on the same pass rate with lower median prompt tokens.`;
+  Compare a suite run with the baseline. Exit 0 pass, 1 fail, 2 refused (model, seed, tasks, System 1 setup, or more than one harness flag differ).
+  --compare system1: the setups must differ and the flags match; passes on the same pass rate with lower median cost (prompt tokens when not all tasks are priced).`;
 
 function compareFlag(args: Args): GateCompare {
   const value = flag(args, 'compare');
@@ -51,6 +51,7 @@ function printVerdict(result: GateResult): void {
     ),
   );
   for (const failure of result.suiteFailures) console.log(`SUITE FAIL: ${failure}`);
+  for (const note of result.notes) console.log(`NOTE: ${note}`);
   console.log(result.passed ? '\nGATE PASSED' : '\nGATE FAILED');
 }
 

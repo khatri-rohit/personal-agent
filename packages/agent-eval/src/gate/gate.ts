@@ -1,3 +1,5 @@
+import { DEFAULT_HARNESS_FLAGS, MODEL_PRICES_SOURCE } from '@agent/agent-models';
+
 import type { TaskSuite } from '../runner/task.js';
 import type { SuiteStats, TaskStats } from './summary.js';
 
@@ -40,7 +42,37 @@ export type TaskVerdict = {
 
 export type GateResult =
   | { kind: 'refuse'; reasons: string[] }
-  | { kind: 'verdict'; passed: boolean; suiteFailures: string[]; tasks: TaskVerdict[] };
+  | {
+      kind: 'verdict';
+      passed: boolean;
+      suiteFailures: string[];
+      /** What the verdict rests on: the flag under test, the cost source, the System 1 rule used. */
+      notes: string[];
+      tasks: TaskVerdict[];
+    };
+
+/**
+ * The flags that differ between two recorded flag sets, as `name off → on`;
+ * null when either side did not record flags. A name one side lacks (the
+ * flag did not exist yet) counts as its default: that is what that harness
+ * did.
+ */
+export function flagChanges(
+  base: Record<string, boolean> | undefined,
+  cand: Record<string, boolean> | undefined,
+): string[] | null {
+  if (!base || !cand) return null;
+  const defaults = DEFAULT_HARNESS_FLAGS as Record<string, boolean>;
+  const onOff = (value: boolean | undefined) => (value === undefined ? 'absent' : value ? 'on' : 'off');
+  const names = [...new Set([...Object.keys(base), ...Object.keys(cand)])].sort();
+  const changes: string[] = [];
+  for (const name of names) {
+    const was = base[name] ?? defaults[name];
+    const now = cand[name] ?? defaults[name];
+    if (was !== now) changes.push(`${name} ${onOff(was)} → ${onOff(now)}`);
+  }
+  return changes;
+}
 
 /** What the comparison is for. `system1`: baseline and candidate differ only in their System 1 setup (plan N5). */
 export type GateCompare = 'harness' | 'system1';
@@ -48,10 +80,11 @@ export type GateCompare = 'harness' | 'system1';
 /**
  * Compare a candidate suite run with the baseline (plan §8). Refuses (no
  * verdict) when the two were measured on a different model, seed, task
- * definitions or System 1 setup; a different harness version is what the
- * gate tests. With `compare: 'system1'` the setups must differ, and the
- * candidate must also lower the median prompt tokens of the tasks that
- * passed in both (same pass rate, fewer tokens).
+ * definitions or System 1 setup, or in more than one harness flag; a
+ * different harness version is what the gate tests. With `compare:
+ * 'system1'` the setups must differ (flags the same), and the candidate must
+ * also lower the median cost of the tasks that passed in both, or their
+ * median prompt tokens when not all are priced (same pass rate, cheaper).
  */
 export function compareToBaseline(
   baseline: Baseline,
@@ -71,6 +104,19 @@ export function compareToBaseline(
   }
   if (compare === 'system1' && baseSetup === candidate.system1Setup) {
     refuse.push(`--compare system1 needs different setups; both are ${baseSetup}`);
+  }
+  // One flag per comparison (docs/plans/context-and-subagent-fixes-plan.md):
+  // with two changed, a verdict cannot say which one moved the result.
+  const notes: string[] = [];
+  const changes = flagChanges(baseline.harnessFlags, candidate.harnessFlags);
+  if (changes === null) {
+    notes.push('harness flags unrecorded on one side: the gate cannot confirm a one-flag change');
+  } else if (compare === 'harness' && changes.length > 1) {
+    refuse.push(`harness flags differ in ${changes.length} flags (${changes.join('; ')}): compare one flag at a time`);
+  } else if (compare === 'system1' && changes.length > 0) {
+    refuse.push(`--compare system1 needs the same harness flags; they differ: ${changes.join('; ')}`);
+  } else if (changes.length === 1) {
+    notes.push(`flag under test: ${changes[0]}`);
   }
   for (const [taskId, base] of Object.entries(baseline.tasks)) {
     const cand = candidate.tasks[taskId];
@@ -153,6 +199,11 @@ export function compareToBaseline(
       `suite pass rate dropped ${Math.round(drop)} points (${Math.round(baseline.passRate * 100)}% → ${Math.round(candidate.passRate * 100)}%, ${Math.round(lostOverall)} trials)`,
     );
   }
+  if (tasks.some((task) => task.baseline?.medianCostUsd != null && task.candidate?.medianCostUsd != null)) {
+    notes.push(
+      `cost is an estimate at list prices (${MODEL_PRICES_SOURCE.url}, read ${MODEL_PRICES_SOURCE.readOn}, peak rates), not the account's own meter`,
+    );
+  }
   if (compare === 'system1') {
     // Same pass rate at lower cost, when every shared task is priced on both sides.
     const pricedShared = tasks.filter(
@@ -168,9 +219,11 @@ export function compareToBaseline(
       if (candCost >= baseCost) {
         suiteFailures.push(`${candidate.system1Setup} did not lower median cost ($${baseCost.toFixed(4)} → $${candCost.toFixed(4)} over ${pricedShared.length} task(s))`);
       }
+      notes.push('System 1 rule: same pass rate, lower median cost (every shared task priced)');
       const passed = suiteFailures.length === 0 && tasks.every((task) => task.failures.length === 0);
-      return { kind: 'verdict', passed, suiteFailures, tasks };
+      return { kind: 'verdict', passed, suiteFailures, notes, tasks };
     }
+    notes.push('System 1 rule: same pass rate, fewer median prompt tokens (not every shared task priced)');
     const shared = tasks.filter(
       (task) => task.baseline?.medianPromptTokens != null && task.candidate?.medianPromptTokens != null,
     );
@@ -183,5 +236,5 @@ export function compareToBaseline(
     }
   }
   const passed = suiteFailures.length === 0 && tasks.every((task) => task.failures.length === 0);
-  return { kind: 'verdict', passed, suiteFailures, tasks };
+  return { kind: 'verdict', passed, suiteFailures, notes, tasks };
 }

@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { SUITE_META_FILE, type SuiteRunMeta, type TrialResult } from '../runner/runner.js';
+import { flagSetKey, SUITE_META_FILE, type SuiteRunMeta, type TrialResult } from '../runner/runner.js';
 import type { TaskSuite } from '../runner/task.js';
 
 /** Spread (max ÷ min prompt tokens) above this marks a task unstable: no token verdict. */
@@ -44,6 +44,11 @@ export type SuiteStats = {
   harnessDirty: string | null;
   /** `TrialResult.system1Setup` shared by every trial; `unrecorded` for results written before it existed. */
   system1Setup: string;
+  /**
+   * `TrialResult.harnessFlags` shared by every trial that recorded them.
+   * Absent on baselines recorded before it, or when no trial recorded flags.
+   */
+  harnessFlags?: Record<string, boolean>;
   tasks: Record<string, TaskStats>;
   /** Passing trials ÷ trials that ran, over the whole suite. */
   passRate: number;
@@ -105,6 +110,11 @@ export function summarizeSuite(results: TrialResult[]): SuiteStats {
   // Trials that errored before any run have no setup; the others must agree.
   const setups = new Set(ran.flatMap((result) => (result.system1Setup ? [result.system1Setup] : [])));
   if (setups.size > 1) throw new Error(`Results mix System 1 setups (${[...setups].join(', ')}).`);
+  // One flag set per suite run: trials from two API processes measure two harnesses.
+  const flagSets = new Map(
+    ran.flatMap((result) => (result.harnessFlags ? [[flagSetKey(result.harnessFlags), result.harnessFlags] as const] : [])),
+  );
+  if (flagSets.size > 1) throw new Error(`Results mix harness flag sets: ${[...flagSets.keys()].join(' | ')}`);
   const byTask = new Map<string, TrialResult[]>();
   for (const result of ran) byTask.set(result.taskId, [...(byTask.get(result.taskId) ?? []), result]);
 
@@ -154,6 +164,7 @@ export function summarizeSuite(results: TrialResult[]): SuiteStats {
     harnessSha: first.harnessSha,
     harnessDirty: first.harnessDirty,
     system1Setup: [...setups][0] ?? 'unrecorded',
+    ...(flagSets.size === 1 ? { harnessFlags: [...flagSets.values()][0]! } : {}),
     tasks,
     passRate: ran.filter((result) => result.status === 'passed').length / ran.length,
   };

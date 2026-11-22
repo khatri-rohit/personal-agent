@@ -65,6 +65,12 @@ export type TrialResult = {
    * compares only like setups unless asked to compare them (plan D-2).
    */
   system1Setup?: string;
+  /**
+   * Harness flags the trial's runs used (`run_start.flags`; the API's
+   * AGENT_FLAGS). The gate compares runs that differ in at most one flag.
+   * Absent on results written before it, or when no run recorded flags.
+   */
+  harnessFlags?: Record<string, boolean>;
   status: TrialStatus;
   ended?: TrialEnd;
   /** Why it was skipped or errored. */
@@ -159,6 +165,34 @@ export function system1SetupOf(metrics: RunMetrics[], thinking: ThinkingValue | 
   const modes = new Set(metrics.map((m) => m.system1?.mode ?? 'off'));
   const mode = modes.size === 0 ? 'off' : modes.size === 1 ? [...modes][0]! : 'mixed';
   return `${mode}/thinking=${thinking === undefined ? 'default' : String(thinking)}`;
+}
+
+/**
+ * The flags of the trial's own runs, from their `run_start` lines. Every run
+ * of one trial talks to one API process, so they agree; a trial whose runs
+ * disagree (the API restarted with other AGENT_FLAGS mid-trial) throws, since
+ * no single flag set produced it.
+ */
+async function trialFlags(runs: Array<{ runId: string; tracePath: string }>): Promise<Record<string, boolean> | undefined> {
+  let found: Record<string, boolean> | undefined;
+  for (const run of runs) {
+    const { lines } = await readRunTrace(run.tracePath);
+    const flags = linesOf(lines, 'run_start')[0]?.flags as Record<string, boolean> | undefined;
+    if (!flags) continue;
+    if (found && flagSetKey(found) !== flagSetKey(flags)) {
+      throw new Error(`run ${run.runId} used other harness flags than the trial's first run; was the API restarted with new AGENT_FLAGS?`);
+    }
+    found ??= flags;
+  }
+  return found;
+}
+
+/** A flag set as one comparable string (names sorted). */
+export function flagSetKey(flags: Record<string, boolean>): string {
+  return Object.keys(flags)
+    .sort()
+    .map((name) => `${name}:${flags[name] ? 'on' : 'off'}`)
+    .join(',');
 }
 
 /** The API must be serving the eval home; a thread it creates must appear in that catalog. */
@@ -323,6 +357,8 @@ export async function runTrial(
     const metrics = await loadRunMetrics(opts.evalHome, runs);
     result.metrics = metrics;
     result.system1Setup = system1SetupOf(metrics, thinking);
+    const harnessFlags = await trialFlags(runs);
+    if (harnessFlags) result.harnessFlags = harnessFlags;
 
     // The account ran out, not the agent: the trial gets no grade (plan D-3).
     if (limitReason && isPauseStop(limitReason)) {
