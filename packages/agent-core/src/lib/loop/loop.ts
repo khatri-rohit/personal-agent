@@ -20,6 +20,7 @@ import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
 import { inferTaskShape, TaskStateTracker } from '../state/task-state';
 import { escalationStep } from '../policy';
 import { measureContextShape } from './context-shape';
+import { enforceWindow } from './residency-pass';
 import { tracePolicyDecision } from './policy-trace';
 import { withStateCard } from './state-card';
 import {
@@ -295,7 +296,11 @@ async function runLoopCore(
       throwIfAborted(signal);
       s.iterations++;
 
-      const estimatedPrompt = estimatePromptTokens(messages, tools.definitions);
+      // flags.windowGuard: never send a prompt over the input budget; the
+      // backstop reshapes it first (loop/residency-pass enforceWindow).
+      const estimatedPrompt = s.flags.windowGuard
+        ? await enforceWindow(s)
+        : estimatePromptTokens(messages, tools.definitions);
       // The first call always runs: skipping it to finalize would cost the same.
       const overBudget = budget.exceeded(s.iterations > 1 ? estimatedPrompt : 0);
       if (overBudget) {

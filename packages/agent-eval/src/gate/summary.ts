@@ -18,6 +18,16 @@ export type TaskStats = {
   /** Median prompt tokens over passing trials. */
   medianPromptTokens: number | null;
   medianMinutes: number | null;
+  /**
+   * Median USD over passing trials (`TrialResult.cost`). Null when any
+   * passing trial could not be priced, or the results predate cost fields:
+   * a partial price would compare runs for the wrong reason.
+   */
+  medianCostUsd?: number | null;
+  /** Median model calls over passing trials, own and sub-agent calls. Absent on older baselines. */
+  medianCalls?: number | null;
+  /** Median over passing trials of each trial's 90th-percentile prompt per call. Absent on older baselines. */
+  medianP90PromptPerCall?: number | null;
   /** max ÷ min prompt tokens over trials that reported tokens. */
   spread: number | null;
   /** At least two trials and spread ≤ UNSTABLE_SPREAD. */
@@ -119,6 +129,18 @@ export function summarizeSuite(results: TrialResult[]): SuiteStats {
       ),
       medianMinutes: median(
         passing.map((trial) => trial.minutes).filter((value): value is number => typeof value === 'number'),
+      ),
+      medianCostUsd:
+        passing.length > 0 && passing.every((trial) => typeof trial.cost?.costUsd === 'number')
+          ? median(passing.map((trial) => trial.cost!.costUsd!))
+          : null,
+      medianCalls: median(
+        passing.map((trial) => trial.cost?.calls).filter((value): value is number => typeof value === 'number'),
+      ),
+      medianP90PromptPerCall: median(
+        passing
+          .map((trial) => trial.cost?.p90PromptPerCall)
+          .filter((value): value is number => typeof value === 'number'),
       ),
       spread,
       stable: trials.length >= 2 && spread !== null && spread <= UNSTABLE_SPREAD,

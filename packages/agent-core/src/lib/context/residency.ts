@@ -184,6 +184,26 @@ function workingSetCard(candidate: Candidate, content: string, sha: string, reas
 }
 
 /**
+ * The card for a result that never joined the prompt because the turn was
+ * already at the window guard (flags.windowGuard). Same `(evicted)` prefix
+ * as a working-set card, so every reader (`isResident`, the harness card's
+ * working set, `context_shape`, the live stubbing pass) treats it as not in
+ * view, and it names the sha that restores the stored text.
+ */
+export function windowCard(
+  name: string,
+  rawArgs: string | undefined,
+  traits: ToolTraits | undefined,
+  content: string,
+  sha: string,
+): string {
+  const args = rawArgs ? ` ${argsPreview(rawArgs)}` : '';
+  const range = traits?.lineRange?.(content) ?? null;
+  const lines = range ? ` [${range.from}–${range.to}]` : '';
+  return `${CARD_PREFIX} ${name}${args}${lines} · window · ${content.length} chars · sha256:${sha} (not added: the prompt was near the window; read it again in a later step, or recall the sha)`;
+}
+
+/**
  * Keep this run's prompt under the in-run high mark (`inRunMarks`), measured
  * on the whole prompt. Below the mark nothing leaves: the prompt only grows,
  * so its prefix stays reusable and nothing the model is using disappears

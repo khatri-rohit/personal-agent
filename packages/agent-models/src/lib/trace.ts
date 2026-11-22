@@ -291,7 +291,8 @@ export type TraceEvent =
       runId: string;
       iteration: number;
       toolName: string;
-      note: 'read_creep' | 'web_slices' | 'serial_reads';
+      /** `window_deferred` (flags.windowGuard): the result was stored and left the prompt as a card; `count` is its chars. */
+      note: 'read_creep' | 'web_slices' | 'serial_reads' | 'window_deferred';
       count: number;
     }
   | {

@@ -170,6 +170,23 @@ export function inRunMarks(budget: ContextBudget): { high: number; low: number }
   return { high, low: high * budget.inRunLowShare };
 }
 
+/** Tokens a request may hold: the window minus the output reserve. */
+export function inputBudgetTokens(budget: ContextBudget): number {
+  return Math.max(1, budget.windowTokens - budget.outputReserveTokens);
+}
+
+/**
+ * Share of the input budget past which one turn's results stop joining the
+ * prompt (flags.windowGuard). Above the in-run high mark (0.8), so it only
+ * acts where residency cannot keep up: one turn that alone fills the window.
+ */
+const WINDOW_GUARD_SHARE = 0.9;
+
+/** The window guard in tokens (flags.windowGuard). */
+export function windowGuardTokens(budget: ContextBudget): number {
+  return inputBudgetTokens(budget) * WINDOW_GUARD_SHARE;
+}
+
 /** Share of the in-run low mark a run may start at, so a run starts with room before its first pass. */
 const START_BELOW_LOW = 0.9;
 

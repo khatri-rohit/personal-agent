@@ -13,7 +13,14 @@ const THOROUGHNESS = ['quick', 'medium', 'thorough'] as const;
 
 const EFFORT_TEXT = THOROUGHNESS.map((level) => `${level} (${THOROUGHNESS_TOOL_CALLS[level]} tool calls)`).join(', ');
 
-function describe(profiles: SubagentProfile[]): string {
+/** The paths rule as the run applies it (flags.siblingBriefs: named to siblings, not refused). */
+function pathsRule(siblingBriefs: boolean): string {
+  return siblingBriefs
+    ? 'Name the files or folders a brief covers in paths: sub-agents running at the same time see each other\'s objective and paths, so they do not take the same question.'
+    : 'Name the files or folders a brief covers in paths: a brief whose paths overlap a running sub-agent\'s is refused.';
+}
+
+function describe(profiles: SubagentProfile[], siblingBriefs: boolean): string {
   return `Hand a self-contained side task to a specialist sub-agent with its own context. You get back a short report, not its raw tool output.
 
 Profiles:
@@ -23,7 +30,7 @@ Rules:
 - Delegate wide reading (more than ~5 files, several searches, or web research) to explore. Answer it yourself when a couple of reads will do.
 - One explore per question. Start several only for clearly separate areas (different folders or files), and split them by area, never by sections of your answer: children with overlapping scope read the same files and cost the run several times over.
 - Effort is a budget: ${EFFORT_TEXT}. The child stops at it. A new brief gets at most medium (explore's default); thorough is granted when you resume a sub-agent whose report came back partial.
-- Name the files or folders a brief covers in paths: a brief whose paths overlap a running sub-agent's is refused.
+- ${pathsRule(siblingBriefs)}
 - The child's findings join your record; its report lists open questions. Check those gaps, not its findings.
 - Trust the report: it cites path:line for each finding. Check only what it marks uncertain or lists as open; do not repeat its search.
 - For a change beyond a file or two, run review once after your edits pass the check; skip it for a small change. Fix findings inside the user's request; list the rest instead of acting on them.
@@ -37,14 +44,19 @@ Rules:
  * The parent-side tool. Validation lives here; spawning, capabilities, and
  * budgets live in the runner the loop binds to `ctx.spawnSubagent`.
  */
-export function createDelegateTool(profiles: SubagentProfile[]): Tool {
+export function createDelegateTool(
+  profiles: SubagentProfile[],
+  /** flags.siblingBriefs: the description says how the run treats overlapping paths. */
+  options: { siblingBriefs?: boolean } = {},
+): Tool {
   const names = profiles.map((profile) => profile.name);
+  const siblingBriefs = options.siblingBriefs === true;
   return {
     definition: {
       type: 'function',
       function: {
         name: 'delegate',
-        description: describe(profiles),
+        description: describe(profiles, siblingBriefs),
         parameters: {
           type: 'object',
           properties: {
@@ -69,7 +81,9 @@ export function createDelegateTool(profiles: SubagentProfile[]): Tool {
             paths: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Optional: workspace files or folders this brief covers. Overlap with a running sub-agent is refused.',
+              description: siblingBriefs
+                ? 'Optional: workspace files or folders this brief covers; named to sub-agents running at the same time.'
+                : 'Optional: workspace files or folders this brief covers. Overlap with a running sub-agent is refused.',
             },
             resume: {
               type: 'string',

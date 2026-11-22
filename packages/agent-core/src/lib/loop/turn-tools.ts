@@ -16,7 +16,7 @@ import {
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
 import type { Tool } from '../tools/types';
 import { REPEAT_BLOCKED, type AdmissionRun, type Verdict } from './admission';
-import { manageResidency } from './residency-pass';
+import { guardResultWindow, manageResidency } from './residency-pass';
 import { tracePolicyDecision } from './policy-trace';
 import {
   emitTurnCompleted,
@@ -430,6 +430,16 @@ async function settleReturned(
     preview(result, RESULT_PREVIEW_MAX),
     webTrust ? { webTrust } : {},
   );
+  // flags.windowGuard: the ledger has the full result; past the window guard
+  // the live prompt makes room or keeps a card (loop/residency-pass).
+  if (s.flags.windowGuard) {
+    await guardResultWindow(s, {
+      toolCallId: toolCall.id,
+      name: toolName,
+      rawArgs: toolCall.type === 'function' ? toolCall.function.arguments : '',
+      content: result,
+    });
+  }
   // The stuck guard and a change's fresh start are admission's (loop/admission.ts).
   // Progress itself (stall, effort floor) is the task state's evidence,
   // which the trace above already fed; steering reads it from there.

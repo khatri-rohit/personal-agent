@@ -191,6 +191,7 @@ export async function prepareRun(input: {
     mode,
     posture,
     webSearch: input.webSearch,
+    siblingBriefs: flags.siblingBriefs,
     hostTools: [
       ...planTools,
       createSessionSearchTool(async (query, limit) =>

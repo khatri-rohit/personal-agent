@@ -12,6 +12,7 @@ import { linesOf, readRunTrace } from '../read/trace.js';
 import { flattenRuns, loadRunMetrics } from '../metrics/load.js';
 import type { RunMetrics } from '../metrics/run-metrics.js';
 import { ApiClient } from './api-client.js';
+import { trialCost, type TrialCost } from './cost.js';
 import { checkout, pruneWorkdirs, type Checkout } from './checkout.js';
 import { git } from './exec.js';
 import { gradeTrial, type Grade } from './score.js';
@@ -76,6 +77,8 @@ export type TrialResult = {
   continues: number;
   limitReason?: string;
   promptTokens?: number;
+  /** Cached, output, calls and USD over every run of the trial (`cost.ts`); absent on results written before it. */
+  cost?: TrialCost;
   minutes?: number;
   grade?: Grade;
   deps?: Checkout['deps'];
@@ -332,6 +335,7 @@ export async function runTrial(
     const promptTokens = metrics.reduce((sum, m) => sum + m.promptTokens.total, 0);
     const minutes = (Date.now() - startedAt.getTime()) / 60_000;
     result.promptTokens = promptTokens;
+    result.cost = await trialCost(flattenRuns(runs));
     result.minutes = Math.round(minutes * 10) / 10;
 
     const lastRunId = result.runIds.at(-1);

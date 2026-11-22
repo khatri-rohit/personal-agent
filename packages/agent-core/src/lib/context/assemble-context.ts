@@ -349,6 +349,12 @@ function stubToolContent(
 export function capRecentToolContent(
   content: string,
   maxChars: number,
+  /**
+   * flags.carryWholeReads: cut at the last line break that fits (a cut
+   * mid-line reads as a line of the file), and name the stored full result
+   * by its sha so `recall` can bring it back.
+   */
+  options: { lineBoundary?: boolean; blobSha?: string } = {},
 ): string {
   if (content.length <= maxChars) return content;
   const listed = hostListedWebUrls(content);
@@ -356,12 +362,20 @@ export function capRecentToolContent(
     listed.length > 0
       ? `${listed.map((url) => `URL: ${url}`).join('\n')}\n\n`
       : '';
-  const footer = `\n\n(live prompt capped at ${maxChars} chars; full tool result remains in the ledger)`;
+  const footer = options.blobSha
+    ? `\n\n(live prompt capped at ${maxChars} chars of ${content.length}; full result: recall sha256:${options.blobSha})`
+    : `\n\n(live prompt capped at ${maxChars} chars; full tool result remains in the ledger)`;
   const budget = maxChars - listing.length - footer.length;
+  const cutAt = (text: string, room: number): number => {
+    if (!options.lineBoundary) return room;
+    const lineEnd = text.lastIndexOf('\n', room);
+    return lineEnd >= room / 2 ? lineEnd : room;
+  };
   if (budget < 256) {
-    return `${content.slice(0, maxChars)}${footer}`;
+    const end = options.lineBoundary ? cutAt(content, Math.max(0, maxChars - footer.length)) : maxChars;
+    return `${content.slice(0, end)}${footer}`;
   }
-  return `${listing}${content.slice(0, budget)}${footer}`;
+  return `${listing}${content.slice(0, cutAt(content, budget))}${footer}`;
 }
 
 /** 0 = keep all (not enough turns yet). Else seq/index of the first kept user turn. */
@@ -770,6 +784,12 @@ export function assembleContext(
   // `carryOverToolTokens`; once one does not fit, it and everything older
   // get the card old results get. Without this a "continue" turn re-sends
   // the whole previous run's results on every call.
+  // The cap a recent tool row keeps. With flags.carryWholeReads it is the
+  // same per-tool cap the row had inside its run (a whole read_file window),
+  // so a follow-up turn sees what the last turn saw; otherwise the generic
+  // tool-result cap (a whole-file read was cut mid-file at 16,000 chars).
+  const recentCap = (toolCallId: string): number =>
+    flags.carryWholeReads ? liveResultCapChars(callInfo.get(toolCallId)?.name, maxToolChars) : maxToolChars;
   const overCarryOver = new Set<number>();
   let carryOverLeft = budget.carryOverToolTokens * CHARS_PER_TOKEN;
   for (let i = live.length - 1; i >= 0; i--) {
@@ -778,7 +798,7 @@ export function assembleContext(
     if (envelope.seq < keepToolsFrom) break;
     // Skill rows of earlier turns already go out as skill cards.
     if (skillCallNames.has(envelope.record.tool_call_id)) continue;
-    const size = Math.min(envelope.record.content.length, maxToolChars);
+    const size = Math.min(envelope.record.content.length, recentCap(envelope.record.tool_call_id));
     // A card would not be smaller than a result this short.
     if (size < MIN_EVICT_CHARS) continue;
     if (size <= carryOverLeft) carryOverLeft -= size;
@@ -810,7 +830,7 @@ export function assembleContext(
       (envelope.seq < keepToolsFrom || overCarryOver.has(envelope.seq));
     const overCap =
       envelope.record.role === 'tool' &&
-      envelope.record.content.length > maxToolChars;
+      envelope.record.content.length > recentCap(envelope.record.tool_call_id);
     const stubTool = oldTool;
     if (oldTool) stubbedToolResults++;
     const stubImages =
@@ -848,7 +868,12 @@ export function assembleContext(
       message = {
         role: 'tool',
         tool_call_id: message.tool_call_id,
-        content: capRecentToolContent(message.content, maxToolChars),
+        content: flags.carryWholeReads
+          ? capRecentToolContent(message.content, recentCap(message.tool_call_id), {
+              lineBoundary: true,
+              ...(envelope.contentBlob ? { blobSha: envelope.contentBlob } : {}),
+            })
+          : capRecentToolContent(message.content, maxToolChars),
       };
     }
     if (!message) continue;

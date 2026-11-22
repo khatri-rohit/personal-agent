@@ -7,6 +7,21 @@ export const MAX_LOST_TRIALS = 2;
 export const MAX_SUITE_DROP_POINTS = 10;
 /** Median prompt tokens may rise this much on a stable task that passed in both. */
 export const MAX_TOKEN_RISE = 0.1;
+/** Median USD per passed trial may rise this much (the cost verdict, when both sides are priced). */
+export const MAX_COST_RISE = 0.1;
+/**
+ * Guard metrics may rise this much: p90 prompt per call (long-context
+ * quality and latency) and calls per task. Cached tokens are cheap, so a
+ * cost-only gate would let the prompt grow unchecked; these catch that.
+ */
+export const MAX_GUARD_RISE = 0.25;
+
+/** The rise (a share) when `value` rose more than `limit` from `base`; null otherwise or when either is missing. */
+function rose(base: number | null | undefined, value: number | null | undefined, limit: number): number | null {
+  if (base == null || value == null || base <= 0) return null;
+  const rise = value / base - 1;
+  return rise > limit ? rise : null;
+}
 
 export type Baseline = SuiteStats & {
   suite: TaskSuite;
@@ -84,15 +99,44 @@ export function compareToBaseline(
     if (cand.scopeViolations > base.scopeViolations) {
       verdict.failures.push(`scope violations rose ${base.scopeViolations} → ${cand.scopeViolations}`);
     }
-    if (base.medianPromptTokens !== null && cand.medianPromptTokens !== null) {
-      if (base.stable && cand.stable) {
+    // Cost verdict when both sides are priced: cached prompt tokens cost a
+    // fraction of uncached ones and output costs more, so raw prompt tokens
+    // would reward breaking the cache. Older baselines have no cost: the
+    // prompt-token rule stays for them.
+    const priced = base.medianCostUsd != null && cand.medianCostUsd != null;
+    if (base.stable && cand.stable) {
+      if (priced) {
+        const costRise = rose(base.medianCostUsd, cand.medianCostUsd, MAX_COST_RISE);
+        if (costRise !== null) {
+          verdict.failures.push(`median cost per passed trial rose ${Math.round(costRise * 100)}% ($${base.medianCostUsd!.toFixed(4)} → $${cand.medianCostUsd!.toFixed(4)})`);
+        }
+        const p90Rise = rose(base.medianP90PromptPerCall, cand.medianP90PromptPerCall, MAX_GUARD_RISE);
+        if (p90Rise !== null) {
+          verdict.failures.push(`p90 prompt per call rose ${Math.round(p90Rise * 100)}% (${base.medianP90PromptPerCall} → ${cand.medianP90PromptPerCall})`);
+        }
+        const callsRise = rose(base.medianCalls, cand.medianCalls, MAX_GUARD_RISE);
+        if (callsRise !== null) {
+          verdict.failures.push(`model calls per passed trial rose ${Math.round(callsRise * 100)}% (${base.medianCalls} → ${cand.medianCalls})`);
+        }
+        const minutesRise = rose(base.medianMinutes, cand.medianMinutes, MAX_GUARD_RISE);
+        if (minutesRise !== null) {
+          verdict.failures.push(`minutes per passed trial rose ${Math.round(minutesRise * 100)}% (${base.medianMinutes} → ${cand.medianMinutes})`);
+        }
+        const tokenRise = rose(base.medianPromptTokens, cand.medianPromptTokens, MAX_TOKEN_RISE);
+        if (tokenRise !== null) {
+          verdict.notes.push(`median prompt tokens rose ${Math.round(tokenRise * 100)}% (reported; the cost verdict decides)`);
+        }
+      } else if (base.medianPromptTokens !== null && cand.medianPromptTokens !== null) {
         const rise = cand.medianPromptTokens / base.medianPromptTokens - 1;
         if (rise > MAX_TOKEN_RISE) {
           verdict.failures.push(`median prompt tokens rose ${Math.round(rise * 100)}% (${base.medianPromptTokens} → ${cand.medianPromptTokens})`);
         }
-      } else {
-        verdict.notes.push('unstable or too few trials: no token verdict');
+        if ((base.medianCostUsd != null) !== (cand.medianCostUsd != null)) {
+          verdict.notes.push('cost on one side only (unpriced model, or results without cost): prompt-token verdict');
+        }
       }
+    } else if (base.medianPromptTokens !== null && cand.medianPromptTokens !== null) {
+      verdict.notes.push('unstable or too few trials: no token verdict');
     }
     if (cand.errors > 0) verdict.notes.push(`${cand.errors} trial(s) errored (infrastructure, counted as not passing)`);
     tasks.push(verdict);
@@ -110,6 +154,23 @@ export function compareToBaseline(
     );
   }
   if (compare === 'system1') {
+    // Same pass rate at lower cost, when every shared task is priced on both sides.
+    const pricedShared = tasks.filter(
+      (task) => task.baseline?.medianCostUsd != null && task.candidate?.medianCostUsd != null,
+    );
+    const allPriced =
+      pricedShared.length > 0 &&
+      pricedShared.length ===
+        tasks.filter((task) => task.baseline?.medianPromptTokens != null && task.candidate?.medianPromptTokens != null).length;
+    if (allPriced) {
+      const baseCost = pricedShared.reduce((sum, task) => sum + task.baseline!.medianCostUsd!, 0);
+      const candCost = pricedShared.reduce((sum, task) => sum + task.candidate!.medianCostUsd!, 0);
+      if (candCost >= baseCost) {
+        suiteFailures.push(`${candidate.system1Setup} did not lower median cost ($${baseCost.toFixed(4)} → $${candCost.toFixed(4)} over ${pricedShared.length} task(s))`);
+      }
+      const passed = suiteFailures.length === 0 && tasks.every((task) => task.failures.length === 0);
+      return { kind: 'verdict', passed, suiteFailures, tasks };
+    }
     const shared = tasks.filter(
       (task) => task.baseline?.medianPromptTokens != null && task.candidate?.medianPromptTokens != null,
     );

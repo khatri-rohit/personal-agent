@@ -87,7 +87,12 @@
         "stopCheck": true,
         "sectionedSummary": true,
         "learningLoop": true,
-        "stateCard": true
+        "stateCard": true,
+        "carryWholeReads": false,
+        "windowGuard": false,
+        "childStatusAtLimit": false,
+        "siblingBriefs": false,
+        "resumeBudget": false
       },
       "taskShape": "unknown"
     },

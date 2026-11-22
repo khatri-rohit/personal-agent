@@ -197,6 +197,8 @@ export {
 export type { TraceCallInput, TraceEvent, TraceMessageRef } from './lib/trace.js';
 export { TRACE_SCHEMA_VERSION } from './lib/trace.js';
 
+export type { ModelPrice } from './lib/pricing.js';
+export { callCostUsd, MODEL_PRICES, MODEL_PRICES_SOURCE, modelPrice } from './lib/pricing.js';
 export type { HarnessFlags } from './lib/flags.js';
 export { DEFAULT_HARNESS_FLAGS, parseHarnessFlags } from './lib/flags.js';
 
@@ -299,6 +301,8 @@ export {
   MIN_CONTEXT_WINDOW_TOKENS,
   compactionMarks,
   inRunMarks,
+  inputBudgetTokens,
+  windowGuardTokens,
   contextBudgetForWindow,
   parseContextWindowMode,
   parseSnapshot,

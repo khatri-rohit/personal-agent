@@ -93,11 +93,18 @@ export function createRunToolset(input: {
   posture: RunPosture;
   webSearch?: boolean;
   hostTools: Tool[];
+  /** flags.siblingBriefs: `delegate` describes overlapping paths as named to siblings, not refused. */
+  siblingBriefs?: boolean;
 }): ToolRegistry {
   const { mode } = input;
   const allowed = [
     ...mode.globalTools,
     ...(input.webSearch !== false ? mode.allowedTools : []),
   ];
-  return createToolRegistry([...listTools(), ...input.hostTools], allowed, input.posture);
+  const tools = listTools().map((tool) =>
+    input.siblingBriefs && tool.definition.function.name === 'delegate'
+      ? createDelegateTool(listSubagentProfiles(), { siblingBriefs: true })
+      : tool,
+  );
+  return createToolRegistry([...tools, ...input.hostTools], allowed, input.posture);
 }
