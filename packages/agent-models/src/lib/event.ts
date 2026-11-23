@@ -273,6 +273,8 @@ export interface SubrunStarted {
   /** Child thread — UI navigates here to view the sub-agent conversation. */
   subThreadId: string;
   profile: string;
+  /** Resolved model the child run is using. */
+  model: string;
   /** The brief's objective. */
   task: string;
 }

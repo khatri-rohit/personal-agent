@@ -53,6 +53,8 @@ export type SubagentActivity = {
   subRunId: string;
   subThreadId: string;
   profile: string;
+  /** Resolved child model; unavailable on cards rebuilt from older ledger rows. */
+  model?: string;
   task: string;
   status: 'running' | 'completed' | 'incomplete' | 'error' | 'cancelled';
   iterations?: number;
@@ -554,6 +556,7 @@ export function applyChatEvent(state: ChatState, event: AgentEvent): ChatState {
         subRunId: event.subRunId,
         subThreadId: event.subThreadId,
         profile: event.profile,
+        model: event.model,
         task: event.task,
         status: 'running',
         seq: lastSeq,

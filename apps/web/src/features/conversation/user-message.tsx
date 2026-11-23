@@ -1,6 +1,13 @@
 'use client';
 
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import type { Message } from '@agent/agent-models';
 import { imageAttachments, threadMentions } from '@agent/agent-models';
 import { ThreadMentionChip } from '@/features/composer/thread-mention-picker';
@@ -9,6 +16,8 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { formatMessageTime } from '@/lib/format-relative-time';
+
+const PROMPT_PREVIEW_LINES = 10;
 
 export const UserMessage = memo(function UserMessage({
   message,
@@ -28,11 +37,38 @@ export const UserMessage = memo(function UserMessage({
   const [draft, setDraft] = useState(message.content);
   const [confirmClear, setConfirmClear] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+  const [previewMaxHeight, setPreviewMaxHeight] = useState<number>();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const promptRef = useRef<HTMLParagraphElement>(null);
+  const promptId = `user-prompt-${message.id}`;
 
   useEffect(() => {
     if (!isEditing) setDraft(message.content);
   }, [message.content, isEditing]);
+
+  useLayoutEffect(() => {
+    const prompt = promptRef.current;
+    if (!prompt || isEditing) return;
+
+    setIsExpanded(false);
+    const measurePrompt = () => {
+      const lineHeight = Number.parseFloat(getComputedStyle(prompt).lineHeight);
+      const maxHeight = Number.isFinite(lineHeight)
+        ? Math.ceil(lineHeight * PROMPT_PREVIEW_LINES)
+        : undefined;
+      setPreviewMaxHeight(maxHeight);
+      setIsOverflowing(
+        maxHeight !== undefined && prompt.scrollHeight > maxHeight + 1,
+      );
+    };
+
+    measurePrompt();
+    const observer = new ResizeObserver(measurePrompt);
+    observer.observe(prompt);
+    return () => observer.disconnect();
+  }, [isEditing, message.content]);
 
   useEffect(() => {
     if (isEditing) textareaRef.current?.focus();
@@ -264,9 +300,42 @@ export const UserMessage = memo(function UserMessage({
               </div>
             ) : null}
             {message.content ? (
-              <p className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-[1.55]">
-                {message.content}
-              </p>
+              <>
+                <div className="relative">
+                  <p
+                    ref={promptRef}
+                    id={promptId}
+                    className="min-w-0 overflow-hidden whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-[1.55]"
+                    style={{
+                      maxHeight:
+                        isOverflowing && !isExpanded
+                          ? previewMaxHeight
+                          : undefined,
+                    }}
+                  >
+                    {message.content}
+                  </p>
+                  {isOverflowing && !isExpanded ? (
+                    <div
+                      className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-muted via-muted/80 to-transparent"
+                      aria-hidden="true"
+                    />
+                  ) : null}
+                </div>
+                {isOverflowing ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="type-ui mt-1 h-8 px-0 text-muted-foreground hover:bg-transparent hover:text-foreground"
+                    aria-expanded={isExpanded}
+                    aria-controls={promptId}
+                    onClick={() => setIsExpanded((expanded) => !expanded)}
+                  >
+                    {isExpanded ? 'Show less' : 'Show more'}
+                  </Button>
+                ) : null}
+              </>
             ) : null}
           </div>
           <div className="mt-1 flex min-w-0 items-center justify-between gap-2">

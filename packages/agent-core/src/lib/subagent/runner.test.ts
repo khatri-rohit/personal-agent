@@ -17,6 +17,7 @@ import {
   DEFAULT_HARNESS_FLAGS,
   REPORT_MAX_CHARS,
   THOROUGHNESS_TOOL_CALLS,
+  type AgentEventWithoutSeq,
   type RunUsage,
   type SubagentSpec,
   type TraceEvent,
@@ -169,6 +170,20 @@ const reportOnlyGuards = (events: TraceEvent[] | undefined) =>
     .filter((id) => id.startsWith('report_only:'));
 
 describe('review sub-agent: budget and brief', () => {
+  it('announces the resolved child model when the sub-agent starts', async () => {
+    const { run } = await harness(2_000);
+    const events: AgentEventWithoutSeq[] = [];
+    await run({}, undefined, undefined, { emit: (event) => events.push(event) });
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'subrun.started',
+        profile: 'explore',
+        model: 'test-model',
+      }),
+    );
+  });
+
   it('a review brief that names no effort still runs under a bounded budget', async () => {
     const { run, traces } = await harness(2_000);
     const result = await run({ profile: 'review' });

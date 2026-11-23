@@ -638,11 +638,10 @@ function PagedThreadList({
         <button
           type="button"
           // A quiet text action: a filled bar outweighed the rows it expands.
-          className="type-caption mt-0.5 flex w-full items-center rounded-md px-2.5 py-1 text-subtle-foreground transition-colors hover:bg-accent/45 hover:text-foreground"
+          className="type-caption mt-0.5 flex w-full items-center rounded-md px-2.5 py-1 text-muted-foreground transition-colors hover:bg-accent/45 hover:text-foreground"
           onClick={() => setPages((current) => current + 1)}
         >
-          Show {Math.min(remaining, SIDEBAR_THREAD_PAGE)} more
-          {remaining > SIDEBAR_THREAD_PAGE ? ` · ${remaining} left` : ''}
+          Show more
         </button>
       ) : null}
     </div>

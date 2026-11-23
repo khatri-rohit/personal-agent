@@ -3,7 +3,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { normalizeRunPosture, type MessageAttachment } from '@agent/agent-models';
+import {
+  isWorkspaceKind,
+  normalizeRunPosture,
+  type MessageAttachment,
+} from '@agent/agent-models';
 import { ChatInput } from '@/features/composer/chat-input';
 import { ChatShell } from '@/components/shell/chat-shell';
 import {
@@ -23,6 +27,7 @@ import { clampChatTitle } from '@/features/threads/thread-title';
 import { formatRelativeTime } from '@/lib/format-relative-time';
 import {
   folderNameFromRoot,
+  sameWorkspaceRoot,
   setWorkspaceRoot,
   useAgentSpace,
 } from '@/features/threads/space-store';
@@ -70,10 +75,17 @@ export default function HomePage() {
 
   const recentThreads = useMemo(() => {
     return (threads ?? [])
-      .filter((t) => t.title !== 'New Chat')
+      .filter((thread) => {
+        if (thread.title === 'New Chat') return false;
+        if (!workspaceRoot) return !isWorkspaceKind(thread.kind);
+        return (
+          isWorkspaceKind(thread.kind) &&
+          sameWorkspaceRoot(thread.workspaceRoot, workspaceRoot)
+        );
+      })
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, 5);
-  }, [threads]);
+  }, [threads, workspaceRoot]);
 
   return (
     <ChatShell layout="home">
@@ -90,30 +102,6 @@ export default function HomePage() {
               : 'Start a conversation, or pick a workspace in the composer.'}
           </p>
         </div>
-        {recentThreads.length > 0 ? (
-          <section aria-label="Recent threads" className="w-full">
-            <p className="type-ui mb-2 font-medium text-muted-foreground">
-              Recent
-            </p>
-            <ul className="flex flex-col gap-0.5">
-              {recentThreads.map((thread) => (
-                <li key={thread.id}>
-                  <Link
-                    href={`/chat/${thread.id}`}
-                    className="flex items-center gap-3 rounded-md px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent/45 hover:text-foreground"
-                  >
-                    <span className="min-w-0 flex-1 truncate">
-                      {clampChatTitle(thread.title)}
-                    </span>
-                    <span className="type-caption shrink-0 tabular-nums text-subtle-foreground">
-                      {formatRelativeTime(thread.updatedAt)}
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
         <ChatInput
           key={`${HOME_DRAFT_SCOPE}-${draftEpoch}`}
           draftScope={HOME_DRAFT_SCOPE}
@@ -175,6 +163,32 @@ export default function HomePage() {
             writeStoredComposerModel(options.model, local);
           }}
         />
+        {recentThreads.length > 0 ? (
+          <section aria-label="Recent threads" className="w-full">
+            <p className="type-ui mb-2 font-medium text-muted-foreground">
+              {bound
+                ? `Recent in ${folderNameFromRoot(workspaceRoot)}`
+                : 'Recent in Home'}
+            </p>
+            <ul className="flex flex-col gap-0.5">
+              {recentThreads.map((thread) => (
+                <li key={thread.id}>
+                  <Link
+                    href={`/chat/${thread.id}`}
+                    className="flex items-center gap-3 rounded-md px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent/45 hover:text-foreground"
+                  >
+                    <span className="min-w-0 flex-1 truncate">
+                      {clampChatTitle(thread.title)}
+                    </span>
+                    <span className="type-caption shrink-0 tabular-nums text-muted-foreground">
+                      {formatRelativeTime(thread.updatedAt)}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
       </div>
     </ChatShell>
   );

@@ -583,6 +583,7 @@ export function createSubagentRunner(deps: {
         parentRunId: parent.runId,
         subThreadId: threadId,
         profile: profile.name,
+        model,
         task: spec.objective,
       });
 
