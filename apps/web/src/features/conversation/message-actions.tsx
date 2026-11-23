@@ -64,6 +64,7 @@ export function MessageActions({
   align = 'start',
   showRetry = false,
   onRetry,
+  changedFiles = 0,
   showEdit = false,
   onEdit,
   disabled = false,
@@ -74,7 +75,10 @@ export function MessageActions({
   readAloudId?: string;
   align?: 'start' | 'end';
   showRetry?: boolean;
-  onRetry?: () => void | Promise<void>;
+  /** `restoreFiles`: also put back the files this response changed. */
+  onRetry?: (restoreFiles?: boolean) => void | Promise<void>;
+  /** Files this response changed (checkpoint): retry offers to put them back. */
+  changedFiles?: number;
   showEdit?: boolean;
   onEdit?: () => void;
   disabled?: boolean;
@@ -99,11 +103,11 @@ export function MessageActions({
     window.setTimeout(() => setCopied(false), 2000);
   }, [content]);
 
-  const handleConfirmRetry = useCallback(async () => {
+  const handleConfirmRetry = useCallback(async (restoreFiles = false) => {
     if (!onRetry) return;
     setRetrying(true);
     try {
-      await onRetry();
+      await onRetry(restoreFiles);
       setConfirmRetry(false);
     } catch {
       toastError('The retry request failed — nothing was changed', 'Retry failed');
@@ -189,17 +193,43 @@ export function MessageActions({
           role="status"
         >
           <span className="text-xs text-muted-foreground">
-            Retry this response?
+            {changedFiles > 0
+              ? `Retry? This response changed ${changedFiles} file${changedFiles === 1 ? '' : 's'}.`
+              : 'Retry this response?'}
           </span>
-          <Button
-            type="button"
-            size="sm"
-            className="h-6 px-2 text-xs"
-            disabled={retrying}
-            onClick={() => void handleConfirmRetry()}
-          >
-            {retrying ? 'Retrying…' : 'Yes, retry'}
-          </Button>
+          {changedFiles > 0 ? (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                disabled={retrying}
+                onClick={() => void handleConfirmRetry(true)}
+              >
+                {retrying ? 'Retrying…' : 'Restore files and retry'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                disabled={retrying}
+                onClick={() => void handleConfirmRetry(false)}
+              >
+                Keep files and retry
+              </Button>
+            </>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              disabled={retrying}
+              onClick={() => void handleConfirmRetry()}
+            >
+              {retrying ? 'Retrying…' : 'Yes, retry'}
+            </Button>
+          )}
           <Button
             type="button"
             variant="ghost"

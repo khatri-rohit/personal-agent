@@ -6,7 +6,7 @@ import {
   reviewFingerprint,
   reviewOwnerThread,
 } from '@agent/agent-eval';
-import { sameReviewFingerprint } from '@agent/agent-models';
+import { sameReviewedThread } from '@agent/agent-models';
 
 import { homeFor } from '../../../../lib/home';
 import { ReviewButton } from '../../../../review/button';
@@ -41,7 +41,8 @@ export default async function ThreadReviewPage({
     runs: flattenRuns(runs),
   });
   const stored = await readReview(home, owner.threadId);
-  const stale = stored ? !sameReviewFingerprint(stored.fingerprint, fingerprint) : false;
+  // Stale = the thread changed; a different reviewer is the user's choice, not staleness.
+  const stale = stored ? !sameReviewedThread(stored.fingerprint, fingerprint) : false;
   const title = thread?.title ?? owner.title;
   const threadHref = `/threads/${owner.threadId}${query}`;
 

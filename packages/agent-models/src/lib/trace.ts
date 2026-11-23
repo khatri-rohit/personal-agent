@@ -1,5 +1,5 @@
 import type { ContextReportLayer, ContextWindowSource } from './context.js';
-import type { HarnessFlags } from './flags.js';
+import type { HarnessFlags, HarnessVersion } from './flags.js';
 import type { RunUsage, TokenUsage } from './run.js';
 import type { System1EffortTrace, System1RunReport } from './system1.js';
 import type { SubagentReportStatus, SubagentStatus, SubagentThoroughness } from './subagent.js';
@@ -62,6 +62,8 @@ export type TraceEvent =
       layers?: ContextReportLayer[];
       /** Harness switches this run used (absent on traces from before flags). */
       flags?: HarnessFlags;
+      /** The code the host ran (absent on traces from before it, and on hosts that do not know it). */
+      harnessVersion?: HarnessVersion;
       /** Provisional task shape from the request (see TaskShape); evidence may correct it. */
       taskShape?: TaskShape;
     }
@@ -291,7 +293,8 @@ export type TraceEvent =
       runId: string;
       iteration: number;
       toolName: string;
-      note: 'read_creep' | 'web_slices' | 'serial_reads';
+      /** `window_deferred` (flags.windowGuard): the result was stored and left the prompt as a card; `count` is its chars. */
+      note: 'read_creep' | 'web_slices' | 'serial_reads' | 'window_deferred';
       count: number;
     }
   | {

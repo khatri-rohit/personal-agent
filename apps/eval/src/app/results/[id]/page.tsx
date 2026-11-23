@@ -5,7 +5,10 @@ import {
   flattenRuns,
   listRuns,
   loadRunMetrics,
+  PASS_POW_K,
+  passPow,
   readSuiteRun,
+  wilsonInterval,
   type TrialResult,
 } from '@agent/agent-eval';
 
@@ -40,10 +43,24 @@ export default async function SuiteRunPage({ params }: { params: Promise<{ id: s
   const tasks = [...new Set(results.map((trial) => trial.taskId))];
   const maxTrial = Math.max(0, ...results.map((trial) => trial.trial));
   const runIds = new Set(results.flatMap((trial) => trial.runIds));
-  const runs = flattenRuns(await listRuns(home)).filter(
+  // Only the trials' own threads (and their sub-agent threads), not every trace in the home.
+  const threadIds = [...new Set(results.flatMap((trial) => (trial.threadId ? [trial.threadId] : [])))];
+  const runs = flattenRuns((await Promise.all(threadIds.map((threadId) => listRuns(home, { threadId })))).flat()).filter(
     (run) => runIds.has(run.runId) || (run.parentRunId !== undefined && runIds.has(run.parentRunId)),
   );
   const areas = areaRows(await loadRunMetrics(home, runs)).filter((row) => row.runs > 0);
+  const graded = results.filter((trial) => trial.status !== 'skipped');
+  const failures = new Map<string, number>();
+  for (const trial of graded) {
+    if (trial.failure) failures.set(trial.failure, (failures.get(trial.failure) ?? 0) + 1);
+  }
+  const taskSummary = (task: string) => {
+    const trials = graded.filter((trial) => trial.taskId === task);
+    const passes = trials.filter((trial) => trial.status === 'passed').length;
+    const [low, high] = wilsonInterval(passes, trials.length);
+    const pow = passPow(passes, trials.length);
+    return { passes, trials: trials.length, low, high, pow };
+  };
 
   return (
     <>
@@ -60,6 +77,7 @@ export default async function SuiteRunPage({ params }: { params: Promise<{ id: s
           <thead>
             <tr>
               <th>Task</th>
+              <th title={`Passes, 95% Wilson interval, and pass^${PASS_POW_K} (all ${PASS_POW_K} in a row pass)`}>Pass rate</th>
               {Array.from({ length: maxTrial }, (_, i) => (
                 <th key={i}>Trial {i + 1}</th>
               ))}
@@ -69,6 +87,20 @@ export default async function SuiteRunPage({ params }: { params: Promise<{ id: s
             {tasks.map((task) => (
               <tr key={task}>
                 <td>{task}</td>
+                <td className="wrap">
+                  {(() => {
+                    const s = taskSummary(task);
+                    return (
+                      <>
+                        {s.passes}/{s.trials}
+                        <div className="muted small">
+                          {Math.round(s.low * 100)}–{Math.round(s.high * 100)}%
+                          {s.pow === null ? '' : ` · pass^${PASS_POW_K} ${Math.round(s.pow * 100)}%`}
+                        </div>
+                      </>
+                    );
+                  })()}
+                </td>
                 {Array.from({ length: maxTrial }, (_, i) => {
                   const trial = results.find((r) => r.taskId === task && r.trial === i + 1);
                   if (!trial) return <td key={i} className="muted">–</td>;
@@ -76,6 +108,7 @@ export default async function SuiteRunPage({ params }: { params: Promise<{ id: s
                   return (
                     <td key={i} className="wrap">
                       <span className={`trial-${trial.status}`}>{trial.status}</span> <GradeDots trial={trial} />
+                      {trial.failure ? <span className="chip sig-bad">{trial.failure}</span> : null}
                       <div className="muted small">
                         {trial.ended ?? ''} · {tokens(trial.promptTokens)} · {trial.minutes ?? '–'} min
                         {trial.continues ? ` · ${trial.continues} continue` : ''}
@@ -94,6 +127,29 @@ export default async function SuiteRunPage({ params }: { params: Promise<{ id: s
           </tbody>
         </table>
       </div>
+      <h2>Why trials failed</h2>
+      {failures.size === 0 ? (
+        <p className="muted">No failed or errored trial with a recorded cause (results from before failure categories have none).</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Cause</th>
+              <th>Trials</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[...failures.entries()]
+              .sort((a, b) => b[1] - a[1])
+              .map(([cause, count]) => (
+                <tr key={cause}>
+                  <td>{cause}</td>
+                  <td>{count}</td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      )}
       <h2>Where the cost went</h2>
       {areas.length === 0 ? (
         <p className="muted">No area tripped a threshold.</p>

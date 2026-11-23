@@ -42,6 +42,7 @@ import { CompactionCard } from './compaction-card';
 import { SubagentCard, SubagentLiveLine } from './subagent-card';
 import { ToolStepList } from './tool-call-panel';
 import { PlanChip } from './thread-plan-card';
+import { TurnChanges, turnWriteRuns } from './turn-changes';
 import { UserMessage } from './user-message';
 import { ChoiceCard, ChoiceRecord } from './choice-card';
 import { isUserCancelled, stopReasonLabel } from './stop-reason';
@@ -70,12 +71,14 @@ export function MessageList({
   threadKind?: 'home' | 'workspace';
   /** Answer the agent's open question (rendered inline at the turn's end). */
   onResolveChoice?: ChoiceResolver;
-  onRetryLastResponse: () => void | Promise<void>;
+  /** `restoreFiles`: also put back the files the replaced reply changed. */
+  onRetryLastResponse: (restoreFiles?: boolean) => void | Promise<void>;
   /** Start the next run from the last run's handoff (budget/capacity stops). */
   onContinue?: () => void | Promise<void>;
   onEditLastUserMessage: (
     messageId: string,
     content: string,
+    restoreFiles?: boolean,
   ) => void | Promise<void>;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -262,6 +265,7 @@ export function MessageList({
                   turn={turn}
                   isLastTurn={isLastTurn}
                   isRunning={isRunning}
+                  threadKind={threadKind}
                   toolActivity={isLastTurn ? toolActivity : EMPTY_TOOL_ACTIVITY}
                   streaming={isLastTurn ? streaming : null}
                   assistantSnippets={isLastTurn ? assistantSnippets : EMPTY_SNIPPETS}
@@ -274,6 +278,7 @@ export function MessageList({
                   latestUserMessageId={latestUserMessageId}
                   plan={chatState.plan}
                   pendingChoice={isLastTurn ? pendingChoice : null}
+                  hasPendingChoice={pendingChoice !== null}
                   onResolveChoice={onResolveChoice}
                   limitNotice={chatState.limitNotice}
                   transcriptBusy={transcriptBusy}
@@ -496,14 +501,17 @@ type TurnViewProps = {
   plan: ThreadPlan | null;
   /** Open question for this turn (last turn only), rendered inline. */
   pendingChoice: PendingChoice | null;
+  /** Keep earlier turns laid out while a choice is being interacted with. */
+  hasPendingChoice: boolean;
   onResolveChoice: ChoiceResolver | undefined;
   limitNotice: LimitNotice | null;
   transcriptBusy: boolean;
   runTranscriptAction: (action: () => void | Promise<void>) => void;
-  onRetryLastResponse: () => void | Promise<void>;
-  onEditLastUserMessage: (messageId: string, content: string) => void | Promise<void>;
+  onRetryLastResponse: (restoreFiles?: boolean) => void | Promise<void>;
+  onEditLastUserMessage: (messageId: string, content: string, restoreFiles?: boolean) => void | Promise<void>;
   onContinue?: () => void | Promise<void>;
   registerAnchor: (id: string, el: HTMLDivElement | null) => void;
+  threadKind: 'home' | 'workspace';
 };
 
 const TurnView = memo(function TurnView({
@@ -520,6 +528,7 @@ const TurnView = memo(function TurnView({
   latestUserMessageId,
   plan,
   pendingChoice,
+  hasPendingChoice,
   onResolveChoice,
   limitNotice,
   transcriptBusy,
@@ -528,7 +537,15 @@ const TurnView = memo(function TurnView({
   onEditLastUserMessage,
   onContinue,
   registerAnchor,
+  threadKind,
 }: TurnViewProps) {
+  // Checkpoints: the files this turn's runs changed. Counted on the last
+  // turn so Retry and Edit can offer to put them back.
+  const writeRuns = useMemo(() => turnWriteRuns(turn.replies), [turn.replies]);
+  const [changedFiles, setChangedFiles] = useState(0);
+  // A retried turn has new runs: the old count must not reach Retry/Edit.
+  const runKey = writeRuns.runIds.join(',');
+  useEffect(() => setChangedFiles(0), [runKey]);
   const turnCompaction = turnOwnsCompaction(
     turn.replies,
     compactionNotice,
@@ -592,7 +609,9 @@ const TurnView = memo(function TurnView({
       className="flex flex-col gap-3.5 scroll-mt-6"
       aria-label="Conversation turn"
       style={
-        isLastTurn
+        // Skip estimated heights while a choice is open: focusing / clicking
+        // options would otherwise remeasure skipped turns and jump the scroll.
+        isLastTurn || hasPendingChoice
           ? undefined
           : {
               contentVisibility: 'auto',
@@ -610,6 +629,7 @@ const TurnView = memo(function TurnView({
             Boolean(streaming?.content) ||
             Boolean(turnCompaction))
         }
+        changedFiles={isLastTurn ? changedFiles : 0}
         onEditSubmit={onEditLastUserMessage}
       />
 
@@ -723,7 +743,18 @@ const TurnView = memo(function TurnView({
           turnStartedAt={turn.userMessage.createdAt}
           showRetry={isLatestTurnReply}
           onRetry={onRetryLastResponse}
+          changedFiles={isLatestTurnReply ? changedFiles : 0}
           retryDisabled={isRunning}
+        />
+      ) : null}
+
+      {threadKind === 'workspace' && writeRuns.wrote && writeRuns.runIds.length > 0 && !turnLive ? (
+        <TurnChanges
+          threadId={turn.userMessage.threadId}
+          runIds={writeRuns.runIds}
+          eager={isLastTurn}
+          disabled={isRunning}
+          onFilesChanged={setChangedFiles}
         />
       ) : null}
     </section>
@@ -754,13 +785,15 @@ function TurnFooter({
   turnStartedAt,
   showRetry,
   onRetry,
+  changedFiles,
   retryDisabled,
 }: {
   message: Message;
   workSummary?: string;
   turnStartedAt?: string;
   showRetry?: boolean;
-  onRetry?: () => void | Promise<void>;
+  onRetry?: (restoreFiles?: boolean) => void | Promise<void>;
+  changedFiles?: number;
   retryDisabled?: boolean;
 }) {
   const timing = answerTiming(message, turnStartedAt);
@@ -777,6 +810,7 @@ function TurnFooter({
         align="start"
         showRetry={showRetry}
         onRetry={onRetry}
+        changedFiles={changedFiles}
         disabled={retryDisabled}
       />
     </MessageMetaRow>

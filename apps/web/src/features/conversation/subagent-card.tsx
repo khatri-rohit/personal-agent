@@ -125,7 +125,14 @@ export function SubagentLiveLine({ activity }: { activity: SubagentActivity }) {
           {activity.task}
         </>
       }
-      meta={<span>Running</span>}
+      meta={
+        <>
+          {activity.model ? (
+            <span title={`Model: ${activity.model}`}>{activity.model}</span>
+          ) : null}
+          <span>Running</span>
+        </>
+      }
     />
   );
 }
@@ -150,6 +157,14 @@ export function SubagentDockRows({
           <span className="min-w-0 flex-1 truncate text-muted-foreground">
             {item.task}
           </span>
+          {item.model ? (
+            <span
+              className="type-caption max-w-48 shrink-0 truncate text-subtle-foreground"
+              title={`Model: ${item.model}`}
+            >
+              {item.model}
+            </span>
+          ) : null}
           <span className="type-caption shrink-0 tabular-nums text-subtle-foreground">
             {liveCounter(item)}
           </span>

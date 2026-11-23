@@ -48,6 +48,15 @@
       "gate": {
         "executor": "nx:run-commands",
         "options": { "command": "node packages/agent-eval/scripts/cli.mjs gate", "cwd": "{workspaceRoot}" }
+      },
+      "validate": {
+        "executor": "nx:run-commands",
+        "options": { "command": "node packages/agent-eval/scripts/cli.mjs validate", "cwd": "{workspaceRoot}" }
+      },
+      "up": {
+        "continuous": true,
+        "executor": "nx:run-commands",
+        "options": { "command": "node packages/agent-eval/scripts/cli.mjs up", "cwd": "{workspaceRoot}" }
       }
     }
   },

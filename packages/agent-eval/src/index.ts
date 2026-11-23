@@ -43,7 +43,9 @@ export {
   analyzeThread,
   buildReviewInput,
   reviewFingerprint,
+  reviewEvidence,
   reviewOwnerThread,
+  type ReviewEvidence,
   type ReviewExcerpt,
   type ReviewModelInput,
   type ThreadReviewAnalysis,
@@ -51,7 +53,7 @@ export {
 
 export { loadTask, loadTasks, parseTask, TASK_SUITES, type EvalTask, type LoadedTask, type TaskSuite } from './runner/task.js';
 export { readSeed, seedEvalHome, type SeedInfo } from './runner/seed.js';
-export { gradeTrial, scopeMatcher, type Grade } from './runner/score.js';
+export { gradeTrial, scopeMatcher, type FailureCategory, type Grade } from './runner/score.js';
 export {
   runSuite,
   runTrial,
@@ -68,6 +70,23 @@ export {
 } from './runner/runner.js';
 export { ApiClient } from './runner/api-client.js';
 
-export { listSuiteRuns, readResults, readSuiteRun, summarizeSuite, type SuiteStats, type TaskStats } from './gate/summary.js';
-export { compareToBaseline, type Baseline, type GateCompare, type GateResult, type TaskVerdict } from './gate/gate.js';
+export {
+  listSuiteRuns,
+  passPow,
+  PASS_POW_K,
+  readResults,
+  readSuiteRun,
+  summarizeSuite,
+  wilsonInterval,
+  type SuiteStats,
+  type TaskStats,
+} from './gate/summary.js';
+export {
+  compareToBaseline,
+  pairedSuiteDifference,
+  type Baseline,
+  type GateCompare,
+  type GateResult,
+  type TaskVerdict,
+} from './gate/gate.js';
 export { readBaseline, recordBaseline } from './gate/baseline.js';

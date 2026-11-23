@@ -6,7 +6,21 @@ import type { EvalTask } from './task.js';
 
 export type CheckResult = { run: string; exit: number; passed: boolean; timedOut: boolean; outTail: string };
 export type FileResult = { path: string; passed: boolean; reason?: string };
-export type AnswerResult = { mustMatch: string; passed: boolean };
+/** `mustMatch`: the regex, or the command whose output had to appear (`fromCommand`). */
+export type AnswerResult = { mustMatch: string; passed: boolean; fromCommand?: string; expected?: string };
+
+/**
+ * Why a trial did not pass, first cause first: what a reader fixes next.
+ * `infra` is set by the runner (setup, API, a run that never settled).
+ */
+export type FailureCategory =
+  | 'checks-failed'
+  | 'files-wrong'
+  | 'wrong-answer'
+  | 'out-of-scope'
+  | 'limit'
+  | 'over-budget'
+  | 'infra';
 
 export type Grade = {
   checks: CheckResult[];
@@ -20,8 +34,64 @@ export type Grade = {
   changed: string[];
   scopeViolations: string[];
   budget: { promptTokens: number; minutes: number; unresolvedLimit?: string; ok: boolean };
+  /**
+   * The task was done: checks, files, answer and scope all pass, and the run
+   * did not end on an unresolved limit. Budget is not part of it.
+   */
+  correct: boolean;
+  /** Same as `correct`: a trial passes on the work; spend is graded apart (`budget.ok`, the gate's cost rules). */
   passed: boolean;
+  /** Absent when the trial passed and stayed within budget. */
+  failure?: FailureCategory;
 };
+
+/** The first reason in reading order: what was wrong with the work, then how it ended, then spend. */
+export function failureOf(grade: Omit<Grade, 'failure'>): FailureCategory | undefined {
+  if (!grade.checksPassed) return 'checks-failed';
+  if (!grade.filesPassed) return 'files-wrong';
+  if (!grade.answersPassed) return 'wrong-answer';
+  if (grade.scopeViolations.length > 0) return 'out-of-scope';
+  if (grade.budget.unresolvedLimit) return 'limit';
+  if (!grade.budget.ok) return 'over-budget';
+  return undefined;
+}
+
+/** Escape a literal for use inside a RegExp. */
+function literal(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Grade an answer against a task's answer checks. `run` executes a
+ * `fromCommand` where the trial ran and returns its trimmed output.
+ */
+export async function gradeAnswer(
+  checks: NonNullable<EvalTask['answer']>,
+  answer: string,
+  run: (command: string) => Promise<string>,
+): Promise<AnswerResult[]> {
+  const results: AnswerResult[] = [];
+  for (const check of checks) {
+    if (check.fromCommand !== undefined) {
+      const expected = (await run(check.fromCommand)).trim();
+      results.push({
+        mustMatch: literal(expected),
+        fromCommand: check.fromCommand,
+        expected,
+        passed: expected.length > 0 && new RegExp(literal(expected), 'i').test(answer),
+      });
+    } else {
+      results.push({ mustMatch: check.mustMatch, passed: new RegExp(check.mustMatch, 'im').test(answer) });
+    }
+  }
+  return results;
+}
+
+/** Trimmed stdout of a short command (answer checks, reference placeholders). */
+export async function commandOutput(command: string, cwd: string): Promise<string> {
+  const result = await exec(command, [], { cwd, shell: true, timeoutMs: 60_000 });
+  return result.code === 0 ? result.out.trim() : '';
+}
 
 const DEFAULT_CHECK_TIMEOUT_SEC = 300;
 
@@ -103,10 +173,10 @@ export async function gradeTrial(input: {
     }
   }
 
-  const answers: AnswerResult[] = (task.answer ?? []).map((entry) => ({
-    mustMatch: entry.mustMatch,
-    passed: new RegExp(entry.mustMatch, 'im').test(input.answer ?? ''),
-  }));
+  // A home task has no workdir; machine facts are read where the API runs (this machine).
+  const answers = await gradeAnswer(task.answer ?? [], input.answer ?? '', (command) =>
+    commandOutput(command, inWorkdir ? dir : process.cwd()),
+  );
 
   const changed = inWorkdir ? await changedFiles(dir) : [];
   const allowed = scopeMatcher(task.scope.allow);
@@ -120,7 +190,10 @@ export async function gradeTrial(input: {
   const checksPassed = checks.every((check) => check.passed);
   const filesPassed = files.every((file) => file.passed);
   const answersPassed = answers.every((answer) => answer.passed);
-  return {
+  // A run that still ended on a limit did not finish the work, whatever its files say.
+  const correct =
+    checksPassed && filesPassed && answersPassed && scopeViolations.length === 0 && !input.unresolvedLimit;
+  const grade: Omit<Grade, 'failure'> = {
     checks,
     checksPassed,
     files,
@@ -135,6 +208,9 @@ export async function gradeTrial(input: {
       ...(input.unresolvedLimit ? { unresolvedLimit: input.unresolvedLimit } : {}),
       ok: budgetOk,
     },
-    passed: checksPassed && filesPassed && answersPassed && scopeViolations.length === 0 && budgetOk,
+    correct,
+    passed: correct,
   };
+  const failure = failureOf(grade);
+  return { ...grade, ...(failure ? { failure } : {}) };
 }

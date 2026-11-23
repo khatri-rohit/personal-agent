@@ -156,13 +156,14 @@ export function useAgentRun(threadId: string) {
     };
   }, []);
 
+  // `restoreFiles`: also put back the files the replaced reply changed.
   const retryLastResponse = useCallback(
-    () => sessionRef.current?.retry(composerOptions),
+    (restoreFiles?: boolean) => sessionRef.current?.retry(composerOptions, restoreFiles),
     [composerOptions],
   );
   const editLastUserMessage = useCallback(
-    (messageId: string, content: string) =>
-      sessionRef.current?.edit(messageId, content, composerOptions),
+    (messageId: string, content: string, restoreFiles?: boolean) =>
+      sessionRef.current?.edit(messageId, content, composerOptions, restoreFiles),
     [composerOptions],
   );
 

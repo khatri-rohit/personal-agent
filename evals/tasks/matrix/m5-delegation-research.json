@@ -11,8 +11,12 @@
     { "mustMatch": "OVER_BUDGET_FACTOR[^\\n]*\\b2\\b|\\b2\\b[^\\n]*OVER_BUDGET_FACTOR" },
     { "mustMatch": "runs\\.routes\\.ts" },
     { "mustMatch": "MAX_CONCURRENT_SUBAGENTS[^\\n]*\\b4\\b|\\b4\\b[^\\n]*MAX_CONCURRENT_SUBAGENTS" },
-    { "mustMatch": "DIGEST_MAX_CHARS[^\\n]*6[,_ ]?000|6[,_ ]?000[^\\n]*DIGEST_MAX_CHARS" }
+    { "mustMatch": "DIGEST_MAX_CHARS[^\\n]*6[,_ ]?000|6[,_ ]?000[^\\n]*DIGEST_MAX_CHARS" },
+    { "mustMatch": "\\.ts:\\d+" }
   ],
+  "reference": {
+    "answer": "(1) packages/agent-eval/src/runner/score.ts:57 grades a trial (gradeTrial); the runner cancels a trial at OVER_BUDGET_FACTOR = 2 times its budget (packages/agent-eval/src/runner/runner.ts:28).\n(2) apps/api/src/runs/runs.routes.ts:31 handles POST /run.\n(3) MAX_CONCURRENT_SUBAGENTS = 4 (packages/agent-core/src/lib/subagent/types.ts:67).\n(4) DIGEST_MAX_CHARS = 6_000 (packages/agent-core/src/lib/subagent/types.ts:70)."
+  },
   "scope": { "allow": [] },
   "budget": { "maxPromptTokens": 1500000, "maxMinutes": 15 }
 }

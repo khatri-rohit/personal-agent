@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { readBaseline, recordBaseline } from '../gate/baseline.js';
 import { compareToBaseline, type GateCompare, type GateResult } from '../gate/gate.js';
-import { readResults, summarizeSuite, type SuiteStats } from '../gate/summary.js';
+import { PASS_POW_K, readResults, summarizeSuite, type SuiteStats } from '../gate/summary.js';
 import type { TaskSuite } from '../runner/task.js';
 import { flag, type Args } from './args.js';
 import { table, tokens } from './format.js';
@@ -14,8 +14,8 @@ export const BASELINE_HELP = `baseline --suite regression ${RUN_OPTIONS} [--acce
   Record the suite's baseline. Refuses to replace one unless the candidate passes the gate or --accept is given.`;
 
 export const GATE_HELP = `gate --suite regression ${RUN_OPTIONS} [--baselines evals/baselines] [--compare system1]
-  Compare a suite run with the baseline. Exit 0 pass, 1 fail, 2 refused (model, seed, tasks or System 1 setup differ).
-  --compare system1: the setups must differ; passes on the same pass rate with lower median prompt tokens.`;
+  Compare a suite run with the baseline. Exit 0 pass, 1 fail, 2 refused (model, seed, tasks, System 1 setup, or more than one harness flag differ).
+  --compare system1: the setups must differ and the flags match; passes on the same pass rate with lower median cost (prompt tokens when not all tasks are priced).`;
 
 function compareFlag(args: Args): GateCompare {
   const value = flag(args, 'compare');
@@ -39,10 +39,14 @@ function printVerdict(result: GateResult): void {
   }
   console.log(
     table(
-      ['task', 'passes base → cand', 'median tokens base → cand', 'stable', 'scope', 'verdict'],
+      ['task', 'passes base → cand', 'cand 95%', `pass^${PASS_POW_K}`, 'median tokens base → cand', 'stable', 'scope', 'verdict'],
       result.tasks.map((task) => [
         task.taskId,
         task.baseline ? `${task.baseline.passes}/${task.baseline.trials} → ${task.candidate!.passes}/${task.candidate!.trials}` : `new: ${task.candidate!.passes}/${task.candidate!.trials}`,
+        task.candidate?.passInterval
+          ? `${Math.round(task.candidate.passInterval[0] * 100)}–${Math.round(task.candidate.passInterval[1] * 100)}%`
+          : '-',
+        task.candidate?.passPowK == null ? '-' : `${Math.round(task.candidate.passPowK * 100)}%`,
         `${tokens(task.baseline?.medianPromptTokens ?? undefined)} → ${tokens(task.candidate?.medianPromptTokens ?? undefined)}`,
         `${task.baseline?.stable ? 'y' : 'n'}/${task.candidate?.stable ? 'y' : 'n'}`,
         `${task.baseline?.scopeViolations ?? '-'} → ${task.candidate?.scopeViolations ?? '-'}`,
@@ -51,6 +55,7 @@ function printVerdict(result: GateResult): void {
     ),
   );
   for (const failure of result.suiteFailures) console.log(`SUITE FAIL: ${failure}`);
+  for (const note of result.notes) console.log(`NOTE: ${note}`);
   console.log(result.passed ? '\nGATE PASSED' : '\nGATE FAILED');
 }
 

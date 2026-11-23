@@ -19,12 +19,43 @@ export type ReviewAlignmentVerdict =
   | 'diverged'
   | 'unknown';
 
+/**
+ * Version of the rule-based digest (metrics, findings, judge input). Bump
+ * when its code changes meaning, so stored reviews are rebuilt, not served.
+ */
+export const REVIEW_DIGEST_VERSION = 2;
+
 /** Invalidates a stored review when any of these change. */
 export type ReviewFingerprint = {
   threadId: string;
   ledgerLength: number;
   lastRecordSha: string;
   runs: { runId: string; status: string }[];
+  /**
+   * Who and what produced it: `<digest version>|<reviewer model>|<prompt sha>`.
+   * Absent on reviews from before it, which therefore never match a new one.
+   */
+  reviewer?: string;
+};
+
+/** What a review judges, each on its own (one judge per dimension of the rubric). */
+export const REVIEW_DIMENSIONS = ['did-what-was-asked', 'verified', 'stayed-in-scope', 'efficient'] as const;
+export type ReviewDimension = (typeof REVIEW_DIMENSIONS)[number];
+
+/** `unknown`: the evidence the judge saw cannot settle it (a way out instead of a guess). */
+export type ReviewJudgment = { dimension: ReviewDimension; verdict: 'pass' | 'fail' | 'unknown'; critique: string };
+
+/** Provenance of a stored review. */
+export type ReviewProvenance = {
+  digestVersion: number;
+  /** The model that wrote the judgment; null when no model was called. */
+  model: string | null;
+  /** sha256 of the judge's system prompt. */
+  promptSha: string;
+  /** The judge was the thread's own model: a model grading its own work. */
+  selfReview: boolean;
+  /** The thinking level the judge ran at (absent: model default or older review). */
+  thinking?: string | boolean;
 };
 
 export type ReviewFinding = {
@@ -106,6 +137,8 @@ export type ReviewNarrative = {
   alignment: string;
   findings: { kind: ReviewFindingKind; text: string }[];
   suggestions: string[];
+  /** Per-dimension verdicts over the request, the answer and the steps (absent on older reviews). */
+  judgment?: ReviewJudgment[];
 };
 
 /** `$AGENT_HOME/reviews/<threadId>.json`. */
@@ -115,6 +148,9 @@ export type ThreadReview = {
   createdAt: string;
   digest: ReviewDigest;
   narrative: ReviewNarrative | null;
+  /** Why the model judgment is missing (timeout, bad JSON, no key); absent when it worked or on older reviews. */
+  narrativeError?: string;
+  provenance?: ReviewProvenance;
 };
 
 export function reviewFingerprintKey(fingerprint: ReviewFingerprint): string {
@@ -126,7 +162,19 @@ export function reviewFingerprintKey(fingerprint: ReviewFingerprint): string {
     ledgerLength: fingerprint.ledgerLength,
     lastRecordSha: fingerprint.lastRecordSha,
     runs,
+    reviewer: fingerprint.reviewer ?? null,
   });
+}
+
+/**
+ * Same thread state, whoever reviewed it: the "this thread changed since the
+ * review" check. The reviewer (model, thinking, prompt) is the user's pick
+ * per review, so it does not make a review stale.
+ */
+export function sameReviewedThread(left: ReviewFingerprint, right: ReviewFingerprint): boolean {
+  const { reviewer: _left, ...a } = left;
+  const { reviewer: _right, ...b } = right;
+  return reviewFingerprintKey(a) === reviewFingerprintKey(b);
 }
 
 export function sameReviewFingerprint(
@@ -183,6 +231,35 @@ function parseFingerprint(value: unknown): ReviewFingerprint | null {
     ledgerLength: rec.ledgerLength,
     lastRecordSha: rec.lastRecordSha,
     runs,
+    ...(typeof rec.reviewer === 'string' ? { reviewer: rec.reviewer } : {}),
+  };
+}
+
+function parseJudgment(value: unknown): ReviewJudgment[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: ReviewJudgment[] = [];
+  for (const item of value) {
+    const row = asRecord(item);
+    if (!row) continue;
+    const dimension = (REVIEW_DIMENSIONS as readonly string[]).includes(String(row.dimension))
+      ? (row.dimension as ReviewDimension)
+      : null;
+    const verdict = row.verdict === 'pass' || row.verdict === 'fail' || row.verdict === 'unknown' ? row.verdict : null;
+    if (!dimension || !verdict || typeof row.critique !== 'string') continue;
+    out.push({ dimension, verdict, critique: row.critique.trim() });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function parseProvenance(value: unknown): ReviewProvenance | undefined {
+  const rec = asRecord(value);
+  if (!rec || typeof rec.digestVersion !== 'number' || typeof rec.promptSha !== 'string') return undefined;
+  return {
+    digestVersion: rec.digestVersion,
+    model: typeof rec.model === 'string' ? rec.model : null,
+    promptSha: rec.promptSha,
+    selfReview: rec.selfReview === true,
+    ...(typeof rec.thinking === 'string' || typeof rec.thinking === 'boolean' ? { thinking: rec.thinking } : {}),
   };
 }
 
@@ -341,11 +418,13 @@ export function parseReviewNarrative(raw: unknown): ReviewNarrative | null {
     if (!row || !kind || typeof row.text !== 'string' || !row.text.trim()) return null;
     findings.push({ kind, text: row.text });
   }
+  const judgment = parseJudgment(rec.judgment);
   return {
     summary: rec.summary.trim(),
     alignment: rec.alignment,
     findings,
     suggestions: parseStringArray(rec.suggestions),
+    ...(judgment ? { judgment } : {}),
   };
 }
 
@@ -361,11 +440,14 @@ export function parseThreadReview(raw: unknown): ThreadReview | null {
   const narrative =
     rec.narrative === null ? null : parseReviewNarrative(rec.narrative);
   if (rec.narrative !== null && narrative === null) return null;
+  const provenance = parseProvenance(rec.provenance);
   return {
     threadId: rec.threadId,
     fingerprint,
     createdAt: rec.createdAt,
     digest,
     narrative,
+    ...(typeof rec.narrativeError === 'string' && rec.narrativeError ? { narrativeError: rec.narrativeError } : {}),
+    ...(provenance ? { provenance } : {}),
   };
 }

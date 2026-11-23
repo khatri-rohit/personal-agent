@@ -1,7 +1,9 @@
 import {
   isThreadPlanEmpty,
   normalizeRunPosture,
+  revertSummary,
   type ActiveRun,
+  type RevertResult,
   type AgentEvent,
   type LedgerResponse,
   type Message,
@@ -19,7 +21,7 @@ import { fetchLedger, seqFromMessageId } from '@/api/thread-client';
 import { resolveOllamaModel } from '@/features/composer/ollama-models';
 import { skillTokensInText } from '@/features/composer/skill-slash-picker';
 import { getThreadsSnapshot, refreshThreads } from '@/features/threads/thread-cache';
-import { toastError } from '@/hooks/use-toast';
+import { toastError, toastSuccess } from '@/hooks/use-toast';
 import {
   applyChatEvent,
   hasSseSeqGap,
@@ -51,6 +53,13 @@ export type ChoiceAnswer = { skipped: true } | { optionIds: string[]; text?: str
 
 /** The HTTP calls the session makes; tests can pass their own. */
 const http = { startRun, subscribeRun, cancelRun, resolveChoice, fetchLedger };
+
+/** After files were put back: a plain success, or a warning naming what stayed. */
+export function showRestoreResult(result: RevertResult): void {
+  const partial = result.conflicts.length > 0 || result.failed.length > 0 || result.skipped.length > 0;
+  if (partial) toastError(revertSummary(result), 'Some files were not restored');
+  else toastSuccess(revertSummary(result), 'Files restored');
+}
 export type ThreadTransport = typeof http;
 
 /**
@@ -282,7 +291,8 @@ export function createThreadSession(
     disconnect?.();
     disconnect = null;
     try {
-      await transport.startRun(threadId, request);
+      const started = await transport.startRun(threadId, request);
+      if (started.restore) showRestoreResult(started.restore);
     } catch (error) {
       update({ starting: false, ...(unsent ? { queued: unsent } : {}) });
       toastError(errorMessage(error, 'Could not start the run'), 'Send failed');
@@ -356,21 +366,27 @@ export function createThreadSession(
    * thread ends with that message (the start failed or was stopped before
    * any reply), run it as it is.
    */
-  async function retry(options: ComposerOptions): Promise<void> {
+  async function retry(options: ComposerOptions, restoreFiles = false): Promise<void> {
     if (busy()) return;
     const { lastUserSeq, lastSeq } = await transport.fetchLedger(threadId);
     if (lastUserSeq === undefined) return;
     await start({
-      ...(lastUserSeq === lastSeq ? {} : { rewindThroughSeq: lastUserSeq }),
+      ...(lastUserSeq === lastSeq
+        ? {}
+        : { rewindThroughSeq: lastUserSeq, ...(restoreFiles ? { restoreFiles: true } : {}) }),
       ...runRequest(options),
     });
   }
 
-  /** Replace the last user message and run it. */
+  /**
+   * Replace the last user message and run it. `restoreFiles`: also put back
+   * the files the replaced reply changed.
+   */
   async function edit(
     messageId: string,
     content: string,
     options: ComposerOptions,
+    restoreFiles = false,
   ): Promise<void> {
     const trimmed = content.trim();
     const lastUser = view.messages.findLast((m) => m.role === 'user');
@@ -381,6 +397,7 @@ export function createThreadSession(
     const requested = skillTokensInText(trimmed);
     await start({
       rewindThroughSeq: userSeq - 1,
+      ...(restoreFiles ? { restoreFiles: true } : {}),
       message: { content: trimmed, attachments: lastUser.attachments },
       ...runRequest(options),
       ...(requested.length > 0 ? { skills: { requested } } : {}),

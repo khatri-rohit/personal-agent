@@ -104,7 +104,36 @@ function quoteUserRequest(text: string, fullTextSha?: string): string {
  * own words for the parent's current turn; `fullRequestSha` is the blob of
  * the whole request when it is longer than the brief quotes.
  */
-export function buildBrief(spec: SubagentSpec, userRequest?: string, fullRequestSha?: string): string {
+/** A sub-agent running for the same parent (flags.siblingBriefs): what it answers and the paths it named. */
+export type SiblingBrief = { objective: string; paths: string[] };
+
+/** Objective characters a sibling line quotes; the brief is re-sent on every call of the child. */
+const SIBLING_OBJECTIVE_MAX_CHARS = 120;
+
+/**
+ * Task boundaries between sub-agents running at the same time: each one's
+ * objective, so this child does not answer it. Objectives, not files: a
+ * shared file may still be needed to answer this brief.
+ */
+function siblingLines(siblings: SiblingBrief[]): string {
+  if (siblings.length === 0) return '';
+  const lines = siblings.map((sibling) => {
+    const objective =
+      sibling.objective.length > SIBLING_OBJECTIVE_MAX_CHARS
+        ? `${sibling.objective.slice(0, SIBLING_OBJECTIVE_MAX_CHARS)}…`
+        : sibling.objective;
+    const covers = sibling.paths.length > 0 ? ` (covers ${sibling.paths.join(', ')})` : '';
+    return `- "${objective}"${covers}`;
+  });
+  return ['Running in parallel with you (answer only your own objective, not theirs):', ...lines].join('\n');
+}
+
+export function buildBrief(
+  spec: SubagentSpec,
+  userRequest?: string,
+  fullRequestSha?: string,
+  siblings: SiblingBrief[] = [],
+): string {
   const calls = spec.thoroughness ? THOROUGHNESS_TOOL_CALLS[spec.thoroughness] : undefined;
   // The harness keeps one call past the effort budget for `report` and
   // refuses every other tool once it is reached (see turn-tools.ts).
@@ -119,6 +148,7 @@ export function buildBrief(spec: SubagentSpec, userRequest?: string, fullRequest
     `Scope: ${spec.scope}`,
     spec.outputFocus ? `Report focus: ${spec.outputFocus}` : '',
     effort,
+    siblingLines(siblings),
     userRequest ? `The user's request this work serves:\n${quoteUserRequest(userRequest, fullRequestSha)}` : '',
   ]
     .filter(Boolean)

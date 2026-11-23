@@ -245,9 +245,20 @@ td.wrap {
   font-family: ui-monospace, monospace;
 }
 
-.chip.new {
+.chip.new,
+.chip.judge-pass {
   border-color: var(--ok);
   color: var(--ok);
+}
+
+.chip.judge-fail {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.chip.judge-unknown {
+  border-color: var(--warn);
+  color: var(--warn);
 }
 
 .runlayout {
@@ -515,7 +526,25 @@ td.wrap {
 }
 
 .review-form {
-  display: inline;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.review-pick {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.review-pick select {
+  font: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--fg);
 }
 
 .review-btn {

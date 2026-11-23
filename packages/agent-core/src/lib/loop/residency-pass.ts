@@ -1,16 +1,21 @@
-import { CARD_MARKS, inRunMarks } from '@agent/agent-models';
+import { CARD_MARKS, inputBudgetTokens, inRunMarks, windowGuardTokens } from '@agent/agent-models';
 
 import { stubLiveToolResults } from '../context/assemble-context';
+import { toolCallIndex } from '../context/outcome-card';
 import {
   compactCurrentRun,
   foldResidue,
   manageWorkingSet,
+  MIN_EVICT_CHARS,
   retireSkillBodies,
+  windowCard,
   type EvictionReason,
   type InRunCompactionResult,
 } from '../context/residency';
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
+import type { ToolTraits } from '../tools/traits';
 import { sha256Text } from '../tools/web/source';
+import { toolCallKey } from './call-identity';
 import { tracePolicyDecision } from './policy-trace';
 import { recordDeltaTokens, recordMessage, removeRecordMessages } from './record-message';
 import type { RunState } from './run-state';
@@ -43,7 +48,7 @@ export type ResidencyView = Pick<
 > & {
   readonly tools: Pick<RunState['tools'], 'definitions'>;
   readonly webSources: Pick<RunState['webSources'], 'putBlob'>;
-  readonly admission: Pick<RunState['admission'], 'forgetSkillLoads'>;
+  readonly admission: Pick<RunState['admission'], 'forgetSkillLoads' | 'forgetDeferredCall'>;
 };
 
 /**
@@ -212,16 +217,203 @@ export async function manageResidency(s: ResidencyView): Promise<void> {
   });
 }
 
-/** One working-set pass (`freeOnly`: superseded copies only; `marks`: this run's marks); true when it removed anything. */
+/**
+ * A result the window guard may turn into a card (flags.windowGuard). Not:
+ * live state or a sub-agent report (`never`, a child run to get back), a
+ * restore of a stored result (the model asked for that exact text), a
+ * change (its report is the receipt of an edit already made) or a command
+ * (getting it back would mean running it again, which may not be safe).
+ */
+function deferrable(traits: ToolTraits | undefined): boolean {
+  if (!traits) return true;
+  if (traits.residency === 'never' || traits.restores) return false;
+  return traits.effect !== 'subagent' && traits.effect !== 'change' && traits.effect !== 'command';
+}
+
+/** A tool row the window guard is about: where it is, which call, and what it holds. */
+type GuardedRow = { index: number; toolCallId: string; name: string; rawArgs: string; content: string };
+
+/**
+ * Turn one row into a window card (flags.windowGuard): the full text goes to
+ * the blob store first, so the card's sha restores it. Read dedupe forgets
+ * the call (it recorded the result as seen while shaping it), admission
+ * stops counting it as a use (asking again is not a repeat), and a row of
+ * the same turn that dedupe answered "(unchanged …)" with this call as its
+ * copy gets the same card, since the copy it pointed at is gone.
+ */
+async function deferRow(s: ResidencyView, row: GuardedRow): Promise<void> {
+  const traits = s.traitsOf(row.name);
+  const sha = await s.webSources.putBlob(row.content);
+  const card = windowCard(row.name, row.rawArgs, traits, row.content, sha);
+  s.messages[row.index] = { role: 'tool', tool_call_id: row.toolCallId, content: card };
+  s.readDedupe.forget([row.toolCallId]);
+  let args: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(row.rawArgs);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) args = parsed as Record<string, unknown>;
+  } catch {
+    // A call whose arguments do not parse never ran; nothing to uncount.
+  }
+  s.admission.forgetDeferredCall(row.name, args);
+  const key = toolCallKey(row.name, args);
+  const calls = toolCallIndex(s.messages);
+  for (let i = s.runStart; i < s.messages.length; i++) {
+    const message = s.messages[i];
+    if (i === row.index || message?.role !== 'tool' || typeof message.content !== 'string') continue;
+    if (!message.content.startsWith('(unchanged')) continue;
+    const info = calls.get(message.tool_call_id);
+    if (!info || info.name !== row.name) continue;
+    let otherArgs: unknown = {};
+    try {
+      otherArgs = JSON.parse(info.args);
+    } catch {
+      continue;
+    }
+    if (toolCallKey(info.name, otherArgs) !== key) continue;
+    s.messages[i] = { role: 'tool', tool_call_id: message.tool_call_id, content: card };
+  }
+  s.trace({
+    type: 'tool_note',
+    runId: s.runId,
+    iteration: s.iterations,
+    toolName: row.name,
+    note: 'window_deferred',
+    count: row.content.length,
+  });
+}
+
+/**
+ * flags.windowGuard, per result, right after it joined the prompt. Below
+ * the window guard (`windowGuardTokens`, 0.9 of the input budget) nothing
+ * happens. Past it, first make room the normal way: one working-set pass
+ * down to the in-run low mark with only this turn's results pinned (results
+ * the model already saw in earlier steps leave by value, cheapest first;
+ * the ordinary pass pins the newest four steps, so a turn that read a lot
+ * left nothing to remove and a re-read was deferred again). Only if the
+ * prompt is still past the guard does this result become a window card.
+ * Results of one turn settle in order, so the first stay whole. The ledger
+ * and the trace keep the full result either way.
+ */
+export async function guardResultWindow(
+  s: ResidencyView,
+  result: { toolCallId: string; name: string; rawArgs: string; content: string },
+): Promise<void> {
+  if (result.content.length < MIN_EVICT_CHARS || !deferrable(s.traitsOf(result.name))) return;
+  const guard = windowGuardTokens(s.contextBudget);
+  if (estimatePromptTokens(s.messages, s.tools.definitions) <= guard) return;
+  const putBlob = (text: string) => s.webSources.putBlob(text);
+  if (await workingSetPass(s, putBlob, { marks: { high: guard, low: inRunMarks(s.contextBudget).low }, keepSteps: 1 })) {
+    tracePolicyDecision(s, 'boundary', ['boundary:window', 'boundary:working_set'], 'turn past the window guard: earlier results left first');
+  }
+  if (estimatePromptTokens(s.messages, s.tools.definitions) <= guard) return;
+  let index = -1;
+  for (let i = s.messages.length - 1; i >= s.runStart; i--) {
+    const message = s.messages[i];
+    if (message?.role === 'tool' && message.tool_call_id === result.toolCallId) {
+      index = i;
+      break;
+    }
+  }
+  if (index < 0) return;
+  await deferRow(s, { index, ...result });
+}
+
+/**
+ * Headroom kept below the input budget for the harness card, which is added
+ * after this check (`withStateCard`): its findings section is bounded by
+ * `recordCardTokens`, plus a few lines of state and advice.
+ */
+const CARD_LINES_TOKENS = 1_000;
+
+/**
+ * flags.windowGuard, before a model call: the prompt plus the card it is
+ * about to get would be over the input budget (window minus output
+ * reserve), so the provider would reject it. In order, each only if still
+ * over:
+ * 1. a working-set pass down to the window guard, pinning the last
+ *    completed step (the loop has already counted the call about to be
+ *    sent, so pinning one step would pin nothing, and the model has not
+ *    seen that step's results yet);
+ * 2. the recap fold, keeping the same step;
+ * 3. the largest results of that step become window cards, as the
+ *    per-result guard would have done.
+ * Results before `runStart` (earlier turns) stay: only between-run
+ * compaction may change them, so a thread whose earlier turns alone fill
+ * the window is sent as it is (traced `stillOver`). Returns the estimate
+ * after the pass.
+ */
+export async function enforceWindow(s: ResidencyView): Promise<number> {
+  const input = inputBudgetTokens(s.contextBudget);
+  const sendLimit = input - s.contextBudget.recordCardTokens - CARD_LINES_TOKENS;
+  const estimate = () => estimatePromptTokens(s.messages, s.tools.definitions);
+  const before = estimate();
+  if (before <= sendLimit) return before;
+  const putBlob = (text: string) => s.webSources.putBlob(text);
+  // Down to the window guard: what is needed, plus the guard's headroom.
+  const guard = windowGuardTokens(s.contextBudget);
+  const marks = { high: guard, low: guard };
+  const triggers = ['boundary:window'];
+  if (await workingSetPass(s, putBlob, { marks, keepSteps: 2 })) triggers.push('boundary:working_set');
+  if (estimate() > sendLimit) {
+    const compacted = await compactCurrentRun(
+      s.messages,
+      s.runStart,
+      { ...s.contextBudget, inRunKeepToolResults: 2 },
+      s.tools.definitions,
+      putBlob,
+      { stepOf: (toolCallId) => s.task.callIteration(toolCallId), traitsOf: s.traitsOf, marks },
+    );
+    if (compacted) {
+      traceFold(s, compacted, undefined);
+      triggers.push('boundary:recap');
+    }
+  }
+  if (estimate() > sendLimit) {
+    // The last completed step's own results, largest first.
+    const lastStep = s.iterations - 1;
+    const calls = toolCallIndex(s.messages);
+    const rows: GuardedRow[] = [];
+    for (let i = s.runStart; i < s.messages.length; i++) {
+      const message = s.messages[i];
+      if (message?.role !== 'tool' || typeof message.content !== 'string') continue;
+      if (s.task.callIteration(message.tool_call_id) !== lastStep) continue;
+      const info = calls.get(message.tool_call_id);
+      if (!info || message.content.length < MIN_EVICT_CHARS || message.content.startsWith('(')) continue;
+      if (!deferrable(s.traitsOf(info.name))) continue;
+      rows.push({ index: i, toolCallId: message.tool_call_id, name: info.name, rawArgs: info.args, content: message.content });
+    }
+    rows.sort((a, b) => b.content.length - a.content.length);
+    for (const row of rows) {
+      if (estimate() <= sendLimit) break;
+      await deferRow(s, row);
+      if (!triggers.includes('boundary:deferred')) triggers.push('boundary:deferred');
+    }
+  }
+  const after = estimate();
+  tracePolicyDecision(s, 'boundary', triggers, 'prompt over the input budget before a model call', {
+    beforeTokens: before,
+    afterTokens: after,
+    sendLimit,
+    stillOver: after > sendLimit,
+  });
+  return after;
+}
+
+/**
+ * One working-set pass (`freeOnly`: superseded copies only; `marks`: this
+ * run's marks; `keepSteps`: newest steps pinned, default the budget's
+ * `inRunKeepToolResults`); true when it removed anything.
+ */
 async function workingSetPass(
   s: ResidencyView,
   putBlob: (text: string) => Promise<string>,
-  options: { freeOnly?: boolean; marks?: { high: number; low: number } } = {},
+  options: { freeOnly?: boolean; marks?: { high: number; low: number }; keepSteps?: number } = {},
 ): Promise<boolean> {
+  const { keepSteps, ...passOptions } = options;
   const evicted = await manageWorkingSet(
     s.messages,
     s.runStart,
-    s.contextBudget,
+    keepSteps === undefined ? s.contextBudget : { ...s.contextBudget, inRunKeepToolResults: keepSteps },
     s.tools.definitions,
     putBlob,
     s.traitsOf,
@@ -233,7 +425,7 @@ async function workingSetPass(
       isCited: (path) => s.task.isCited(path),
       isRestored: (path) => s.task.wasRestored(path),
     },
-    options,
+    passOptions,
   );
   if (!evicted) return false;
   s.readDedupe.forget(evicted.toolCallIds);

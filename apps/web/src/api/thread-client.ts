@@ -1,5 +1,7 @@
 import type {
   LedgerResponse,
+  RevertResult,
+  RunChanges,
   Thread,
   ThreadDetail,
   ThreadKind,
@@ -132,6 +134,40 @@ export async function fetchLedger(threadId: string): Promise<LedgerResponse> {
     );
   }
   return res.json() as Promise<LedgerResponse>;
+}
+
+/* ---------- Checkpoints: what a reply changed on disk, and undo ---------- */
+
+function runIdsQuery(runIds: string[]): string {
+  return encodeURIComponent(runIds.join(','));
+}
+
+export async function fetchRunChanges(threadId: string, runIds: string[]): Promise<RunChanges> {
+  const res = await fetch(`${API_BASE}/api/agent/threads/${threadId}/changes?runIds=${runIdsQuery(runIds)}`);
+  if (!res.ok) throw new Error(await readError(res, `Failed to load changes: ${res.status}`));
+  return res.json() as Promise<RunChanges>;
+}
+
+export async function fetchRunFileDiff(
+  threadId: string,
+  runIds: string[],
+  file: string,
+): Promise<{ diff: string; truncated: boolean }> {
+  const res = await fetch(
+    `${API_BASE}/api/agent/threads/${threadId}/changes/diff?runIds=${runIdsQuery(runIds)}&path=${encodeURIComponent(file)}`,
+  );
+  if (!res.ok) throw new Error(await readError(res, `Failed to load the diff: ${res.status}`));
+  return res.json() as Promise<{ diff: string; truncated: boolean }>;
+}
+
+export async function undoRunChanges(threadId: string, runIds: string[]): Promise<RevertResult> {
+  const res = await fetch(`${API_BASE}/api/agent/threads/${threadId}/changes/undo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ runIds }),
+  });
+  if (!res.ok) throw new Error(await readError(res, `Undo failed: ${res.status}`));
+  return res.json() as Promise<RevertResult>;
 }
 
 export function seqFromMessageId(id: string): number | undefined {

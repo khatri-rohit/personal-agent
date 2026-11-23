@@ -7,9 +7,12 @@
   "checks": [],
   "files": [],
   "answer": [
-    { "mustMatch": "\\b3\\b" },
-    { "mustMatch": "v?\\d+\\.\\d+\\.\\d+" }
+    { "mustMatch": "\\b3\\b[^\\n]{0,40}\\bjson|\\bjson[^\\n]{0,60}\\b3\\b" },
+    { "fromCommand": "node --version" }
   ],
+  "reference": {
+    "answer": "There are 3 .json files in evals/tasks/regression. Node.js version: {{node --version}}."
+  },
   "scope": { "allow": [] },
   "budget": { "maxPromptTokens": 300000, "maxMinutes": 6 }
 }

@@ -5,6 +5,8 @@ import {
   BRIEF_USER_REQUEST_MAX_CHARS,
   CHILD_RUN,
   childAllocation,
+  compactionMarks,
+  DEFAULT_CONTEXT_BUDGET,
   emptyRunUsage,
   totalRunUsage,
   lastRunFrom,
@@ -28,8 +30,11 @@ import type {
   SubagentParent,
   SubagentSpawner,
 } from '../loop/types';
+import { manageWorkingSet } from '../context/residency';
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
 import type { RunManager } from '../run/run-manager';
+import { traitsResolver } from '../tools/traits';
+import type { ToolRegistry } from '../tools/types';
 import { createToolRegistry, listTools } from '../tools/registry';
 import {
   buildAdvisorQuestion,
@@ -40,6 +45,7 @@ import {
   renderDigest,
   mergeReportFindings,
   renderReport,
+  type SiblingBrief,
 } from './prompt';
 import { earnedThoroughness, normalizeScopePaths, overlappingPath, usageDelta } from '../policy';
 import { getSubagentProfile } from './profiles';
@@ -100,18 +106,94 @@ const FALLBACK_SUMMARY_MAX_CHARS = 1_500;
 
 /**
  * What a child's work amounts to, from evidence: stopped early (limit,
- * cancel, error), no report at all, reported partial, or open questions
- * left → partial; reported blocked → blocked; else done.
+ * cancel, error), no report at all, or reported partial → partial;
+ * reported blocked → blocked; else done.
+ *
+ * `openQuestionsArePartial` (the default, flags.childStatusAtLimit off):
+ * any open question also makes it partial. In real runs that marked 42 of
+ * 43 reports partial, because the handoff asks every child to list its
+ * gaps, so the status said nothing. With the flag on, open questions stay
+ * listed (the card's sub-agent gaps read them, not this status) and
+ * partial means what Claude Code's maxTurns limit means: the child stopped
+ * before it finished.
  */
 export function reportStatusOf(
   status: SubagentStatus,
   limitReason: string | undefined,
   report: SubagentReport | undefined,
+  openQuestionsArePartial = true,
 ): SubagentReportStatus {
   if (status !== 'completed' || limitReason || !report) return 'partial';
   if (report.status === 'blocked') return 'blocked';
-  if (report.status === 'partial' || (report.openQuestions?.length ?? 0) > 0) return 'partial';
+  if (report.status === 'partial') return 'partial';
+  if (openQuestionsArePartial && (report.openQuestions?.length ?? 0) > 0) return 'partial';
   return 'done';
+}
+
+/** Newest steps of a replayed history kept whole (the in-run default, `inRunKeepToolResults`). */
+const RESUME_KEEP_STEPS = DEFAULT_CONTEXT_BUDGET.inRunKeepToolResults;
+
+/**
+ * flags.resumeBudget. A resumed child's history is the whole ledger of its
+ * thread, every result at full size (hydrated blobs), and it sits before the
+ * run's `runStart`, so in-run residency never removes it. Over 136 real
+ * child threads a resume would replay p50 36k and max 486k tokens; 4 are
+ * over a 260k window's input budget, and that resume fails on its first
+ * call. Over the between-run compaction mark (`compactionMarks(budget).at`,
+ * the existing root value for "too much history to start with"), the
+ * working-set ranking runs once over the replayed tool results: the newest
+ * steps stay whole, user and assistant text stays, older results become
+ * `(evicted)` cards with a sha in the child's thread for `recall`. Under the
+ * mark nothing changes (a warm cache makes that replay cheap: the one real
+ * resume was 88% cached). Prompt-only: the child's ledger keeps everything.
+ */
+async function boundResumedHistory(
+  messages: ChatCompletionMessageParam[],
+  budget: ContextBudget,
+  tools: ToolRegistry,
+  putBlob: (text: string) => Promise<string>,
+  parent: SubagentParent,
+): Promise<void> {
+  const before = estimatePromptTokens(messages);
+  const mark = compactionMarks(budget).at;
+  if (before <= mark) return;
+  // Steps of the replayed history in order, so the newest stay pinned.
+  const stepOf = new Map<string, number>();
+  let steps = 0;
+  for (const message of messages) {
+    if (message.role !== 'assistant' || !message.tool_calls?.length) continue;
+    steps += 1;
+    for (const call of message.tool_calls) stepOf.set(call.id, steps);
+  }
+  const evicted = await manageWorkingSet(
+    messages,
+    1,
+    { ...budget, inRunKeepToolResults: RESUME_KEEP_STEPS },
+    [],
+    putBlob,
+    traitsResolver((name) => tools.byName.get(name)?.traits),
+    {
+      iteration: steps,
+      callIteration: (id) => stepOf.get(id),
+      lastTouch: () => undefined,
+      isUnchecked: () => false,
+    },
+    { marks: { high: mark, low: mark } },
+  );
+  parent.trace?.({
+    type: 'policy_decision',
+    runId: parent.runId,
+    iteration: parent.iteration?.() ?? 0,
+    kind: 'delegation',
+    ids: ['resume_bounded'],
+    reason: 'resumed sub-agent history over the compaction mark; older results replayed as cards',
+    inputs: {
+      beforeTokens: before,
+      afterTokens: estimatePromptTokens(messages),
+      evicted: evicted?.evicted ?? 0,
+      mark,
+    },
+  });
 }
 
 function clampTitle(text: string): string {
@@ -174,6 +256,8 @@ export function createSubagentRunner(deps: {
   const inflight = new Map<string, Promise<SubagentResult>>();
   // Paths each running child covers, per parent run (objective → paths).
   const activePaths = new Map<string, Map<string, string[]>>();
+  // flags.siblingBriefs: every running brief per parent run (in-flight key → objective + paths).
+  const activeBriefs = new Map<string, Map<string, SiblingBrief>>();
   // Prompt tokens promised to running children, per parent run. A child's
   // cap comes out of what is left after these, so parallel children can
   // never be promised more than the parent has.
@@ -201,6 +285,8 @@ export function createSubagentRunner(deps: {
     spec: SubagentSpec,
     parent: SubagentParent,
     profile: SubagentProfile,
+    /** flags.siblingBriefs: sub-agents already running for this parent, named in the brief. */
+    siblings: SiblingBrief[] = [],
   ): Promise<SubagentResult> {
     const { host, runManager } = deps;
     const model = host.modelFor(profile.modelRole, parent.model);
@@ -364,13 +450,16 @@ export function createSubagentRunner(deps: {
         userRequest && userRequest.length > BRIEF_USER_REQUEST_MAX_CHARS && tools.byName.has('recall')
           ? await host.putBlob(threadId, userRequest)
           : undefined;
-      const brief = buildBrief(thoroughness ? { ...spec, thoroughness } : spec, userRequest, fullRequestSha);
+      const brief = buildBrief(thoroughness ? { ...spec, thoroughness } : spec, userRequest, fullRequestSha, siblings);
       messages = [
         { role: 'system', content: system },
         ...history,
         { role: 'user', content: brief },
       ];
       contextBudget = await host.contextBudget(model);
+      if (parent.flags.resumeBudget && history.length > 0) {
+        await boundResumedHistory(messages, contextBudget, tools, (text) => host.putBlob(threadId, text), parent);
+      }
     }
 
     const promised = reserved.get(parent.runId) ?? 0;
@@ -494,6 +583,7 @@ export function createSubagentRunner(deps: {
         parentRunId: parent.runId,
         subThreadId: threadId,
         profile: profile.name,
+        model,
         task: spec.objective,
       });
 
@@ -543,9 +633,19 @@ export function createSubagentRunner(deps: {
       // the workspace) plus what its `report` call added; without a report
       // call, the record alone still reaches the parent.
       const recorded = result.task?.evidence.findings ?? [];
-      const merged = profile.report
+      const reported = profile.report
         ? mergeReportFindings(report, recorded, result.content.trim().slice(0, FALLBACK_SUMMARY_MAX_CHARS))
         : undefined;
+      const childStatusAtLimit = parent.flags.childStatusAtLimit;
+      const reportStatus = profile.report
+        ? reportStatusOf(status, result.limitReason, reported, !childStatusAtLimit)
+        : undefined;
+      // With the flag on, the body's `Status:` line is the same status the
+      // header carries (`report=`); before, the header said the harness's
+      // status and the body the child's own, so the parent could read both
+      // "partial" and "done" for one report.
+      const merged =
+        reported && childStatusAtLimit && reportStatus ? { ...reported, status: reportStatus } : reported;
       const body = merged ? renderReport(merged) : result.content.trim() || '(no answer)';
       // Full body lives with the parent so the parent's `recall` can read it.
       let reportSha: string | undefined;
@@ -557,7 +657,6 @@ export function createSubagentRunner(deps: {
       } catch {
         // The digest still carries the bounded body.
       }
-      const reportStatus = profile.report ? reportStatusOf(status, result.limitReason, merged) : undefined;
       const findings: TaskFinding[] = (merged?.findings ?? [])
         .filter((finding) => finding.evidence)
         .map((finding) => ({
@@ -667,13 +766,41 @@ export function createSubagentRunner(deps: {
     const existing = inflight.get(key);
     if (existing) return existing;
 
+    const paths = normalizeScopePaths(spec.paths);
+    const running = activePaths.get(parent.runId) ?? new Map<string, string[]>();
+    // flags.siblingBriefs: task boundaries instead of a refusal (Anthropic's
+    // multi-agent guidance: an objective and clear boundaries per sub-agent).
+    // In real runs all 3 refusals blocked different questions that named one
+    // shared hub file, while 26 of 38 concurrent pairs overlapped without
+    // naming paths. The brief starts, and names every sub-agent already
+    // running for this parent; overlapping paths are traced, not refused.
+    const siblingBriefs = parent.flags.siblingBriefs;
+    const siblings = siblingBriefs ? [...(activeBriefs.get(parent.runId)?.values() ?? [])] : [];
+    if (siblingBriefs) {
+      for (const sibling of siblings) {
+        const hit = overlappingPath(paths, sibling.paths);
+        if (!hit) continue;
+        parent.trace?.({
+          type: 'policy_decision',
+          runId: parent.runId,
+          iteration: parent.iteration?.() ?? 0,
+          kind: 'delegation',
+          ids: [`delegate_overlap_noted:${hit}`],
+          reason: 'brief overlaps a running sub-agent; started with the sibling named in its brief',
+          inputs: { path: hit },
+        });
+      }
+    }
+    const briefs = activeBriefs.get(parent.runId) ?? new Map<string, SiblingBrief>();
+    if (siblingBriefs) {
+      briefs.set(key, { objective: spec.objective, paths });
+      activeBriefs.set(parent.runId, briefs);
+    }
     // Overlap is refused, not merged: two children reading the same files
     // cost the run twice for one answer. Only briefs that name paths are
     // checked; the refusal says which child covers it, so the parent waits
     // for that report or narrows the scope.
-    const paths = normalizeScopePaths(spec.paths);
-    const running = activePaths.get(parent.runId) ?? new Map<string, string[]>();
-    for (const [objective, covered] of running) {
+    for (const [objective, covered] of siblingBriefs ? [] : running) {
       const hit = overlappingPath(paths, covered);
       if (!hit) continue;
       parent.trace?.({
@@ -710,7 +837,7 @@ export function createSubagentRunner(deps: {
         return failure(spec, 'cancelled', 'Parent run was cancelled.');
       }
       try {
-        return await run(spec, parent, profile);
+        return await run(spec, parent, profile, siblings);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return failure(spec, 'error', `Sub-agent failed: ${message}`);
@@ -724,6 +851,10 @@ export function createSubagentRunner(deps: {
       return await promise;
     } finally {
       inflight.delete(key);
+      if (siblingBriefs) {
+        briefs.delete(key);
+        if (briefs.size === 0) activeBriefs.delete(parent.runId);
+      }
       if (paths.length > 0) {
         running.delete(spec.objective);
         if (running.size === 0) activePaths.delete(parent.runId);

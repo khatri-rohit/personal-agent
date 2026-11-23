@@ -12,6 +12,7 @@ import type {
   OllamaListedModel,
   OllamaModelConfig,
   ResolvedModelSettings,
+  RevertResult,
   RunPosture,
   StartRunRequest,
   ThinkingValue,
@@ -84,6 +85,8 @@ export async function startRun(
   options: {
     message?: { content: string; attachments?: MessageAttachment[] };
     rewindThroughSeq?: number;
+    /** With a rewind: put back the files the cut reply changed. */
+    restoreFiles?: boolean;
     model?: string;
     local?: boolean;
     webSearch?: boolean;
@@ -92,11 +95,12 @@ export async function startRun(
     skills?: ComposerSkillHints;
     contextWindowMode?: ContextWindowMode;
   } = {},
-): Promise<string> {
+): Promise<{ runId: string; restore?: RevertResult }> {
   const body: StartRunRequest = {
     threadId,
     message: options.message,
     rewindThroughSeq: options.rewindThroughSeq,
+    ...(options.restoreFiles ? { restoreFiles: true } : {}),
     model: options.model,
     local: options.local,
     webSearch: options.webSearch,
@@ -119,8 +123,8 @@ export async function startRun(
     throw new Error(body.error ?? `Failed to start run: ${res.status}`);
   }
 
-  const { runId } = await res.json();
-  return runId;
+  const { runId, restore } = (await res.json()) as { runId: string; restore?: RevertResult };
+  return { runId, ...(restore ? { restore } : {}) };
 }
 
 /**

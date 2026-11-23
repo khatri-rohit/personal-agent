@@ -11,12 +11,17 @@ export class ApiClient {
   constructor(
     private readonly base: string,
     private readonly pollMs = POLL_MS,
+    /** The API's token (`<eval home>/api-token`): requests without an Origin need it. */
+    private readonly token?: string,
   ) {}
 
   private async json<T>(method: string, route: string, body?: unknown): Promise<T> {
     const response = await fetch(`${this.base}${route}`, {
       method,
-      headers: body === undefined ? {} : { 'content-type': 'application/json' },
+      headers: {
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+      },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(60_000),
     });
@@ -28,6 +33,16 @@ export class ApiClient {
   /** A workspace thread when `workspaceRoot` is given, else a home (chat) thread. */
   createThread(input: { workspaceRoot?: string; model: string; title: string }): Promise<{ id: string }> {
     return this.json('POST', '/threads', { kind: input.workspaceRoot ? 'workspace' : 'home', ...input });
+  }
+
+  /** What the API runs and which home it writes (`GET /version`); null on an API from before the route. */
+  async version(): Promise<{ harnessVersion: { sha: string; dirty: string | null } | null; agentHome: string } | null> {
+    try {
+      return await this.json('GET', '/version');
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('→ 404')) return null;
+      throw error;
+    }
   }
 
   deleteThread(id: string): Promise<unknown> {

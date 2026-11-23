@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { isPauseStop, isResumableStop, limitMessage, RUN_CANCELLED_REASON, RUN_PAUSED_PREFIX, type ThinkingValue, type ThreadLastRun } from '@agent/agent-models';
@@ -12,9 +12,10 @@ import { linesOf, readRunTrace } from '../read/trace.js';
 import { flattenRuns, loadRunMetrics } from '../metrics/load.js';
 import type { RunMetrics } from '../metrics/run-metrics.js';
 import { ApiClient } from './api-client.js';
+import { trialCost, type TrialCost } from './cost.js';
 import { checkout, pruneWorkdirs, type Checkout } from './checkout.js';
 import { git } from './exec.js';
-import { gradeTrial, type Grade } from './score.js';
+import { gradeTrial, type FailureCategory, type Grade } from './score.js';
 import { readSeed } from './seed.js';
 import type { LoadedTask, TaskSuite } from './task.js';
 
@@ -64,6 +65,12 @@ export type TrialResult = {
    * compares only like setups unless asked to compare them (plan D-2).
    */
   system1Setup?: string;
+  /**
+   * Harness flags the trial's runs used (`run_start.flags`; the API's
+   * AGENT_FLAGS). The gate compares runs that differ in at most one flag.
+   * Absent on results written before it, or when no run recorded flags.
+   */
+  harnessFlags?: Record<string, boolean>;
   status: TrialStatus;
   ended?: TrialEnd;
   /** Why it was skipped or errored. */
@@ -73,9 +80,13 @@ export type TrialResult = {
   answersPassed?: boolean;
   scopeViolations?: string[];
   budgetOk?: boolean;
+  /** Why a trial failed or errored (`score.ts` FailureCategory); absent on a clean pass. */
+  failure?: FailureCategory;
   continues: number;
   limitReason?: string;
   promptTokens?: number;
+  /** Cached, output, calls and USD over every run of the trial (`cost.ts`); absent on results written before it. */
+  cost?: TrialCost;
   minutes?: number;
   grade?: Grade;
   deps?: Checkout['deps'];
@@ -99,6 +110,8 @@ export type RunnerOptions = {
   thinking?: ThinkingValue;
   /** Continue messages allowed per trial on resumable limits. */
   continues: number;
+  /** Trials at once (default 1). Each has its own checkout and thread. */
+  parallel?: number;
   /** Stop the suite once this many weekly-% points were used since it started. */
   maxWeeklyPercent: number;
   label: string;
@@ -140,7 +153,9 @@ function balanceOf(raw: unknown): Balance {
 
 async function harnessVersion(root: string): Promise<{ sha: string; dirty: string | null }> {
   const head = await git(root, ['rev-parse', 'HEAD']);
-  const diff = await git(root, ['diff', 'HEAD']);
+  // The task corpus is not harness code: editing a task must not mark the API stale.
+  // Same pathspec as apps/api/src/platform/harness-version.ts, so the two hashes compare.
+  const diff = await git(root, ['diff', 'HEAD', '--', '.', ':(exclude)evals']);
   return {
     sha: head.stdout.trim(),
     dirty: diff.stdout.trim() ? createHash('sha256').update(diff.stdout).digest('hex').slice(0, 16) : null,
@@ -156,6 +171,43 @@ export function system1SetupOf(metrics: RunMetrics[], thinking: ThinkingValue | 
   const modes = new Set(metrics.map((m) => m.system1?.mode ?? 'off'));
   const mode = modes.size === 0 ? 'off' : modes.size === 1 ? [...modes][0]! : 'mixed';
   return `${mode}/thinking=${thinking === undefined ? 'default' : String(thinking)}`;
+}
+
+/**
+ * The flags of the trial's own runs, from their `run_start` lines. Every run
+ * of one trial talks to one API process, so they agree; a trial whose runs
+ * disagree (the API restarted with other AGENT_FLAGS mid-trial) throws, since
+ * no single flag set produced it.
+ */
+async function trialFlags(
+  runs: Array<{ runId: string; tracePath: string }>,
+  expected?: { sha: string; dirty: string | null },
+): Promise<Record<string, boolean> | undefined> {
+  let found: Record<string, boolean> | undefined;
+  for (const run of runs) {
+    const { lines } = await readRunTrace(run.tracePath);
+    const start = linesOf(lines, 'run_start')[0];
+    // An API restarted mid-suite on other code: this trial measured something else.
+    const version = start?.harnessVersion;
+    if (expected && version && (version.sha !== expected.sha || version.dirty !== expected.dirty)) {
+      throw new Error(`run ${run.runId} ran code ${version.sha.slice(0, 8)}${version.dirty ? `+${version.dirty}` : ''}, not the checkout this suite records; was the API restarted on other code?`);
+    }
+    const flags = start?.flags as Record<string, boolean> | undefined;
+    if (!flags) continue;
+    if (found && flagSetKey(found) !== flagSetKey(flags)) {
+      throw new Error(`run ${run.runId} used other harness flags than the trial's first run; was the API restarted with new AGENT_FLAGS?`);
+    }
+    found ??= flags;
+  }
+  return found;
+}
+
+/** A flag set as one comparable string (names sorted). */
+export function flagSetKey(flags: Record<string, boolean>): string {
+  return Object.keys(flags)
+    .sort()
+    .map((name) => `${name}:${flags[name] ? 'on' : 'off'}`)
+    .join(',');
 }
 
 /** The API must be serving the eval home; a thread it creates must appear in that catalog. */
@@ -250,9 +302,11 @@ export async function runTrial(
       title: `eval ${task.id} #${trial}`,
     });
     result.threadId = thread.id;
+    // The agent's clock starts here: checkout and `npm ci` (depsMs) are setup, not the agent's minutes.
+    const workStartedAt = Date.now();
 
     // A hard stop well past the task's own budget, so a stuck run cannot hold the suite.
-    const deadline = startedAt.getTime() + task.budget.maxMinutes * 2 * 60_000 + 10 * 60_000;
+    const deadline = workStartedAt + task.budget.maxMinutes * 2 * 60_000 + 10 * 60_000;
     // One user turn after another (followUps), each with its own Continues.
     const turns = [task.prompt, ...(task.followUps ?? [])];
     let limitReason: string | undefined;
@@ -320,6 +374,8 @@ export async function runTrial(
     const metrics = await loadRunMetrics(opts.evalHome, runs);
     result.metrics = metrics;
     result.system1Setup = system1SetupOf(metrics, thinking);
+    const harnessFlags = await trialFlags(runs, { sha: base.harnessSha, dirty: base.harnessDirty });
+    if (harnessFlags) result.harnessFlags = harnessFlags;
 
     // The account ran out, not the agent: the trial gets no grade (plan D-3).
     if (limitReason && isPauseStop(limitReason)) {
@@ -330,8 +386,9 @@ export async function runTrial(
       return result;
     }
     const promptTokens = metrics.reduce((sum, m) => sum + m.promptTokens.total, 0);
-    const minutes = (Date.now() - startedAt.getTime()) / 60_000;
+    const minutes = (Date.now() - workStartedAt) / 60_000;
     result.promptTokens = promptTokens;
+    result.cost = await trialCost(flattenRuns(runs));
     result.minutes = Math.round(minutes * 10) / 10;
 
     const lastRunId = result.runIds.at(-1);
@@ -354,10 +411,12 @@ export async function runTrial(
     result.answersPassed = grade.answersPassed;
     result.scopeViolations = grade.scopeViolations;
     result.budgetOk = grade.budget.ok;
+    if (grade.failure) result.failure = grade.failure;
     result.status = grade.passed ? 'passed' : 'failed';
   } catch (error) {
     result.status = 'error';
     result.ended = 'error';
+    result.failure = 'infra';
     result.reason = error instanceof Error ? error.message : String(error);
   }
   result.finishedAt = new Date().toISOString();
@@ -375,11 +434,23 @@ export async function runSuite(opts: RunnerOptions): Promise<SuiteRun> {
   if (seed.drifted) throw new Error('The eval home changed since it was seeded. Re-run agent-eval seed.');
   if (opts.tasks.length === 0) throw new Error('No tasks selected.');
 
-  const api = new ApiClient(opts.apiBase);
+  // The API writes its token into its AGENT_HOME, which is the eval home.
+  const tokenFile = path.join(opts.evalHome, 'api-token');
+  const token = existsSync(tokenFile) ? (await readFile(tokenFile, 'utf8')).trim() : undefined;
+  const api = new ApiClient(opts.apiBase, undefined, token);
   const harness = await harnessVersion(opts.harnessRoot);
   const workdirs = path.join(opts.evalHome, 'workdirs');
   await mkdir(workdirs, { recursive: true });
   await assertApiOnEvalHome(api, opts.apiBase, opts.evalHome, workdirs, opts.model);
+  // The results say they measured `harness`; the API must be running exactly that code.
+  const live = await api.version();
+  if (!live?.harnessVersion) {
+    opts.log('WARNING: the API does not report its code version (an API from before GET /version, or not in a git checkout); results assume it runs this checkout.');
+  } else if (live.harnessVersion.sha !== harness.sha || live.harnessVersion.dirty !== harness.dirty) {
+    throw new Error(
+      `The API runs other code than this checkout (API ${live.harnessVersion.sha.slice(0, 8)}${live.harnessVersion.dirty ? `+${live.harnessVersion.dirty}` : ''}, checkout ${harness.sha.slice(0, 8)}${harness.dirty ? `+${harness.dirty}` : ''}). Restart the eval API so it runs what you are measuring.`,
+    );
+  }
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const resultsDir = path.join(opts.evalHome, 'results', `${stamp}-${opts.label}`);
@@ -409,9 +480,22 @@ export async function runSuite(opts: RunnerOptions): Promise<SuiteRun> {
   await writeMeta();
   let stopped: string | undefined;
 
+  // Old checkouts go first, for every task: parallel trials of one task must
+  // not prune each other's workdirs.
   for (const loaded of opts.tasks) {
     await pruneWorkdirs(workdirs, loaded.task.id, path.resolve(opts.harnessRoot, loaded.task.repo.source));
-    for (let trial = 1; trial <= opts.repeat; trial++) {
+  }
+  const jobs = opts.tasks.flatMap((loaded) =>
+    Array.from({ length: opts.repeat }, (_, index) => ({ loaded, trial: index + 1 })),
+  );
+  let next = 0;
+  // Each worker takes the next job; capacity and the weekly ceiling are
+  // checked before every trial, so a spent account stops new trials at once.
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const job = jobs[next++];
+      if (!job) return;
+      const { loaded, trial } = job;
       const now = balanceOf(await api.balance());
       if (!stopped && start.weekly !== null && now.weekly !== null && start.weekly - now.weekly >= opts.maxWeeklyPercent) {
         stopped = `suite ceiling: ${start.weekly - now.weekly}% of the week used (max ${opts.maxWeeklyPercent}%)`;
@@ -445,10 +529,15 @@ export async function runSuite(opts: RunnerOptions): Promise<SuiteRun> {
         `${JSON.stringify(result, null, 2)}\n`,
       );
       opts.log(
-        `${loaded.task.id} #${trial}: ${result.status}${result.reason ? ` (${result.reason})` : ''}${result.promptTokens !== undefined ? ` · ${result.promptTokens} prompt tokens · ${result.minutes} min` : ''}`,
+        `${loaded.task.id} #${trial}: ${result.status}${result.failure ? ` [${result.failure}]` : ''}${result.reason ? ` (${result.reason})` : ''}${result.promptTokens !== undefined ? ` · ${result.promptTokens} prompt tokens · ${result.minutes} min` : ''}`,
       );
     }
-  }
+  };
+  const workers = Math.max(1, Math.min(opts.parallel ?? 1, jobs.length));
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  // Report in task/trial order, whatever order the workers finished in.
+  const order = new Map(jobs.map((job, index) => [`${job.loaded.task.id}#${job.trial}`, index]));
+  results.sort((a, b) => (order.get(`${a.taskId}#${a.trial}`) ?? 0) - (order.get(`${b.taskId}#${b.trial}`) ?? 0));
 
   meta.finishedAt = new Date().toISOString();
   if (stopped) meta.stopped = stopped;

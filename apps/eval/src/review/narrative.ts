@@ -1,63 +1,95 @@
-import { parseReviewNarrative, type ReviewNarrative } from '@agent/agent-models';
+import { createHash } from 'node:crypto';
+
+import {
+  parseReviewNarrative,
+  resolveReasoningEffort,
+  REVIEW_DIGEST_VERSION,
+  REVIEW_DIMENSIONS,
+  type ReviewNarrative,
+  type ThinkingValue,
+} from '@agent/agent-models';
 
 import type { ReviewModelInput } from '@agent/agent-eval';
 
+import { reviewerConfig, sameModel } from './models';
+
 const DEFAULT_CLOUD_BASE_URL = 'https://ollama.com/v1';
-const REVIEW_TIMEOUT_MS = 20_000;
+/** The judge reads the request, the answer and the step list, and may think first: more than a 20 s call allows. */
+const REVIEW_TIMEOUT_MS = 180_000;
 
-const SYSTEM_PROMPT = `You are a run reviewer for a personal-assistant agent harness.
+const SYSTEM_PROMPT = `You are the judge of one thread of a personal coding agent.
 
-You receive a deterministic digest of a thread (and optionally one focused run) plus at most five short excerpts. You do not have the raw trace. The digest is the source of truth.
+You receive:
+- "evidence": what the user asked (request), the agent's last answer (answer), and every tool call with its outcome (steps). This is what you judge.
+- "digest": rule-based signals about the process (token counts, iterations, waste markers). They describe how the work went, not whether it was right. A digest finding is a lead to check against the evidence, not a verdict.
+- "excerpts": a few short quotes.
+
+Judge each dimension on its own, from the evidence:
+- did-what-was-asked: the answer addresses what the request asked, completely. A question answered with edits, or a change request answered without changes, fails.
+- verified: when files were changed, a check (build, test, typecheck, lint) ran after the last change and passed (a step "→ exit 0"); when nothing was changed, pass if the answer cites evidence (paths, lines, command output) for its claims.
+- stayed-in-scope: the steps touched only what the request needed.
+- efficient: the steps were not much more than the outcome needed (repeated reads or searches, serial single calls, work after the answer was known).
+For each, return "pass", "fail" or "unknown". Use "unknown" whenever the evidence cannot settle it (for example the answer was clipped, or the steps do not show the outcome). Never guess.
 
 Rules:
-- Cite only facts that appear in the digest or excerpts. Quote numbers exactly. Arithmetic stays arithmetic: sums are sums of the digest's own numbers; ratios are last/first within one run's scope.
-- Attribute waste to a mechanism, sized in its own tokens — call count (iterations × average prompt), per-call prompt size and growth, pre-outcome exploration (tokens before the run's first successful edit), sequential single-tool rounds (each round pays one full prompt), or tail spend after the outcome. A claim without a mechanism and a number is not a finding. Name what dominates before recommending a fix.
-- Keep two defect classes separate: (a) measurement/product defects — a number that only reproduces by mixing runs, run counts that miss cancelled or sub-agent runs, empty boilerplate sections, mislabeled errors; (b) harness waste — what the run actually did. Do not blur them.
-- Status lines stop reasons are bookkeeping, not causes. Treat "limit:plan" as where the run stopped, not why.
-- Do not invent tools, files, outcomes, user intent, or findings that the digest does not support.
-- Do not flatter. If the digest shows waste, over-work, or a misread, say so plainly. If it shows good work, say so without praise inflation.
-- If the digest is incomplete, say what is missing instead of guessing.
-- Reply with strict JSON only, no markdown, matching:
-  {"summary": string, "alignment": string, "findings": [{"kind": "over-work"|"unnecessary-calls"|"misread-intent"|"waste"|"good", "text": string}], "suggestions": string[]}
-- summary is 3–6 sentences. Each finding cites at least one digest number or excerpt.
-- Keep suggestions concrete and tied to the findings, with an estimated saving when the finding is about cost.`;
+- Cite only what appears in the evidence, digest or excerpts. Quote numbers exactly.
+- Do not invent tools, files, outcomes or intent. Do not flatter; do not inflate failures either.
+- If evidence.clipped is true, say what you could not see.
+- Reply with strict JSON only, no markdown:
+  {"summary": string, "alignment": string, "judgment": [{"dimension": ${REVIEW_DIMENSIONS.map((d) => `"${d}"`).join('|')}, "verdict": "pass"|"fail"|"unknown", "critique": string}], "findings": [{"kind": "over-work"|"unnecessary-calls"|"misread-intent"|"waste"|"good", "text": string}], "suggestions": string[]}
+- summary: 3–6 sentences, outcome first, then the process. judgment: all four dimensions, each critique one or two sentences citing a step, a quote or a number.
+- suggestions: concrete, tied to a failed or unknown dimension or a finding.`;
 
-function reviewModel(threadModel: string): string | null {
-  const configured = process.env.REVIEW_MODEL?.trim();
-  const model = configured || threadModel.trim();
-  return model || null;
+/** sha256 of the judge's prompt: stored on every review and part of its fingerprint. */
+export const REVIEW_PROMPT_SHA = createHash('sha256').update(SYSTEM_PROMPT).digest('hex').slice(0, 16);
+
+/**
+ * The judge: the model picked on the page, else REVIEW_MODEL, else the
+ * thread's own model. Marked a self-review when it is the thread's model (a
+ * model grading its own work is biased toward itself).
+ */
+export function reviewerFor(threadModel: string, picked?: string): { model: string | null; selfReview: boolean } {
+  const model = picked?.trim() || process.env.REVIEW_MODEL?.trim() || threadModel.trim();
+  return { model: model || null, selfReview: Boolean(model) && Boolean(threadModel.trim()) && sameModel(model, threadModel) };
+}
+
+/** The fingerprint's reviewer part: digest version, judge model and thinking, prompt. */
+export function reviewerKey(model: string | null, thinking: ThinkingValue | undefined): string {
+  return `${REVIEW_DIGEST_VERSION}|${model ?? 'none'}|${thinking === undefined ? 'default' : String(thinking)}|${REVIEW_PROMPT_SHA}`;
 }
 
 function extractJson(text: string): unknown {
-  const trimmed = text.trim();
+  // Thinking models may wrap their reasoning in <think>…</think> before the JSON.
+  const trimmed = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
   const raw = (fenced?.[1] ?? trimmed).trim();
-  return JSON.parse(raw) as unknown;
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  return JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw) as unknown;
 }
 
+export type NarrativeOutcome = { narrative: ReviewNarrative; error?: undefined } | { narrative: null; error: string };
+
 /**
- * One non-streaming completion over the digest. Failures return null so the
- * host can store a digest-only review (same pattern as title generation).
+ * One non-streaming completion. Never throws: a failure comes back as its
+ * reason, so the page can say the judgment is missing and why.
  */
 export async function generateNarrative(
   input: ReviewModelInput,
-  threadModel: string,
-): Promise<ReviewNarrative | null> {
-  const model = reviewModel(threadModel);
-  if (!model) return null;
+  model: string | null,
+  thinking?: ThinkingValue,
+): Promise<NarrativeOutcome> {
+  if (!model) return { narrative: null, error: 'no reviewer model picked' };
+  // The chosen level as the chat sends it (`reasoning_effort`); none for models without thinking.
+  const config = await reviewerConfig(model);
+  const effort = config ? resolveReasoningEffort(config, thinking) : undefined;
 
   const baseURL = (process.env.OLLAMA_BASE_URL ?? DEFAULT_CLOUD_BASE_URL).replace(/\/$/, '');
-  const usingCloudDefault = baseURL === DEFAULT_CLOUD_BASE_URL;
-  if (usingCloudDefault && !process.env.OLLAMA_API_KEY) return null;
+  if (baseURL === DEFAULT_CLOUD_BASE_URL && !process.env.OLLAMA_API_KEY) {
+    return { narrative: null, error: 'OLLAMA_API_KEY is not set for the eval app' };
+  }
 
-  const user = JSON.stringify(
-    {
-      digest: input.digest,
-      excerpts: input.excerpts,
-    },
-    null,
-    2,
-  );
+  const user = JSON.stringify({ evidence: input.evidence ?? null, digest: input.digest, excerpts: input.excerpts }, null, 2);
 
   try {
     const response = await fetch(`${baseURL}/chat/completions`, {
@@ -69,8 +101,10 @@ export async function generateNarrative(
       body: JSON.stringify({
         model,
         stream: false,
-        max_tokens: 1200,
+        // Thinking tokens count toward max_tokens on some models: leave room for both.
+        max_tokens: effort && effort !== 'none' ? 12_000 : 2_500,
         temperature: 0.2,
+        ...(effort ? { reasoning_effort: effort } : {}),
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: user },
@@ -79,18 +113,21 @@ export async function generateNarrative(
       signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS),
     });
     if (!response.ok) {
-      console.error('[review] narrative failed:', response.status, await response.text());
-      return null;
+      return { narrative: null, error: `${model} answered ${response.status}: ${(await response.text()).slice(0, 300)}` };
     }
-    const body = (await response.json()) as {
-      choices?: { message?: { content?: string | null } }[];
-    };
+    const body = (await response.json()) as { choices?: { message?: { content?: string | null } }[] };
     const content = body.choices?.[0]?.message?.content;
-    if (!content) return null;
-    return parseReviewNarrative(extractJson(content));
+    if (!content) return { narrative: null, error: `${model} returned no content` };
+    let parsed: unknown;
+    try {
+      parsed = extractJson(content);
+    } catch {
+      return { narrative: null, error: `${model} did not return JSON: ${content.slice(0, 200)}` };
+    }
+    const narrative = parseReviewNarrative(parsed);
+    return narrative ? { narrative } : { narrative: null, error: `${model} returned JSON in the wrong shape` };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error('[review] narrative failed:', message);
-    return null;
+    return { narrative: null, error: `${model} call failed: ${message}` };
   }
 }

@@ -20,6 +20,8 @@ import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
 import { inferTaskShape, TaskStateTracker } from '../state/task-state';
 import { escalationStep } from '../policy';
 import { measureContextShape } from './context-shape';
+import { callModelWithRetry, errorText, isTransientModelError } from './model-retry';
+import { enforceWindow } from './residency-pass';
 import { tracePolicyDecision } from './policy-trace';
 import { withStateCard } from './state-card';
 import {
@@ -241,6 +243,7 @@ async function runLoopCore(
     posture: s.posture,
     windowTokens: s.contextBudget.windowTokens,
     flags: s.flags,
+    ...(config.harnessVersion ? { harnessVersion: config.harnessVersion } : {}),
     taskShape: inferTaskShape(config.mode === 'workspace', s.posture),
     ...(config.modelSettings ? { modelSettings: config.modelSettings } : {}),
     ...(config.contextReport?.windowSource
@@ -295,7 +298,11 @@ async function runLoopCore(
       throwIfAborted(signal);
       s.iterations++;
 
-      const estimatedPrompt = estimatePromptTokens(messages, tools.definitions);
+      // flags.windowGuard: never send a prompt over the input budget; the
+      // backstop reshapes it first (loop/residency-pass enforceWindow).
+      const estimatedPrompt = s.flags.windowGuard
+        ? await enforceWindow(s)
+        : estimatePromptTokens(messages, tools.definitions);
       // The first call always runs: skipping it to finalize would cost the same.
       const overBudget = budget.exceeded(s.iterations > 1 ? estimatedPrompt : 0);
       if (overBudget) {
@@ -384,7 +391,9 @@ async function runLoopCore(
       });
       emit?.({ type: 'turn.started', runId, iteration: s.iterations });
 
-      const messageId = randomUUID();
+      // `let`: a retried call starts a fresh message, so the client drops the
+      // half-streamed text of the failed attempt (assistant.started resets it).
+      let messageId = randomUUID();
       const onTextDelta = (delta: string) => {
         emit?.({
           type: 'assistant.delta',
@@ -398,13 +407,25 @@ async function runLoopCore(
 
       // duration = model-call + stream time; excludes tool execution (on ToolCompleted).
       const startedAt = Date.now();
-      const turn = await modelCall(
-        config.model,
-        sent,
-        tools,
-        onTextDelta,
-        signal,
-        effortOverride !== undefined ? { reasoningEffort: effortOverride } : undefined,
+      const turn = await callModelWithRetry(
+        () =>
+          modelCall(
+            config.model,
+            sent,
+            tools,
+            onTextDelta,
+            signal,
+            effortOverride !== undefined ? { reasoningEffort: effortOverride } : undefined,
+          ),
+        {
+          signal,
+          retryable: (error) => !config.capacity?.limitReasonFor(error) && isTransientModelError(error),
+          onRetry: (error) => {
+            tracePolicyDecision(s, 'guard', ['model_retry'], `model call failed, retried once: ${errorText(error)}`);
+            messageId = randomUUID();
+            emit?.({ type: 'assistant.started', runId, messageId });
+          },
+        },
       );
       throwIfAborted(signal);
       const durationMs = Date.now() - startedAt;

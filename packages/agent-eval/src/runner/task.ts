@@ -33,11 +33,25 @@ export type EvalTask = {
   thinking?: ThinkingValue;
   checks: { run: string; expectExit: number; timeoutSec?: number }[];
   files: { path: string; mustMatch: string }[];
-  /** Patterns the final answer must contain (research and question tasks grade the answer, not files). */
-  answer?: { mustMatch: string }[];
+  /** What the final answer must contain (research and question tasks grade the answer, not files). */
+  answer?: AnswerCheck[];
   scope: { allow: string[] };
   budget: { maxPromptTokens: number; maxMinutes: number };
+  /**
+   * A known-good result that must pass this task's grader (`agent-eval
+   * validate`): it proves the task is solvable and the grader fair.
+   * `answer` may hold `{{command}}` placeholders, replaced by that command's
+   * output (for machine-dependent facts such as the Node version).
+   */
+  reference?: { answer?: string };
 };
+
+/**
+ * One answer requirement: a regex (`mustMatch`, case-insensitive,
+ * multiline), or the literal output of a command run where the trial ran
+ * (`fromCommand`, e.g. `node --version`), for facts that depend on the machine.
+ */
+export type AnswerCheck = { mustMatch: string; fromCommand?: undefined } | { fromCommand: string; mustMatch?: undefined };
 
 export type LoadedTask = { task: EvalTask; file: string; taskHash: string };
 
@@ -99,9 +113,20 @@ export function parseTask(file: string, raw: unknown): EvalTask {
     })),
     ...(Array.isArray(t.answer)
       ? {
-          answer: (t.answer as Record<string, unknown>[]).map((entry, i) => ({
-            mustMatch: str(file, entry.mustMatch, `answer[${i}].mustMatch`),
-          })),
+          answer: (t.answer as Record<string, unknown>[]).map((entry, i): AnswerCheck =>
+            entry.fromCommand !== undefined
+              ? { fromCommand: str(file, entry.fromCommand, `answer[${i}].fromCommand`) }
+              : { mustMatch: str(file, entry.mustMatch, `answer[${i}].mustMatch`) },
+          ),
+        }
+      : {}),
+    ...(t.reference !== undefined
+      ? {
+          reference: {
+            ...(typeof (t.reference as Record<string, unknown>).answer === 'string'
+              ? { answer: (t.reference as Record<string, unknown>).answer as string }
+              : {}),
+          },
         }
       : {}),
     scope: { allow: (scope.allow as unknown[]).map((item, i) => str(file, item, `scope.allow[${i}]`)) },

@@ -8,8 +8,13 @@
   "files": [],
   "answer": [
     { "mustMatch": "Remove image" },
-    { "mustMatch": "Skills" }
+    { "mustMatch": "Skills" },
+    { "mustMatch": "\\b1257\\b" },
+    { "mustMatch": "\\b1294\\b" }
   ],
+  "reference": {
+    "answer": "The last two aria-labels are \"Remove image\" (line 1257) and \"Skills\" (line 1294)."
+  },
   "scope": { "allow": [] },
   "budget": { "maxPromptTokens": 400000, "maxMinutes": 8 }
 }

@@ -312,6 +312,27 @@ export class Admission {
     return { nearStuck, halt: null };
   }
 
+  /**
+   * flags.windowGuard: a result that never reached the model (stored as a
+   * window card) was not a use of the call. Asking for it again is not a
+   * repeat, and a read of its file is not one more read of that path.
+   */
+  forgetDeferredCall(toolName: string, args: Record<string, unknown>): void {
+    const key = toolCallKey(toolName, args);
+    const count = this.callCounts.get(key);
+    if (count !== undefined) {
+      if (count <= 1) this.callCounts.delete(key);
+      else this.callCounts.set(key, count - 1);
+    }
+    const traits = this.limits.traitsOf(toolName);
+    const readPath = traits?.lineRange ? (traits.file?.(args) ?? null) : null;
+    const reads = readPath === null ? undefined : this.readsByPath.get(readPath);
+    if (readPath !== null && reads !== undefined) {
+      if (reads <= 1) this.readsByPath.delete(readPath);
+      else this.readsByPath.set(readPath, reads - 1);
+    }
+  }
+
   /** A retired skill body may be loaded again: that is not a repeat. */
   forgetSkillLoads(): void {
     for (const key of [...this.callCounts.keys()]) {

@@ -21,8 +21,9 @@ import {
   type RunState,
 } from './run-state';
 import type { RunBudget } from './run-budget';
-import { changeGate, planGate } from '../policy';
+import { changeGate, failedCheckGate, planGate } from '../policy';
 import { measureContextShape } from './context-shape';
+import { callModelWithRetry, errorText, isTransientModelError } from './model-retry';
 import { tracePolicyDecision } from './policy-trace';
 import { OPEN_PLAN_WORK_NUDGE } from './steering-notes';
 import { preview } from './tool-call-record';
@@ -72,9 +73,9 @@ export type FinishView = Pick<
   | 'trace'
   | 'emit'
 > & {
-  readonly config: Pick<LoopConfig, 'model' | 'onMessage' | 'contextReport' | 'hasOpenPlanWork' | 'isPlanScoped'>;
+  readonly config: Pick<LoopConfig, 'model' | 'onMessage' | 'contextReport' | 'hasOpenPlanWork' | 'isPlanScoped' | 'capacity'>;
   readonly budget: Pick<RunBudget, 'chargeOwn'>;
-  readonly task: Pick<RunState['task'], 'unchecked'>;
+  readonly task: Pick<RunState['task'], 'unchecked' | 'failedCheckAfterEdits'>;
   readonly can: Pick<RunState['can'], 'check'>;
 };
 
@@ -102,6 +103,11 @@ function endRun(
   return { runId: s.runId, content, iterations: s.iterations, toolCalls: s.totalToolCalls, status, ...limit };
 }
 
+/** The failed-check note: names the command that is red, so the model knows what to fix or report. */
+function failedCheckNote(command: string, exitCode: number | undefined): string {
+  return `Your answer reports success, but the last check after your edits failed (\`${command}\` exited ${exitCode ?? 'non-zero'}). Fix it and run the check again, or say plainly what still fails.`;
+}
+
 /** The change done gate (policy/finish changeGate) over this run's state. */
 function needsStopCheck(s: FinishView, answer: string): boolean {
   return changeGate({
@@ -120,7 +126,7 @@ async function finalizeAnswer(
   instruction: string,
 ): Promise<{ content: string; usage?: TokenUsage }> {
   const { runId, emit, recorder } = s;
-  const finalMessageId = randomUUID();
+  let finalMessageId = randomUUID();
   const onTextDelta = (delta: string) => {
     emit?.({
       type: 'assistant.delta',
@@ -154,7 +160,18 @@ async function finalizeAnswer(
 
   // duration = model-call + stream time; excludes tool execution (on ToolCompleted).
   const startedAt = Date.now();
-  const turn = await s.modelCall(s.config.model, s.messages, noTools, onTextDelta, s.signal);
+  const turn = await callModelWithRetry(
+    () => s.modelCall(s.config.model, s.messages, noTools, onTextDelta, s.signal),
+    {
+      ...(s.signal ? { signal: s.signal } : {}),
+      retryable: (error) => !s.config.capacity?.limitReasonFor(error) && isTransientModelError(error),
+      onRetry: (error) => {
+        tracePolicyDecision(s, 'guard', ['model_retry'], `final call failed, retried once: ${errorText(error)}`);
+        finalMessageId = randomUUID();
+        emit?.({ type: 'assistant.started', runId, messageId: finalMessageId });
+      },
+    },
+  );
   const content = turn.content ?? '';
   const durationMs = Date.now() - startedAt;
   const usageEstimated = s.budget.chargeOwn(turn.usage, estimatedPrompt, turn.content);
@@ -275,6 +292,24 @@ export async function settleFinalAnswer(
       emitTurnCompleted(s, s.iterations, turn.usage);
       return null;
     }
+    const failed = s.task.failedCheckAfterEdits;
+    if (
+      failed &&
+      failedCheckGate({
+        enabled: s.flags.stopCheck,
+        alreadySent: s.stopChecked,
+        posture: s.posture,
+        failedCheck: true,
+        answer: result,
+      })
+    ) {
+      s.stopChecked = true;
+      pushHarnessNote(s, failedCheckNote(failed.command, failed.exitCode));
+      s.trace({ type: 'stop_check', runId, iteration: s.iterations });
+      tracePolicyDecision(s, 'finish', ['done_gate:check_failed'], 'claims success after the last check failed');
+      emitTurnCompleted(s, s.iterations, turn.usage);
+      return null;
+    }
     const openPlanWork = s.config.hasOpenPlanWork
       ? await s.config.hasOpenPlanWork()
       : false;
@@ -296,6 +331,16 @@ export async function settleFinalAnswer(
     return endRun(s, result, 'completed', turn.usage);
   }
 
-  noteLimit(s, limitMessage('limit.finish', `unexpected finish reason: ${turn.finishReason}`));
+  // The answer is cut off (or filtered): it is kept, but the run ends
+  // incomplete with a reason that says so, never as a finished answer.
+  noteLimit(
+    s,
+    limitMessage(
+      'limit.finish',
+      turn.finishReason === 'length'
+        ? 'answer cut off at the output length limit'
+        : `unexpected finish reason: ${turn.finishReason}`,
+    ),
+  );
   return endRun(s, turn.content ?? '', 'incomplete', turn.usage);
 }

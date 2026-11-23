@@ -9,6 +9,18 @@
   "posture": "ask",
   "checks": [],
   "files": [],
+  "answer": [
+    { "mustMatch": "limits\\.ts" },
+    { "mustMatch": "\\btools\\b" },
+    { "mustMatch": "\\biterations\\b" },
+    { "mustMatch": "\\btokens\\b" },
+    { "mustMatch": "\\bwall\\b" },
+    { "mustMatch": "\\bresearch\\b" },
+    { "mustMatch": "\\bcapacity\\b" }
+  ],
+  "reference": {
+    "answer": "The table is LIMIT_CODES in packages/agent-models/src/lib/limits.ts (line 9). Resumable codes: limit.tools, limit.iterations, limit.tokens, limit.wall, limit.research and limit.capacity (capacity is also a pause)."
+  },
   "scope": {
     "allow": []
   },

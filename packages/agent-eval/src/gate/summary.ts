@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { SUITE_META_FILE, type SuiteRunMeta, type TrialResult } from '../runner/runner.js';
+import { flagSetKey, SUITE_META_FILE, type SuiteRunMeta, type TrialResult } from '../runner/runner.js';
 import type { TaskSuite } from '../runner/task.js';
 
 /** Spread (max ÷ min prompt tokens) above this marks a task unstable: no token verdict. */
@@ -18,12 +18,54 @@ export type TaskStats = {
   /** Median prompt tokens over passing trials. */
   medianPromptTokens: number | null;
   medianMinutes: number | null;
+  /**
+   * Median USD over passing trials (`TrialResult.cost`). Null when any
+   * passing trial could not be priced, or the results predate cost fields:
+   * a partial price would compare runs for the wrong reason.
+   */
+  medianCostUsd?: number | null;
+  /** Median model calls over passing trials, own and sub-agent calls. Absent on older baselines. */
+  medianCalls?: number | null;
+  /** Median over passing trials of each trial's 90th-percentile prompt per call. Absent on older baselines. */
+  medianP90PromptPerCall?: number | null;
   /** max ÷ min prompt tokens over trials that reported tokens. */
   spread: number | null;
   /** At least two trials and spread ≤ UNSTABLE_SPREAD. */
   stable: boolean;
   scopeViolations: number;
+  /** 95% Wilson interval of the pass rate: with 3 trials, 2/3 is 21%–94%. Absent on older baselines. */
+  passInterval?: [number, number];
+  /** pass^k at k = PASS_POW_K: the chance every one of k trials passes (consistency). Null under k trials. */
+  passPowK?: number | null;
+  /**
+   * Total USD of every trial that ran ÷ passes: what one success costs,
+   * failures included. Null when any trial is unpriced or nothing passed.
+   */
+  costPerSuccess?: number | null;
+  /** Trials that went over the task's token or time budget. */
+  overBudget?: number;
 };
+
+/** k for pass^k: three runs in a row, the consistency a person notices. */
+export const PASS_POW_K = 3;
+
+/** 95% Wilson score interval for `passes` of `trials`. */
+export function wilsonInterval(passes: number, trials: number, z = 1.96): [number, number] {
+  if (trials === 0) return [0, 1];
+  const p = passes / trials;
+  const z2 = z * z;
+  const center = (p + z2 / (2 * trials)) / (1 + z2 / trials);
+  const half = (z * Math.sqrt((p * (1 - p)) / trials + z2 / (4 * trials * trials))) / (1 + z2 / trials);
+  return [Math.max(0, center - half), Math.min(1, center + half)];
+}
+
+/** Unbiased pass^k from c passes of n trials: C(c,k) / C(n,k). Null when n < k. */
+export function passPow(passes: number, trials: number, k = PASS_POW_K): number | null {
+  if (trials < k) return null;
+  let value = 1;
+  for (let i = 0; i < k; i++) value *= (passes - i) / (trials - i);
+  return Math.max(0, value);
+}
 
 export type SuiteStats = {
   /** Absent on baselines recorded before it was tracked. */
@@ -34,6 +76,11 @@ export type SuiteStats = {
   harnessDirty: string | null;
   /** `TrialResult.system1Setup` shared by every trial; `unrecorded` for results written before it existed. */
   system1Setup: string;
+  /**
+   * `TrialResult.harnessFlags` shared by every trial that recorded them.
+   * Absent on baselines recorded before it, or when no trial recorded flags.
+   */
+  harnessFlags?: Record<string, boolean>;
   tasks: Record<string, TaskStats>;
   /** Passing trials ÷ trials that ran, over the whole suite. */
   passRate: number;
@@ -95,6 +142,11 @@ export function summarizeSuite(results: TrialResult[]): SuiteStats {
   // Trials that errored before any run have no setup; the others must agree.
   const setups = new Set(ran.flatMap((result) => (result.system1Setup ? [result.system1Setup] : [])));
   if (setups.size > 1) throw new Error(`Results mix System 1 setups (${[...setups].join(', ')}).`);
+  // One flag set per suite run: trials from two API processes measure two harnesses.
+  const flagSets = new Map(
+    ran.flatMap((result) => (result.harnessFlags ? [[flagSetKey(result.harnessFlags), result.harnessFlags] as const] : [])),
+  );
+  if (flagSets.size > 1) throw new Error(`Results mix harness flag sets: ${[...flagSets.keys()].join(' | ')}`);
   const byTask = new Map<string, TrialResult[]>();
   for (const result of ran) byTask.set(result.taskId, [...(byTask.get(result.taskId) ?? []), result]);
 
@@ -120,9 +172,31 @@ export function summarizeSuite(results: TrialResult[]): SuiteStats {
       medianMinutes: median(
         passing.map((trial) => trial.minutes).filter((value): value is number => typeof value === 'number'),
       ),
+      medianCostUsd:
+        passing.length > 0 && passing.every((trial) => typeof trial.cost?.costUsd === 'number')
+          ? median(passing.map((trial) => trial.cost!.costUsd!))
+          : null,
+      medianCalls: median(
+        passing.map((trial) => trial.cost?.calls).filter((value): value is number => typeof value === 'number'),
+      ),
+      medianP90PromptPerCall: median(
+        passing
+          .map((trial) => trial.cost?.p90PromptPerCall)
+          .filter((value): value is number => typeof value === 'number'),
+      ),
       spread,
       stable: trials.length >= 2 && spread !== null && spread <= UNSTABLE_SPREAD,
       scopeViolations: trials.reduce((sum, trial) => sum + (trial.scopeViolations?.length ?? 0), 0),
+      passInterval: wilsonInterval(passing.length, trials.length),
+      passPowK: passPow(passing.length, trials.length),
+      // Over graded trials: an infra error has no spend to count.
+      costPerSuccess: (() => {
+        const graded = trials.filter((trial) => trial.status !== 'error');
+        return passing.length > 0 && graded.every((trial) => typeof trial.cost?.costUsd === 'number')
+          ? graded.reduce((sum, trial) => sum + trial.cost!.costUsd!, 0) / passing.length
+          : null;
+      })(),
+      overBudget: trials.filter((trial) => trial.budgetOk === false).length,
     };
   }
   return {
@@ -132,6 +206,7 @@ export function summarizeSuite(results: TrialResult[]): SuiteStats {
     harnessSha: first.harnessSha,
     harnessDirty: first.harnessDirty,
     system1Setup: [...setups][0] ?? 'unrecorded',
+    ...(flagSets.size === 1 ? { harnessFlags: [...flagSets.values()][0]! } : {}),
     tasks,
     passRate: ran.filter((result) => result.status === 'passed').length / ran.length,
   };

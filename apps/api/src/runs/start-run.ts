@@ -1,8 +1,9 @@
-import type { StartRunRequest } from '@agent/agent-models';
+import type { RevertResult, StartRunRequest } from '@agent/agent-models';
 import {
   HOME_MODE,
   imageAttachments,
   isPlanScoped,
+  isReadOnlyPosture,
   isWorkspaceKind,
   lastRunFrom,
   MIN_CONTEXT_WINDOW_TOKENS,
@@ -31,7 +32,10 @@ import {
   capacitySnapshot,
   createCapacityGate,
 } from '../models/capacity';
-import { resolveCallOptions, resolveContextBudget } from '../models/model-runtime';
+import {
+  resolveCallOptions,
+  resolveContextBudget,
+} from '../models/model-runtime';
 import { resolveModelSettings } from '../models/model-settings-store';
 import {
   getAgentHome,
@@ -39,8 +43,18 @@ import {
   runManager,
 } from '../platform/instances';
 import { threadTraceSink } from '../platform/trace-sink.js';
+import {
+  checkpointAfter,
+  checkpointBefore,
+  folderWriter,
+  revertRuns,
+} from '../threads/checkpoints';
+import { harnessVersion } from '../platform/harness-version';
 import { compactThread, emitCompacted, maybeCompactThread } from './compaction';
-import { rewindLearningCursor, scheduleLearningReview } from '../memory/learning-loop';
+import {
+  rewindLearningCursor,
+  scheduleLearningReview,
+} from '../memory/learning-loop';
 import {
   endpointFromLocal,
   lastUserEnvelope,
@@ -54,7 +68,8 @@ import { system1EnforceAvailable, system1PortForRun } from './system1-runtime';
 import { titleNewThread } from './thread-title';
 
 export type StartRunResult =
-  | { ok: true; runId: string }
+  /** `restore`: the files put back before a rewind (`restoreFiles`). */
+  | { ok: true; runId: string; restore?: RevertResult }
   | {
       ok: false;
       /** invalid request · unknown thread · thread already running · account usage limit reached */
@@ -153,10 +168,31 @@ async function startClaimedRun(
     return reject('invalid', 'workspace thread has no workspaceRoot');
   }
 
+  // One Agent run writes in a folder at a time: an undo of one run must not
+  // take back edits another thread made in the same folder meanwhile.
+  // Disabled on purpose: a productive engineer runs several threads on one
+  // folder, and the harness must not block the send. Undo keeps its drift
+  // check (revertRuns), so a restore never overwrites files changed since.
+  const checkpointRoot =
+    isWorkspaceKind(thread.kind) &&
+    thread.workspaceRoot &&
+    !isReadOnlyPosture(posture)
+      ? thread.workspaceRoot
+      : null;
+  // const writer = checkpointRoot ? folderWriter(checkpointRoot) : null;
+  // if (writer && writer.threadId !== threadId) {
+  //   return reject(
+  //     'busy',
+  //     'Another thread is running in this folder right now. Wait for it to finish or stop it, then send again (or use Ask, which does not edit).',
+  //     writer.runId,
+  //   );
+  // }
+
   // The account's usage limit is reached: a run would pause before its
   // first call. Refuse before anything is written (no rewind, no user row),
   // so the message stays with the client to send after the reset.
-  const paused = endpointFromLocal(local) === 'cloud' ? capacityPauseReason() : null;
+  const paused =
+    endpointFromLocal(local) === 'cloud' ? capacityPauseReason() : null;
   if (paused) {
     return reject(
       'paused',
@@ -164,7 +200,46 @@ async function startClaimedRun(
     );
   }
 
+  let restore: RevertResult | undefined;
   if (rewindThroughSeq !== undefined) {
+    // Restore before the cut: the cut runs' ids live only in the rows being cut.
+    if (request.restoreFiles && thread.workspaceRoot) {
+      const cutRunIds = [
+        ...new Set(
+          (await store.readLedger(threadId, 0))
+            .filter(
+              (envelope) => envelope.seq > rewindThroughSeq && envelope.runId,
+            )
+            .map((envelope) => envelope.runId as string),
+        ),
+      ];
+      const otherWriter = folderWriter(thread.workspaceRoot);
+      if (
+        cutRunIds.length > 0 &&
+        otherWriter &&
+        otherWriter.threadId !== threadId
+      ) {
+        return reject(
+          'busy',
+          'Another thread is running in this folder, so files cannot be restored now. Wait for it to finish, or keep the files.',
+          otherWriter.runId,
+        );
+      }
+      if (cutRunIds.length > 0) {
+        try {
+          restore = await revertRuns({
+            agentHome: getAgentHome(),
+            root: thread.workspaceRoot,
+            runIds: cutRunIds,
+          });
+        } catch (error) {
+          return reject(
+            'invalid',
+            `Files were not restored: ${error instanceof Error ? error.message : String(error)} Nothing was changed; send again and keep the files to go on.`,
+          );
+        }
+      }
+    }
     await store.rewind(threadId, rewindThroughSeq);
     await rewindLearningCursor(threadId, rewindThroughSeq);
   }
@@ -186,7 +261,9 @@ async function startClaimedRun(
   // Before the user row is written, so a refusal leaves the ledger as it was.
   if (
     imageAttachments(message?.attachments).length > 0 ||
-    ledgerBefore.some((envelope) => imageAttachments(envelope.attachments).length > 0)
+    ledgerBefore.some(
+      (envelope) => imageAttachments(envelope.attachments).length > 0,
+    )
   ) {
     try {
       const config = await getOllamaModelConfig(useModel, endpoint);
@@ -318,13 +395,18 @@ async function startClaimedRun(
   // Writes are chained so an older snapshot never lands after a newer one
   // (each write replaces this run's record in the file).
   let recordWrites: Promise<void> = Promise.resolve();
-  const saveTaskRecord = (task: Parameters<typeof taskRecordFromRun>[1]): void => {
+  const saveTaskRecord = (
+    task: Parameters<typeof taskRecordFromRun>[1],
+  ): void => {
     const record = taskRecordFromRun(runId, task);
     if (!record) return;
     recordWrites = recordWrites
       .then(() => store.appendTaskRecord(threadId, record))
       .catch((error: unknown) => {
-        console.error('appendTaskRecord failed:', error instanceof Error ? error.message : error);
+        console.error(
+          'appendTaskRecord failed:',
+          error instanceof Error ? error.message : error,
+        );
       });
   };
 
@@ -334,114 +416,137 @@ async function startClaimedRun(
     lastRunFrom({ runId, outcome: 'interrupted', iterations: 0, toolCalls: 0 }),
   );
 
-  claim.start({
-    model: useModel,
-    messages: prepared.messages,
-    tools: prepared.tools,
-    modelCall,
-    limits: prepared.mode.limits,
-    mode: prepared.mode.name,
-    posture: prepared.posture,
-    estimatedPromptTokens: prepared.report.occupiedTokens,
-    contextReport: prepared.report,
-    contextBudget: prepared.report.budget,
-    flags: prepared.flags,
-    modelSettings,
-    ...(thread.workspaceRoot ? { workspaceRoot: thread.workspaceRoot } : {}),
-    putBlob: (text) => store.putBlob(threadId, text),
-    // Every model call's exact input/output, for the eval viewer. Off: AGENT_RECORD_MODEL_CALLS=0.
-    recordCalls: process.env.AGENT_RECORD_MODEL_CALLS !== '0',
-    readBlob: (sha256, offset, length) =>
-      store.readBlobText(threadId, sha256, offset, length),
-    onMessage: async (record, meta) => {
-      if (record.role === 'system') return;
-      await store.append({
-        threadId,
-        runId,
-        record,
-        ...(meta ? { meta } : {}),
-      });
-    },
-    hasOpenPlanWork: async () =>
-      planHasOpenWork(await store.readPlan(threadId)),
-    isPlanScoped: async () => isPlanScoped(await store.readPlan(threadId)),
-    // Saved as it grows, so a run that dies keeps its findings.
-    onTaskRecord: (task) => saveTaskRecord(task),
-    // The loop binds the runner to this run (signal, budget, capabilities).
-    ...(isWorkspaceKind(thread.kind) && thread.workspaceRoot
-      ? {
-          subagents: createSubagentRunner({
-            runManager,
-            host: createSubagentHost({ store, endpoint, modelSettings }),
-          }),
-        }
-      : {}),
-    trace: threadTraceSink(store, threadId),
-    ...(skillNames.length > 0 ? { pinnedSkills: skillNames } : {}),
-    ...(capacity ? { capacity } : {}),
-    ...(system1 ? { system1 } : {}),
-    effortPolicy,
-    webTrust: webTrustFromLedger(envelopes),
-  }, {
-    onFinished: async (result, outcome) => {
-      // Not awaited: the balance read after a run must not delay compaction.
-      void appendUsageLog(getAgentHome(), {
-        runId: result.runId,
-        threadId,
-        model: useModel,
-        endpoint,
-        status: result.status,
-        ...(result.limitReason ? { limitReason: result.limitReason } : {}),
-        usage: result.usage,
-        balanceBefore,
-      });
-      try {
-        await store.writeLastRun(
+  // Last step before the run: nothing below can refuse it, and no tool runs
+  // before this snapshot exists. A failed snapshot is logged and the run goes
+  // on without undo (the Changes view then says no snapshot exists).
+  const agentHome = getAgentHome();
+  if (checkpointRoot)
+    await checkpointBefore({
+      agentHome,
+      root: checkpointRoot,
+      runId,
+      threadId,
+    });
+  const codeVersion = await harnessVersion();
+
+  claim.start(
+    {
+      model: useModel,
+      messages: prepared.messages,
+      tools: prepared.tools,
+      modelCall,
+      limits: prepared.mode.limits,
+      mode: prepared.mode.name,
+      posture: prepared.posture,
+      estimatedPromptTokens: prepared.report.occupiedTokens,
+      contextReport: prepared.report,
+      contextBudget: prepared.report.budget,
+      flags: prepared.flags,
+      ...(codeVersion ? { harnessVersion: codeVersion } : {}),
+      modelSettings,
+      ...(thread.workspaceRoot ? { workspaceRoot: thread.workspaceRoot } : {}),
+      putBlob: (text) => store.putBlob(threadId, text),
+      // Every model call's exact input/output, for the eval viewer. Off: AGENT_RECORD_MODEL_CALLS=0.
+      recordCalls: process.env.AGENT_RECORD_MODEL_CALLS !== '0',
+      readBlob: (sha256, offset, length) =>
+        store.readBlobText(threadId, sha256, offset, length),
+      onMessage: async (record, meta) => {
+        if (record.role === 'system') return;
+        await store.append({
           threadId,
-          lastRunFrom({
-            runId,
-            outcome,
-            iterations: result.iterations,
-            toolCalls: result.toolCalls,
-            ...(result.limitReason ? { limitReason: result.limitReason } : {}),
-            // Keeps the System 1 notice across a reload (the SSE event is live-only).
-            ...(system1 ? { system1: system1.report() } : {}),
-          }),
-        );
-      } catch (error) {
-        console.error(
-          'writeLastRun failed:',
-          error instanceof Error ? error.message : error,
-        );
-      }
-      // The run's findings outlive it: later runs of the thread see them in
-      // their prompt prefix (a rewind that cuts this run drops them). The
-      // final record goes after any save still in flight, so it is the last.
-      saveTaskRecord(result.task);
-      await recordWrites;
-      // Restarts the idle timer; the review runs once the thread goes quiet.
-      scheduleLearningReview({
-        threadId,
-        model: useModel,
-        endpoint,
-        enabled: prepared.flags.learningLoop,
-        modelSettings,
-      });
-      // A cancelled run leaves compaction to the next run's pre-run pass, so
-      // nothing it writes can race that run's rewind.
-      if (outcome === 'cancelled' || !result.contextReport) return;
-      await maybeCompactThread({
-        store,
-        threadId,
-        runId,
-        model: useModel,
-        endpoint,
-        flags: prepared.flags,
-        report: result.contextReport,
-        modelSettings,
-      });
+          runId,
+          record,
+          ...(meta ? { meta } : {}),
+        });
+      },
+      hasOpenPlanWork: async () =>
+        planHasOpenWork(await store.readPlan(threadId)),
+      isPlanScoped: async () => isPlanScoped(await store.readPlan(threadId)),
+      // Saved as it grows, so a run that dies keeps its findings.
+      onTaskRecord: (task) => saveTaskRecord(task),
+      // The loop binds the runner to this run (signal, budget, capabilities).
+      ...(isWorkspaceKind(thread.kind) && thread.workspaceRoot
+        ? {
+            subagents: createSubagentRunner({
+              runManager,
+              host: createSubagentHost({ store, endpoint, modelSettings }),
+            }),
+          }
+        : {}),
+      trace: threadTraceSink(store, threadId),
+      ...(skillNames.length > 0 ? { pinnedSkills: skillNames } : {}),
+      ...(capacity ? { capacity } : {}),
+      ...(system1 ? { system1 } : {}),
+      effortPolicy,
+      webTrust: webTrustFromLedger(envelopes),
     },
-  });
+    {
+      onFinished: async (result, outcome) => {
+        // First, so the run's changes are readable once the run has settled,
+        // and the folder is free for the next writer (whatever the outcome).
+        if (checkpointRoot)
+          await checkpointAfter({ agentHome, root: checkpointRoot, runId });
+        // Not awaited: the balance read after a run must not delay compaction.
+        void appendUsageLog(agentHome, {
+          runId: result.runId,
+          threadId,
+          model: useModel,
+          endpoint,
+          status: result.status,
+          ...(result.limitReason ? { limitReason: result.limitReason } : {}),
+          usage: result.usage,
+          balanceBefore,
+        });
+        try {
+          await store.writeLastRun(
+            threadId,
+            lastRunFrom({
+              runId,
+              outcome,
+              iterations: result.iterations,
+              toolCalls: result.toolCalls,
+              ...(result.limitReason
+                ? { limitReason: result.limitReason }
+                : {}),
+              // Keeps the System 1 notice across a reload (the SSE event is live-only).
+              ...(system1 ? { system1: system1.report() } : {}),
+            }),
+          );
+        } catch (error) {
+          console.error(
+            'writeLastRun failed:',
+            error instanceof Error ? error.message : error,
+          );
+        }
+        // The run's findings outlive it: later runs of the thread see them in
+        // their prompt prefix (a rewind that cuts this run drops them). The
+        // final record goes after any save still in flight, so it is the last.
+        saveTaskRecord(result.task);
+        await recordWrites;
+        // Restarts the idle timer; the review runs once the thread goes quiet.
+        scheduleLearningReview({
+          threadId,
+          model: useModel,
+          endpoint,
+          enabled: prepared.flags.learningLoop,
+          modelSettings,
+        });
+        // A cancelled run leaves compaction to the next run's pre-run pass, so
+        // nothing it writes can race that run's rewind.
+        if (outcome === 'cancelled' || !result.contextReport) return;
+        await maybeCompactThread({
+          store,
+          threadId,
+          runId,
+          model: useModel,
+          endpoint,
+          flags: prepared.flags,
+          report: result.contextReport,
+          modelSettings,
+        });
+      },
+    },
+  );
 
   runManager.publish(runId, {
     type: 'plan.updated',
@@ -452,8 +557,15 @@ async function startClaimedRun(
   if (preRunSnapshot) emitCompacted(store, runId, threadId, preRunSnapshot);
 
   if (isFirstUserTurn && message) {
-    titleNewThread(store, threadId, message.content || 'Image chat', useModel, endpoint, modelSettings);
+    titleNewThread(
+      store,
+      threadId,
+      message.content || 'Image chat',
+      useModel,
+      endpoint,
+      modelSettings,
+    );
   }
 
-  return { ok: true, runId };
+  return { ok: true, runId, ...(restore ? { restore } : {}) };
 }
