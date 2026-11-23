@@ -278,6 +278,7 @@ export function MessageList({
                   latestUserMessageId={latestUserMessageId}
                   plan={chatState.plan}
                   pendingChoice={isLastTurn ? pendingChoice : null}
+                  hasPendingChoice={pendingChoice !== null}
                   onResolveChoice={onResolveChoice}
                   limitNotice={chatState.limitNotice}
                   transcriptBusy={transcriptBusy}
@@ -500,6 +501,8 @@ type TurnViewProps = {
   plan: ThreadPlan | null;
   /** Open question for this turn (last turn only), rendered inline. */
   pendingChoice: PendingChoice | null;
+  /** Keep earlier turns laid out while a choice is being interacted with. */
+  hasPendingChoice: boolean;
   onResolveChoice: ChoiceResolver | undefined;
   limitNotice: LimitNotice | null;
   transcriptBusy: boolean;
@@ -525,6 +528,7 @@ const TurnView = memo(function TurnView({
   latestUserMessageId,
   plan,
   pendingChoice,
+  hasPendingChoice,
   onResolveChoice,
   limitNotice,
   transcriptBusy,
@@ -605,7 +609,9 @@ const TurnView = memo(function TurnView({
       className="flex flex-col gap-3.5 scroll-mt-6"
       aria-label="Conversation turn"
       style={
-        isLastTurn
+        // Skip estimated heights while a choice is open: focusing / clicking
+        // options would otherwise remeasure skipped turns and jump the scroll.
+        isLastTurn || hasPendingChoice
           ? undefined
           : {
               contentVisibility: 'auto',

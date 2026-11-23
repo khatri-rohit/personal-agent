@@ -75,7 +75,7 @@ export function ChoiceCard({
         requestAnimationFrame(() => {
           const el = noteRef.current;
           if (!el) return;
-          el.focus();
+          el.focus({ preventScroll: true });
           el.setSelectionRange(el.value.length, el.value.length);
         });
       },
@@ -167,6 +167,9 @@ export function ChoiceCard({
                   ? 'border-primary/50 bg-primary/5 text-foreground'
                   : 'border-border/60 text-[var(--reading-foreground)] hover:border-border hover:bg-accent/40',
               )}
+              // Keep native label activation, but do not focus the hidden input
+              // on pointer down: focus would scroll the transcript to the input.
+              onMouseDown={(event) => event.preventDefault()}
             >
               <input
                 type="checkbox"
