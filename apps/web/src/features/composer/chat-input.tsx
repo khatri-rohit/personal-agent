@@ -14,7 +14,6 @@ import {
   ImagePlus,
   Pencil,
   Plus,
-  Settings2,
   Square,
   X,
 } from 'lucide-react';
@@ -98,11 +97,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import { useThreads } from '@/features/conversation/use-agent-run';
 import { useAgentSpace } from '@/features/threads/space-store';
@@ -132,7 +126,8 @@ function composerPlaceholder(opts: {
 }): string {
   if (opts.voiceActive) return 'Listening… speech appends here';
   if (opts.voiceTranscribing) return 'Transcribing…';
-  if (opts.choicePending) return 'Answer the question above — text you send here becomes its note';
+  if (opts.choicePending)
+    return 'Answer the question above — text you send here becomes its note';
   if (opts.isHero) return 'Ask anything to start…';
   return 'Send a follow-up…';
 }
@@ -203,7 +198,6 @@ export function ChatInput({
   );
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
-  const [runSettingsOpen, setRunSettingsOpen] = useState(false);
   const [thinkingPickerOpen, setThinkingPickerOpen] = useState(false);
   const [skillSlashOpen, setSkillSlashOpen] = useState(false);
   const [skillSlashQuery, setSkillSlashQuery] = useState('');
@@ -401,11 +395,11 @@ export function ChatInput({
   // highlight immediately; not keyed on picker open.
   useEffect(() => {
     let cancelled = false;
-    void fetchSkillCatalogs()
+    void fetchSkillCatalogs(threadId)
       .then((catalogs) => {
         if (cancelled) return;
         setSkillCatalog(
-          [...catalogs.builtin, ...catalogs.user].filter(
+          [...catalogs.builtin, ...catalogs.user, ...catalogs.workspace].filter(
             (skill) => !skill.issue,
           ),
         );
@@ -416,7 +410,7 @@ export function ChatInput({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [threadId]);
 
   const addFiles = useCallback(
     async (files: File[]) => {
@@ -844,7 +838,6 @@ export function ChatInput({
       } else if (e.key === '.') {
         if (!thinkingSupportedRef.current) return;
         e.preventDefault();
-        setRunSettingsOpen(true);
         setThinkingPickerOpen(true);
       } else if (e.key === '/') {
         e.preventDefault();
@@ -995,63 +988,30 @@ export function ChatInput({
         open={modelPickerOpen}
         onOpenChange={setModelPickerOpen}
       />
-      <Popover
-        open={runSettingsOpen}
-        onOpenChange={(open) => {
-          setRunSettingsOpen(open);
-          if (!open) setThinkingPickerOpen(false);
-        }}
-      >
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="ml-0.5 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
-                aria-label="Run settings"
-              >
-                <Settings2 className="size-4" strokeWidth={1.75} />
-              </Button>
-            </PopoverTrigger>
-          </TooltipTrigger>
-          <TooltipContent>Run settings</TooltipContent>
-        </Tooltip>
-        <PopoverContent align="start" side="top" className="w-72 bg-card p-3 shadow-lg">
-          <div className="mb-2">
-            <p className="type-ui font-medium">Run settings</p>
-            <p className="type-caption text-muted-foreground">
-              Advanced options for the next message.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-1">
-            {modelConfig?.thinking.supported ? (
-              <ThinkingPicker
-                thinking={modelConfig.thinking}
-                value={composerOptions.thinking}
-                onChange={(thinking) =>
-                  onComposerOptionsChange({ ...composerOptions, thinking })
-                }
-                disabled={isRunning}
-                autoAvailable={modelConfig.system1Auto === true}
-                open={thinkingPickerOpen}
-                onOpenChange={setThinkingPickerOpen}
-              />
-            ) : null}
-            <ContextWindowPicker
-              modelMax={modelConfig?.contextLength}
-              value={composerOptions.contextWindowMode}
-              onChange={(contextWindowMode) => {
-                writeStoredContextWindowMode(contextWindowMode);
-                onComposerOptionsChange({ ...composerOptions, contextWindowMode });
-              }}
-              disabled={isRunning}
-            />
-          </div>
-
-        </PopoverContent>
-      </Popover>
+      <span className="ml-0.5 flex items-center gap-0.5 border-l border-border pl-1.5">
+        {modelConfig?.thinking.supported ? (
+          <ThinkingPicker
+            thinking={modelConfig.thinking}
+            value={composerOptions.thinking}
+            onChange={(thinking) =>
+              onComposerOptionsChange({ ...composerOptions, thinking })
+            }
+            disabled={isRunning}
+            autoAvailable={modelConfig.system1Auto === true}
+            open={thinkingPickerOpen}
+            onOpenChange={setThinkingPickerOpen}
+          />
+        ) : null}
+        <ContextWindowPicker
+          modelMax={modelConfig?.contextLength}
+          value={composerOptions.contextWindowMode}
+          onChange={(contextWindowMode) => {
+            writeStoredContextWindowMode(contextWindowMode);
+            onComposerOptionsChange({ ...composerOptions, contextWindowMode });
+          }}
+          disabled={isRunning}
+        />
+      </span>
     </>
   );
 
@@ -1374,9 +1334,12 @@ export function ChatInput({
             {voice.error}
           </p>
         ) : null}
-
       </div>
-      <SkillsPanel open={skillsOpen} onOpenChange={setSkillsOpen} />
+      <SkillsPanel
+        open={skillsOpen}
+        onOpenChange={setSkillsOpen}
+        threadId={threadId}
+      />
     </div>
   );
 }

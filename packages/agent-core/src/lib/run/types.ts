@@ -3,6 +3,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import type { RunOutcome } from '@agent/agent-models';
 
 import type { ModelCallFn, RunLoopConfig, RunLoopResult } from '../loop/types';
+import type { SkillRoot } from '../tools/skills';
 import type { ToolRegistry } from '../tools/types';
 
 export type ResolveChoiceResult = 'ok' | 'not_found' | 'invalid';
@@ -44,6 +45,8 @@ export type StartRunOptions = Omit<
   messages: ChatCompletionMessageParam[];
   tools: ToolRegistry;
   modelCall: ModelCallFn;
+  /** Bound-workspace skill roots; later names win over process roots. */
+  skillRoots?: SkillRoot[];
 };
 
 /** The run's lifecycle around the loop (not loop config). */

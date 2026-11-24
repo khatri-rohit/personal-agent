@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -7,11 +8,13 @@ import type { Skill, SkillMetadata, Tool } from './types';
 
 /**
  * Built-in packs: packages/agent-core/skills/<name>/SKILL.md.
- * Host passes extra roots (`~/.agents/skills`, `$AGENT_HOME/skills`).
- * Only spec-valid skills are loadable; user names cannot replace built-ins.
+ * Host roots, lowest to highest: builtin, ~/.agents/skills, $AGENT_HOME/skills,
+ * then a bound workspace's .agents/skills (per run, via runWithSkillRoots).
+ * Same name: later root wins. load_skill is in Home and Workspace; the model
+ * self-invokes from the catalog.
  */
 
-export type SkillScope = 'builtin' | 'user';
+export type SkillScope = 'builtin' | 'user' | 'workspace';
 
 export type SkillRoot = {
   scope: SkillScope;
@@ -40,6 +43,30 @@ export function isSpecSkillName(name: string): boolean {
 }
 
 let configuredRoots: SkillRoot[] | null = null;
+const extraRoots = new AsyncLocalStorage<SkillRoot[]>();
+
+/** Bound-folder packs: `<workspace>/.agents/skills`. Empty when unbound (Home). */
+export function extraSkillRoots(workspaceRoot?: string): SkillRoot[] {
+  if (!workspaceRoot) return [];
+  return [
+    {
+      scope: 'workspace',
+      path: path.join(workspaceRoot, '.agents', 'skills'),
+    },
+  ];
+}
+
+/** Later roots in `extra` beat process roots on the same skill name. */
+export function runWithSkillRoots<T>(extra: SkillRoot[], fn: () => T): T {
+  if (extra.length === 0) return fn();
+  return extraRoots.run(
+    extra.map((root) => ({
+      scope: root.scope,
+      path: path.resolve(root.path),
+    })),
+    fn,
+  );
+}
 
 export function resolveSkillsRoot(): string {
   const starts = [process.cwd()];
@@ -72,7 +99,9 @@ function defaultRoots(): SkillRoot[] {
 }
 
 function roots(): SkillRoot[] {
-  return configuredRoots ?? defaultRoots();
+  const base = configuredRoots ?? defaultRoots();
+  const extra = extraRoots.getStore();
+  return extra && extra.length > 0 ? [...base, ...extra] : base;
 }
 
 /** `null` restores the built-in root only (tests). */
@@ -182,43 +211,34 @@ function assemble(): {
   listings: SkillCatalogEntry[];
 } {
   const raw = roots().flatMap((root) => readRoot(root.path, root.scope));
-  const builtinNames = new Set(
-    raw
-      .filter((row) => row.source === 'builtin' && !row.invalid)
-      .map((row) => row.skill.name),
-  );
-  const userNameCounts = new Map<string, number>();
-  for (const row of raw) {
-    if (row.source !== 'user' || row.invalid) continue;
-    userNameCounts.set(
-      row.skill.name,
-      (userNameCounts.get(row.skill.name) ?? 0) + 1,
-    );
-  }
-
   const listings: SkillCatalogEntry[] = [];
-  const loadable: Skill[] = [];
+  const winnerAt = new Map<string, number>();
+  const loadableByName = new Map<string, Skill>();
+
   for (const row of raw) {
-    let issue: SkillIssue | undefined;
-    if (row.invalid) issue = 'invalid';
-    else if (row.source === 'user' && builtinNames.has(row.skill.name)) {
-      issue = 'conflict';
-    } else if (
-      row.source === 'user' &&
-      (userNameCounts.get(row.skill.name) ?? 0) > 1
-    ) {
-      issue = 'conflict';
-    }
-    listings.push({
+    const entry: SkillCatalogEntry = {
       name: row.skill.name,
       description: row.skill.description,
       folder: row.folder,
       source: row.source,
-      ...(issue ? { issue } : {}),
-    });
-    if (!issue) loadable.push(row.skill);
+    };
+    if (row.invalid) {
+      listings.push({ ...entry, issue: 'invalid' });
+      continue;
+    }
+    const prev = winnerAt.get(row.skill.name);
+    if (prev !== undefined) {
+      listings[prev] = { ...listings[prev], issue: 'conflict' };
+      loadableByName.delete(row.skill.name);
+    }
+    winnerAt.set(row.skill.name, listings.length);
+    listings.push(entry);
+    loadableByName.set(row.skill.name, row.skill);
   }
-  loadable.sort((a, b) => a.name.localeCompare(b.name));
+
+  const loadable = [...loadableByName.values()].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
   listings.sort((a, b) => a.name.localeCompare(b.name));
   return { loadable, listings };
 }
@@ -231,7 +251,7 @@ export function listSkills(): SkillMetadata[] {
   return catalog().map(({ name, description }) => ({ name, description }));
 }
 
-/** Raw SKILL.md from the first configured root that has this folder. */
+/** Raw SKILL.md from the highest-precedence root that has this folder. */
 export function readSkillFile(folder: string): string | null {
   if (
     !folder ||
@@ -241,7 +261,7 @@ export function readSkillFile(folder: string): string | null {
   ) {
     return null;
   }
-  for (const root of roots()) {
+  for (const root of [...roots()].reverse()) {
     const file = path.join(root.path, folder, 'SKILL.md');
     const rel = path.relative(root.path, file);
     if (rel.startsWith('..') || path.isAbsolute(rel)) continue;
@@ -447,11 +467,13 @@ export function formatSkillsCatalog(skills: SkillMetadata[]): string {
 export function listSkillCatalogs(): {
   builtin: SkillCatalogEntry[];
   user: SkillCatalogEntry[];
+  workspace: SkillCatalogEntry[];
 } {
   const listings = assemble().listings;
   return {
     builtin: listings.filter((entry) => entry.source === 'builtin'),
     user: listings.filter((entry) => entry.source === 'user'),
+    workspace: listings.filter((entry) => entry.source === 'workspace'),
   };
 }
 

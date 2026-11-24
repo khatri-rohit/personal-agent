@@ -7,6 +7,7 @@ import type { ToolContext } from '@agent/agent-models';
 
 import {
   configureSkillRoots,
+  extraSkillRoots,
   formatSkillBodies,
   formatSkillsCatalog,
   getSkill,
@@ -14,6 +15,7 @@ import {
   listSkills,
   load_skill,
   parseSkillMarkdown,
+  runWithSkillRoots,
   type ParsedSkill,
 } from './skills';
 import type { SkillMetadata } from './types';
@@ -179,7 +181,7 @@ describe('skill catalog roots', () => {
       'caveman-review',
       'ok-pack',
     ]);
-    expect(getSkill('caveman-review')?.description).toBe('Built-in review.');
+    expect(getSkill('caveman-review')?.description).toBe('Shadow attempt.');
     expect(getSkill('ok-pack')?.instructions).toContain('Do the thing.');
 
     const { builtin: builtList, user: userList } = listSkillCatalogs();
@@ -188,19 +190,19 @@ describe('skill catalog roots', () => {
         name: 'caveman-review',
         folder: 'caveman-review',
         source: 'builtin',
+        issue: 'conflict',
       }),
     ]);
-    expect(builtList[0]?.issue).toBeUndefined();
     expect(userList.find((s) => s.folder === 'ok-pack')?.issue).toBeUndefined();
     expect(userList.find((s) => s.folder === 'caveman-review')?.issue).toBe(
-      'conflict',
+      undefined,
     );
     expect(userList.find((s) => s.folder === 'BadFolder')?.issue).toBe(
       'invalid',
     );
   });
 
-  it('marks duplicate user names as conflict and loads neither', () => {
+  it('lets a later user root win a duplicate name', () => {
     const builtin = tmp();
     const agents = tmp();
     const home = tmp();
@@ -224,10 +226,48 @@ describe('skill catalog roots', () => {
       { scope: 'user', path: agents },
       { scope: 'user', path: home },
     ]);
-    expect(listSkills().map((s) => s.name)).toEqual(['keep-me']);
-    expect(
-      listSkillCatalogs().user.every((s) => s.name === 'dup' && s.issue === 'conflict'),
-    ).toBe(true);
+    expect(listSkills().map((s) => s.name).sort()).toEqual(['dup', 'keep-me']);
+    expect(getSkill('dup')?.description).toBe('From home.');
+    const dups = listSkillCatalogs().user.filter((s) => s.name === 'dup');
+    expect(dups).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ description: 'From agents.', issue: 'conflict' }),
+        expect.objectContaining({ description: 'From home.' }),
+      ]),
+    );
+    expect(dups.find((s) => s.description === 'From home.')?.issue).toBeUndefined();
+  });
+
+  it('lets a workspace pack beat a user pack of the same name', () => {
+    const builtin = tmp();
+    const user = tmp();
+    const project = tmp();
+    writeSkill(
+      builtin,
+      'review',
+      '---\nname: review\ndescription: Built-in review.\n---\n\nB.\n',
+    );
+    writeSkill(
+      user,
+      'review',
+      '---\nname: review\ndescription: User review.\n---\n\nU.\n',
+    );
+    writeSkill(
+      path.join(project, '.agents', 'skills'),
+      'review',
+      '---\nname: review\ndescription: Workspace review.\n---\n\nW.\n',
+    );
+    configureSkillRoots([
+      { scope: 'builtin', path: builtin },
+      { scope: 'user', path: user },
+    ]);
+    runWithSkillRoots(extraSkillRoots(project), () => {
+      expect(getSkill('review')?.description).toBe('Workspace review.');
+      expect(listSkillCatalogs().builtin[0]?.issue).toBe('conflict');
+      expect(listSkillCatalogs().user[0]?.issue).toBe('conflict');
+      expect(listSkillCatalogs().workspace[0]?.issue).toBeUndefined();
+    });
+    expect(getSkill('review')?.description).toBe('User review.');
   });
 
   it('sees a skill added after configure without a restart', () => {

@@ -167,26 +167,33 @@ export function ChoiceCard({
                   ? 'border-primary/50 bg-primary/5 text-foreground'
                   : 'border-border/60 text-[var(--reading-foreground)] hover:border-border hover:bg-accent/40',
               )}
-              // Keep native label activation, but do not focus the hidden input
-              // on pointer down: focus would scroll the transcript to the input.
+              // Keep native label activation, but do not focus the checkbox
+              // on pointer down: focus would scroll the transcript.
               onMouseDown={(event) => event.preventDefault()}
             >
-              <input
-                type="checkbox"
-                className="peer sr-only"
-                checked={checked}
-                onChange={() => toggle(option.id)}
-              />
+              {/* The checkbox is the real control: it fills the visible box
+                  and is positioned inside it, so its containing block is
+                  that box. A clipped, absolutely positioned input (sr-only)
+                  resolved its containing block against the transcript, so
+                  focusing it could scroll the conversation by an arbitrary
+                  amount. */}
               <span
                 className={cn(
-                  'mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border transition-colors',
+                  'relative mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border transition-colors',
                   checked
                     ? 'border-primary bg-primary text-primary-foreground'
                     : 'border-border/70 bg-background',
                 )}
-                aria-hidden
               >
-                {checked ? <Check className="size-3" strokeWidth={2.5} /> : null}
+                <input
+                  type="checkbox"
+                  className="absolute inset-0 size-full opacity-0"
+                  checked={checked}
+                  onChange={() => toggle(option.id)}
+                />
+                {checked ? (
+                  <Check className="size-3" strokeWidth={2.5} aria-hidden />
+                ) : null}
               </span>
               <span className="min-w-0 flex-1">{option.label}</span>
               {i < 9 ? (

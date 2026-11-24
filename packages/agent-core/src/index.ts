@@ -7,8 +7,10 @@
 // Skills
 export {
   configureSkillRoots,
+  extraSkillRoots,
   isSpecSkillName,
   resolveSkillsRoot,
+  runWithSkillRoots,
   skillLintWarnings,
   getSkill,
   invalidateSkillCatalog,

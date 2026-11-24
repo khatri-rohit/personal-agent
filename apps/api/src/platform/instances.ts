@@ -33,6 +33,8 @@ let memoryStore: MemoryStore | undefined;
 
 export function getAgentHome(): string {
   const dir = home();
+  // Lowest to highest: builtin, ~/.agents/skills, $AGENT_HOME/skills.
+  // A bound workspace's .agents/skills is overlaid per run.
   configureSkillRoots([
     { scope: 'builtin', path: resolveSkillsRoot() },
     ...userSkillDirectories(dir).map((skillPath) => ({

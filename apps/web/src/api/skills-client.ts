@@ -4,13 +4,14 @@ export type SkillCatalogItem = {
   name: string;
   description: string;
   folder: string;
-  source: 'builtin' | 'user';
+  source: 'builtin' | 'user' | 'workspace';
   issue?: 'invalid' | 'conflict';
 };
 
 export type SkillCatalogs = {
   builtin: SkillCatalogItem[];
   user: SkillCatalogItem[];
+  workspace: SkillCatalogItem[];
 };
 
 async function readJson<T>(res: Response): Promise<T> {
@@ -21,9 +22,23 @@ async function readJson<T>(res: Response): Promise<T> {
   return body;
 }
 
-export async function fetchSkillCatalogs(): Promise<SkillCatalogs> {
-  const res = await fetch(`${API_BASE}/api/agent/skills`);
-  return readJson<SkillCatalogs>(res);
+function asCatalogs(raw: SkillCatalogs): SkillCatalogs {
+  return {
+    builtin: raw.builtin,
+    user: raw.user,
+    workspace: raw.workspace ?? [],
+  };
+}
+
+export async function fetchSkillCatalogs(
+  threadId?: string,
+): Promise<SkillCatalogs> {
+  const query =
+    threadId && threadId.length > 0
+      ? `?threadId=${encodeURIComponent(threadId)}`
+      : '';
+  const res = await fetch(`${API_BASE}/api/agent/skills${query}`);
+  return asCatalogs(await readJson<SkillCatalogs>(res));
 }
 
 /** Save a hand-authored SKILL.md under the home skills folder. */
@@ -36,7 +51,7 @@ export async function createUserSkill(input: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   });
-  return readJson<SkillCatalogs>(res);
+  return asCatalogs(await readJson<SkillCatalogs>(res));
 }
 
 export async function deleteUserSkill(folder: string): Promise<SkillCatalogs> {
@@ -44,5 +59,5 @@ export async function deleteUserSkill(folder: string): Promise<SkillCatalogs> {
     `${API_BASE}/api/agent/skills/${encodeURIComponent(folder)}`,
     { method: 'DELETE' },
   );
-  return readJson<SkillCatalogs>(res);
+  return asCatalogs(await readJson<SkillCatalogs>(res));
 }

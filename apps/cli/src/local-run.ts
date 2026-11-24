@@ -17,8 +17,10 @@ import {
   createInMemoryPlanStore,
   createPlanTools,
   createRunToolset,
+  extraSkillRoots,
   getOllamaModelConfig,
   loadWorkspaceRules,
+  runWithSkillRoots,
   type AgentLimits,
   type ModelCallFn,
   type RunEnd,
@@ -68,7 +70,9 @@ export async function runLocally(input: {
   const rules = workspaceRoot
     ? await loadWorkspaceRules(workspaceRoot)
     : { agentsMd: '', project: '' };
-  const { messages, report } = assembleContext({
+  const skillRoots = extraSkillRoots(workspaceRoot);
+  const { messages, report } = runWithSkillRoots(skillRoots, () =>
+    assembleContext({
     tools,
     memory: {
       user: '',
@@ -90,7 +94,8 @@ export async function runLocally(input: {
     ],
     mode: mode.name,
     posture,
-  }, await resolveBudget(input.model));
+  }, await resolveBudget(input.model)),
+  );
 
   const claimed = runs.claim(`local-${Date.now()}`);
   if (!claimed.ok) throw new Error('local run could not claim its thread');
@@ -109,6 +114,7 @@ export async function runLocally(input: {
     hasOpenPlanWork: async () => planHasOpenWork(await planStore.read()),
     isPlanScoped: async () => isPlanScoped(await planStore.read()),
     ...(workspaceRoot ? { workspaceRoot } : {}),
+    ...(skillRoots.length > 0 ? { skillRoots } : {}),
     ...(input.trace ? { trace: input.trace } : {}),
   });
 

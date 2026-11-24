@@ -79,9 +79,14 @@ function withFolderName(content: string, folder: string): string {
 
 function listingForFolder(folder: string): SkillCatalogEntry | undefined {
   const catalogs = listSkillCatalogs();
+  const all = [
+    ...catalogs.workspace,
+    ...catalogs.user,
+    ...catalogs.builtin,
+  ];
   return (
-    catalogs.user.find((skill) => skill.folder === folder) ??
-    catalogs.builtin.find((skill) => skill.folder === folder)
+    all.find((skill) => skill.folder === folder && !skill.issue) ??
+    all.find((skill) => skill.folder === folder)
   );
 }
 
@@ -110,8 +115,13 @@ export async function deleteUserSkill(input: {
   const folderName = input.folderName.trim();
   assertFolderSegment(folderName);
   const listing = listingForFolder(folderName);
-  if (listing?.source === 'builtin' && !listing.issue) {
-    throw new SkillError('Built-in skills cannot be removed.', 403);
+  if (listing && listing.source !== 'user') {
+    throw new SkillError(
+      listing.source === 'builtin'
+        ? 'Built-in skills cannot be removed.'
+        : 'Workspace skills cannot be removed from this panel.',
+      403,
+    );
   }
   const roots = userSkillDirectories(
     input.agentHome,
@@ -145,17 +155,6 @@ export async function createUserSkill(input: {
       400,
     );
   }
-  const catalogs = listSkillCatalogs();
-  if (catalogs.builtin.some((skill) => !skill.issue && skill.name === name)) {
-    throw new SkillError(
-      `A built-in skill named "${name}" already exists.`,
-      409,
-    );
-  }
-  if (catalogs.user.some((skill) => !skill.issue && skill.name === name)) {
-    throw new SkillError(`A skill named "${name}" already exists.`, 409);
-  }
-
   const content = withFolderName(input.content, name);
   if (Buffer.byteLength(content, 'utf8') > MAX_SKILL_BYTES) {
     throw new SkillError('Skill is larger than 64 KB.', 413);

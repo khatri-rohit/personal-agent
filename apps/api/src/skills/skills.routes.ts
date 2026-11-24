@@ -1,7 +1,11 @@
 import { Router, type Request, type Response } from 'express';
-import { listSkillCatalogs } from '@agent/agent-core';
+import {
+  extraSkillRoots,
+  listSkillCatalogs,
+  runWithSkillRoots,
+} from '@agent/agent-core';
 
-import { getAgentHome } from '../platform/instances';
+import { getAgentHome, getThreadStore } from '../platform/instances';
 import { asyncRoute } from '../platform/http-errors';
 import {
   SkillError,
@@ -22,14 +26,20 @@ function fail(res: Response, error: unknown): void {
   });
 }
 
-router.get('/skills', (_req: Request, res: Response) => {
-  try {
+router.get(
+  '/skills',
+  asyncRoute(async (req: Request, res: Response) => {
     getAgentHome();
-    res.json(listSkillCatalogs());
-  } catch (error) {
-    fail(res, error);
-  }
-});
+    const threadId =
+      typeof req.query.threadId === 'string' ? req.query.threadId.trim() : '';
+    let extra = extraSkillRoots();
+    if (threadId) {
+      const store = await getThreadStore();
+      extra = extraSkillRoots(store.getThread(threadId)?.workspaceRoot);
+    }
+    res.json(runWithSkillRoots(extra, () => listSkillCatalogs()));
+  }),
+);
 
 router.post(
   '/skills/create',

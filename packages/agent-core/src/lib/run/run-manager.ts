@@ -14,6 +14,7 @@ import {
 } from '@agent/agent-models';
 import { runLoop } from '../loop/loop';
 import type { RunLoopResult } from '../loop/types';
+import { runWithSkillRoots, type SkillRoot } from '../tools/skills';
 import { EventEmitter } from '../events/emitter';
 import type { EventSubscriber } from '../events/types';
 import type {
@@ -52,6 +53,7 @@ type RunHandle = {
   pendingChoices: Map<string, PendingChoice>;
   model?: string;
   posture: RunPosture;
+  skillRoots: SkillRoot[];
   startedAt?: string;
   done: Promise<RunEnd>;
   settle: (end: RunEnd) => void;
@@ -104,6 +106,7 @@ export class RunManager {
       emitter: new EventEmitter(),
       pendingChoices: new Map(),
       posture: 'agent',
+      skillRoots: [],
       done: new Promise<RunEnd>((resolve) => {
         settle = resolve;
       }),
@@ -130,6 +133,7 @@ export class RunManager {
     handle.phase = 'running';
     handle.model = opts.model;
     handle.posture = opts.posture ?? 'agent';
+    handle.skillRoots = opts.skillRoots ?? [];
     handle.startedAt = new Date().toISOString();
 
     // A child run dies with its parent: parent cancel aborts this run too.
@@ -144,18 +148,20 @@ export class RunManager {
   }
 
   private async loop(handle: RunHandle, opts: StartRunOptions): Promise<RunLoopResult> {
-    const { messages, tools, modelCall, ...config } = opts;
+    const { messages, tools, modelCall, skillRoots: _skillRoots, ...config } = opts;
     try {
-      return await runLoop(modelCall, messages, tools, {
-        ...config,
-        runId: handle.runId,
-        threadId: handle.threadId,
-        posture: handle.posture,
-        signal: handle.abortController.signal,
-        // offer_choice pause; write/exec tools do not go through this hook.
-        offerChoice: (request) => this.requestChoice(handle, request),
-        emit: (event) => this.gate(handle, event),
-      });
+      const invoke = () =>
+        runLoop(modelCall, messages, tools, {
+          ...config,
+          runId: handle.runId,
+          threadId: handle.threadId,
+          posture: handle.posture,
+          signal: handle.abortController.signal,
+          // offer_choice pause; write/exec tools do not go through this hook.
+          offerChoice: (request) => this.requestChoice(handle, request),
+          emit: (event) => this.gate(handle, event),
+        });
+      return await runWithSkillRoots(handle.skillRoots, invoke);
     } catch (err) {
       return emptyResult(
         handle.runId,

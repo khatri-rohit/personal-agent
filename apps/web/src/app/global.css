@@ -227,9 +227,10 @@ button.trail-line:focus-visible {
   min-width: 0;
 }
 
-/* Conversation rail: off the reading column's left edge, not against it. */
+/* Conversation rail: pinned at the panel's left edge, level with the header
+   title (px-5). It expands rightward on hover across the free margin. */
 .conversation-rail {
-  left: max(1.25rem, calc(50% - var(--reading-column) / 2 - 3rem));
+  left: 1.25rem;
 }
 
 /* Breadcrumb ancestors: quiet until hovered, so the thread name leads. */

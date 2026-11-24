@@ -60,15 +60,25 @@ function OriginBadge({ skill }: { skill: SkillCatalogItem }) {
   if (skill.issue === 'conflict') {
     return (
       <Badge variant="outline" className="shrink-0 font-normal">
-        Conflict
+        Shadowed
       </Badge>
     );
   }
-  return skill.source === 'builtin' ? (
-    <Badge variant="secondary" className="shrink-0 font-normal">
-      Built-in
-    </Badge>
-  ) : (
+  if (skill.source === 'builtin') {
+    return (
+      <Badge variant="secondary" className="shrink-0 font-normal">
+        Built-in
+      </Badge>
+    );
+  }
+  if (skill.source === 'workspace') {
+    return (
+      <Badge variant="outline" className="shrink-0 font-normal">
+        Workspace
+      </Badge>
+    );
+  }
+  return (
     <Badge variant="outline" className="shrink-0 font-normal">
       Yours
     </Badge>
@@ -142,14 +152,17 @@ function AddHint() {
 export function SkillsPanel({
   open,
   onOpenChange,
+  threadId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  threadId?: string;
 }) {
   const [tab, setTab] = useState<Tab>('catalog');
   const [catalogs, setCatalogs] = useState<SkillCatalogs>({
     builtin: [],
     user: [],
+    workspace: [],
   });
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -162,7 +175,7 @@ export function SkillsPanel({
     setLoading(true);
     setLoadError(null);
     try {
-      setCatalogs(await fetchSkillCatalogs());
+      setCatalogs(await fetchSkillCatalogs(threadId));
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : 'Could not load skills';
@@ -170,7 +183,7 @@ export function SkillsPanel({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [threadId]);
 
   useEffect(() => {
     if (!open) return;
@@ -187,7 +200,11 @@ export function SkillsPanel({
   const filteredUser = catalogs.user.filter((skill) =>
     matchesQuery(skill, query),
   );
-  const catalogCount = catalogs.builtin.length + catalogs.user.length;
+  const filteredWorkspace = catalogs.workspace.filter((skill) =>
+    matchesQuery(skill, query),
+  );
+  const catalogCount =
+    catalogs.builtin.length + catalogs.user.length + catalogs.workspace.length;
 
   async function handleDelete(folder: string) {
     setDeletingFolder(folder);
@@ -325,7 +342,8 @@ export function SkillsPanel({
                   <ScrollArea className="h-[min(48vh,22rem)] pr-2">
                     <div className="pb-1">
                       {filteredBuiltin.length === 0 &&
-                      filteredUser.length === 0 ? (
+                      filteredUser.length === 0 &&
+                      filteredWorkspace.length === 0 ? (
                         <div className="px-0.5 py-8 text-center">
                           <p className="text-sm text-muted-foreground">
                             {query
@@ -335,6 +353,27 @@ export function SkillsPanel({
                         </div>
                       ) : (
                         <div className="space-y-1">
+                          {filteredWorkspace.length > 0 ? (
+                            <section>
+                              <h3 className="sticky top-0 z-10 bg-popover px-2 pt-1 pb-1 text-xs font-medium text-muted-foreground">
+                                This workspace · {filteredWorkspace.length}
+                              </h3>
+                              <ul className="space-y-0.5">
+                                {filteredWorkspace.map((skill) => (
+                                  <CatalogRow
+                                    key={`workspace:${skill.folder}`}
+                                    skill={skill}
+                                    expanded={expanded.has(
+                                      `workspace:${skill.folder}`,
+                                    )}
+                                    onToggleExpand={() =>
+                                      toggleExpand(`workspace:${skill.folder}`)
+                                    }
+                                  />
+                                ))}
+                              </ul>
+                            </section>
+                          ) : null}
                           {filteredBuiltin.length > 0 ? (
                             <section>
                               <h3 className="sticky top-0 z-10 bg-popover px-2 pt-1 pb-1 text-xs font-medium text-muted-foreground">

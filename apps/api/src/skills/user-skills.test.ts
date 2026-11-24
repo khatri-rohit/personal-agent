@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { configureSkillRoots } from '@agent/agent-core';
+import { configureSkillRoots, listSkillCatalogs } from '@agent/agent-core';
 
 import {
   SkillError,
@@ -70,18 +70,18 @@ describe('user skills store', () => {
     expect(doc.content).toContain('Do the work.');
   });
 
-  it('refuses a reserved built-in name', async () => {
+  it('lets a user pack override a built-in name', async () => {
     const { home } = harness();
-    await expect(
-      createUserSkill({
-        agentHome: home,
-        name: 'keep-me',
-        content: '---\nname: keep-me\ndescription: Shadow.\n---\n\nNo.\n',
-      }),
-    ).rejects.toMatchObject({
-      name: 'SkillError',
-      status: 409,
-    } satisfies Partial<SkillError>);
+    await createUserSkill({
+      agentHome: home,
+      name: 'keep-me',
+      content: '---\nname: keep-me\ndescription: User override.\n---\n\nMine.\n',
+    });
+    const doc = await readSkillDocument({ folder: 'keep-me' });
+    expect(doc.source).toBe('user');
+    expect(doc.issue).toBeUndefined();
+    expect(doc.content).toContain('Mine.');
+    expect(listSkillCatalogs().builtin[0]?.issue).toBe('conflict');
   });
 
   it('refuses a name that is not spec-shaped', async () => {
