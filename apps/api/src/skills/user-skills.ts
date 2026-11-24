@@ -1,4 +1,4 @@
-import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -141,12 +141,14 @@ export async function deleteUserSkill(input: {
 
 /**
  * Write a hand-authored skill to `$AGENT_HOME/skills/<name>/SKILL.md`.
- * Refuses to overwrite: an existing folder may be an installed pack.
+ * Refuses a name that exists in either user root: an existing folder
+ * may be an installed pack.
  */
 export async function createUserSkill(input: {
   agentHome: string;
   name: string;
   content: string;
+  homedir?: string;
 }): Promise<{ folder: string }> {
   const name = input.name.trim();
   if (!isSpecSkillName(name)) {
@@ -166,9 +168,6 @@ export async function createUserSkill(input: {
       400,
     );
   }
-  if (parsed.name !== name) {
-    throw new SkillError('Frontmatter name must match the skill folder.', 400);
-  }
   if (parsed.description.length > SKILL_DESCRIPTION_MAX) {
     throw new SkillError(
       `Description must be at most ${SKILL_DESCRIPTION_MAX} characters.`,
@@ -176,14 +175,15 @@ export async function createUserSkill(input: {
     );
   }
 
-  const dir = path.join(input.agentHome, 'skills', name);
-  const exists = await stat(dir).then(
-    () => true,
-    () => false,
+  const roots = userSkillDirectories(
+    input.agentHome,
+    input.homedir ?? os.homedir(),
   );
-  if (exists) {
+  for (const root of roots) {
+    if (!existsSync(path.join(root, name))) continue;
     throw new SkillError(`A skill named "${name}" already exists.`, 409);
   }
+  const dir = path.join(input.agentHome, 'skills', name);
   await mkdir(dir, { recursive: true });
   const tmp = path.join(dir, `.SKILL.md.${process.pid}.tmp`);
   await writeFile(

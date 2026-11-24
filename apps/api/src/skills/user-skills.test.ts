@@ -95,6 +95,23 @@ describe('user skills store', () => {
     ).rejects.toMatchObject({ status: 400 } satisfies Partial<SkillError>);
   });
 
+  it('409s a name that already exists in the shared ~/.agents/skills root', async () => {
+    const { home, homedir } = harness();
+    writeSkill(
+      path.join(homedir, '.agents', 'skills'),
+      'installed-pack',
+      '---\nname: installed-pack\ndescription: Installed via npx skills add.\n---\n\nPack body.\n',
+    );
+    await expect(
+      createUserSkill({
+        agentHome: home,
+        name: 'installed-pack',
+        content: '---\nname: installed-pack\ndescription: Mine now.\n---\n\nMine.\n',
+        homedir,
+      }),
+    ).rejects.toMatchObject({ status: 409 } satisfies Partial<SkillError>);
+  });
+
   it('reads a built-in body and refuses to delete it', async () => {
     const { home, homedir } = harness();
     const doc = await readSkillDocument({ folder: 'keep-me' });
