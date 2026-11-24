@@ -7,13 +7,23 @@
 // Skills
 export {
   configureSkillRoots,
+  extraSkillRoots,
+  isSpecSkillName,
+  resolveSkillsRoot,
+  runWithSkillRoots,
   skillLintWarnings,
   getSkill,
   invalidateSkillCatalog,
   listSkillCatalogs,
   parseSkillMarkdown,
+  readSkillFile,
+  SKILL_DESCRIPTION_MAX,
 } from './lib/tools/skills';
-export type { SkillCatalogEntry } from './lib/tools/skills';
+export type {
+  SkillCatalogEntry,
+  SkillIssue,
+  SkillRoot,
+} from './lib/tools/skills';
 
 // Model layer
 export { getClient, nativeOllamaBaseUrl } from './lib/model/client';
@@ -62,16 +72,16 @@ export {
   registerToolProvider,
   type ToolProvider,
 } from './lib/tools/registry';
-export type {
-  Tool,
-  ToolGuidance,
-  ToolRegistry,
-} from './lib/tools/types';
+export type { Tool, ToolGuidance, ToolRegistry } from './lib/tools/types';
 export { createMemoryTool } from './lib/tools/memory';
 export type { MemoryToolStore } from './lib/tools/memory';
 export { createInMemoryPlanStore, createPlanTools } from './lib/tools/plan';
 export type { PlanStore } from './lib/tools/plan';
-export { gateMemoryOps, applyMemoryText, looksLikeSecret } from './lib/memory/gate';
+export {
+  gateMemoryOps,
+  applyMemoryText,
+  looksLikeSecret,
+} from './lib/memory/gate';
 export {
   buildReviewMessages,
   newUserTurns,
@@ -84,7 +94,10 @@ export {
 
 // Context
 export { assembleContext } from './lib/context/assemble-context';
-export { prepareCarriedRecord, taskRecordFromRun } from './lib/context/carried-record';
+export {
+  prepareCarriedRecord,
+  taskRecordFromRun,
+} from './lib/context/carried-record';
 export type {
   AssembleContextInput,
   AssembleContextResult,

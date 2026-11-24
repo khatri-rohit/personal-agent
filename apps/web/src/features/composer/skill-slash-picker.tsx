@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef } from 'react';
-import { BookMarked, User } from 'lucide-react';
+import { BookMarked, Folder, User } from 'lucide-react';
 import type { SkillCatalogItem } from '@/api/skills-client';
 import { cn } from '@/lib/utils';
 
@@ -160,9 +160,7 @@ export function SkillSlashPicker({
             const active = index === activeIndex;
             const already = selectedNames.has(skill.name.toLowerCase());
             const needle = query.trim().toLowerCase();
-            const hit = needle
-              ? skill.name.toLowerCase().indexOf(needle)
-              : -1;
+            const hit = needle ? skill.name.toLowerCase().indexOf(needle) : -1;
             return (
               <button
                 key={`${skill.source}:${skill.folder}`}
@@ -184,6 +182,8 @@ export function SkillSlashPicker({
                 <span className="flex items-center gap-2">
                   {skill.source === 'user' ? (
                     <User className="size-3.5 shrink-0 text-muted-foreground" />
+                  ) : skill.source === 'workspace' ? (
+                    <Folder className="size-3.5 shrink-0 text-muted-foreground" />
                   ) : (
                     <BookMarked className="size-3.5 shrink-0 text-muted-foreground" />
                   )}
@@ -205,7 +205,9 @@ export function SkillSlashPicker({
                       ? 'Added'
                       : skill.source === 'user'
                         ? 'Yours'
-                        : 'Built-in'}
+                        : skill.source === 'workspace'
+                          ? 'Workspace'
+                          : 'Built-in'}
                   </span>
                 </span>
                 <span className="type-ui line-clamp-2 leading-4 text-muted-foreground">

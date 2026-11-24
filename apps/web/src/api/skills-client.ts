@@ -4,27 +4,14 @@ export type SkillCatalogItem = {
   name: string;
   description: string;
   folder: string;
-  source: 'global' | 'user';
+  source: 'builtin' | 'user' | 'workspace';
+  issue?: 'invalid' | 'conflict';
 };
 
 export type SkillCatalogs = {
-  global: SkillCatalogItem[];
+  builtin: SkillCatalogItem[];
   user: SkillCatalogItem[];
-};
-
-export type FoundSkill = {
-  name: string;
-  description: string;
-  folderName: string;
-  pathInRepo: string;
-  folderCollision?: boolean;
-};
-
-export type SkillPreview = {
-  owner: string;
-  repo: string;
-  commit: string;
-  skills: FoundSkill[];
+  workspace: SkillCatalogItem[];
 };
 
 async function readJson<T>(res: Response): Promise<T> {
@@ -35,34 +22,26 @@ async function readJson<T>(res: Response): Promise<T> {
   return body;
 }
 
-export async function fetchSkillCatalogs(): Promise<SkillCatalogs> {
-  const res = await fetch(`${API_BASE}/api/agent/skills`);
-  return readJson<SkillCatalogs>(res);
+function asCatalogs(raw: SkillCatalogs): SkillCatalogs {
+  return {
+    builtin: raw.builtin,
+    user: raw.user,
+    workspace: raw.workspace ?? [],
+  };
 }
 
-export async function previewSkills(repoUrl: string): Promise<SkillPreview> {
-  const res = await fetch(`${API_BASE}/api/agent/skills/preview`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repoUrl }),
-  });
-  return readJson<SkillPreview>(res);
+export async function fetchSkillCatalogs(
+  threadId?: string,
+): Promise<SkillCatalogs> {
+  const query =
+    threadId && threadId.length > 0
+      ? `?threadId=${encodeURIComponent(threadId)}`
+      : '';
+  const res = await fetch(`${API_BASE}/api/agent/skills${query}`);
+  return asCatalogs(await readJson<SkillCatalogs>(res));
 }
 
-export async function installSkills(input: {
-  repoUrl: string;
-  commit: string;
-  skills: { pathInRepo: string; folderName: string }[];
-}): Promise<SkillCatalogs> {
-  const res = await fetch(`${API_BASE}/api/agent/skills/install`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  });
-  return readJson<SkillCatalogs>(res);
-}
-
-/** Save a hand-written SKILL.md under the home skills folder. */
+/** Save a hand-authored SKILL.md under the home skills folder. */
 export async function createUserSkill(input: {
   name: string;
   content: string;
@@ -72,7 +51,7 @@ export async function createUserSkill(input: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   });
-  return readJson<SkillCatalogs>(res);
+  return asCatalogs(await readJson<SkillCatalogs>(res));
 }
 
 export async function deleteUserSkill(folder: string): Promise<SkillCatalogs> {
@@ -80,5 +59,5 @@ export async function deleteUserSkill(folder: string): Promise<SkillCatalogs> {
     `${API_BASE}/api/agent/skills/${encodeURIComponent(folder)}`,
     { method: 'DELETE' },
   );
-  return readJson<SkillCatalogs>(res);
+  return asCatalogs(await readJson<SkillCatalogs>(res));
 }

@@ -14,6 +14,7 @@ import {
 } from '@agent/agent-models';
 import { runLoop } from '../loop/loop';
 import type { RunLoopResult } from '../loop/types';
+import { runWithSkillRoots } from '../tools/skills';
 import { EventEmitter } from '../events/emitter';
 import type { EventSubscriber } from '../events/types';
 import type {
@@ -119,13 +120,21 @@ export class RunManager {
         start: (opts, hooks = {}) => this.start(handle, opts, hooks),
         release: () => {
           if (handle.phase !== 'claimed') return;
-          this.finish(handle, { result: emptyResult(runId), outcome: 'error' }, 0);
+          this.finish(
+            handle,
+            { result: emptyResult(runId), outcome: 'error' },
+            0,
+          );
         },
       },
     };
   }
 
-  private start(handle: RunHandle, opts: StartRunOptions, hooks: RunHooks): void {
+  private start(
+    handle: RunHandle,
+    opts: StartRunOptions,
+    hooks: RunHooks,
+  ): void {
     if (handle.phase !== 'claimed') return;
     handle.phase = 'running';
     handle.model = opts.model;
@@ -143,19 +152,24 @@ export class RunManager {
     );
   }
 
-  private async loop(handle: RunHandle, opts: StartRunOptions): Promise<RunLoopResult> {
-    const { messages, tools, modelCall, ...config } = opts;
+  private async loop(
+    handle: RunHandle,
+    opts: StartRunOptions,
+  ): Promise<RunLoopResult> {
+    const { messages, tools, modelCall, skillRoots = [], ...config } = opts;
     try {
-      return await runLoop(modelCall, messages, tools, {
-        ...config,
-        runId: handle.runId,
-        threadId: handle.threadId,
-        posture: handle.posture,
-        signal: handle.abortController.signal,
-        // offer_choice pause; write/exec tools do not go through this hook.
-        offerChoice: (request) => this.requestChoice(handle, request),
-        emit: (event) => this.gate(handle, event),
-      });
+      return await runWithSkillRoots(skillRoots, () =>
+        runLoop(modelCall, messages, tools, {
+          ...config,
+          runId: handle.runId,
+          threadId: handle.threadId,
+          posture: handle.posture,
+          signal: handle.abortController.signal,
+          // offer_choice pause; write/exec tools do not go through this hook.
+          offerChoice: (request) => this.requestChoice(handle, request),
+          emit: (event) => this.gate(handle, event),
+        }),
+      );
     } catch (err) {
       return emptyResult(
         handle.runId,
@@ -199,7 +213,11 @@ export class RunManager {
     this.finish(handle, { result, outcome }, hooks.retainMs);
   }
 
-  private finish(handle: RunHandle, end: RunEnd, retainMs = RUN_HANDLE_TTL_MS): void {
+  private finish(
+    handle: RunHandle,
+    end: RunEnd,
+    retainMs = RUN_HANDLE_TTL_MS,
+  ): void {
     handle.phase = 'settled';
     handle.settle(end);
     const timer = setTimeout(() => this.clear(handle.runId), retainMs);
@@ -350,11 +368,13 @@ export class RunManager {
         model: handle.model ?? '',
         posture: handle.posture,
         startedAt: handle.startedAt ?? '',
-        pendingChoices: [...handle.pendingChoices].map(([choiceId, choice]) => ({
-          choiceId,
-          question: choice.question,
-          options: choice.options,
-        })),
+        pendingChoices: [...handle.pendingChoices].map(
+          ([choiceId, choice]) => ({
+            choiceId,
+            question: choice.question,
+            options: choice.options,
+          }),
+        ),
       };
     }
     return undefined;
@@ -403,7 +423,11 @@ export class RunManager {
     if (handle.phase === 'settled') {
       return { replay, live: false, unsubscribe: () => undefined };
     }
-    return { replay, live: true, unsubscribe: handle.emitter.subscribe(subscriber) };
+    return {
+      replay,
+      live: true,
+      unsubscribe: handle.emitter.subscribe(subscriber),
+    };
   }
 
   private clear(runId: string): void {

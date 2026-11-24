@@ -1,23 +1,70 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+
+import { parse as parseYaml } from 'yaml';
 
 import type { Skill, SkillMetadata, Tool } from './types';
 
 /**
  * Built-in packs: packages/agent-core/skills/<name>/SKILL.md.
- * Host may set a user root ($AGENT_HOME/skills). One catalog API;
- * user name wins on collision.
- *
- * Generic contract is name + description + body. Extra YAML is ignored.
+ * Process roots (low → high): builtin, ~/.agents/skills, $AGENT_HOME/skills.
+ * A bound folder adds `.agents/skills` for that run. Same name: later root wins.
  */
+
+export type SkillScope = 'builtin' | 'user' | 'workspace';
+
+export type SkillRoot = {
+  scope: SkillScope;
+  path: string;
+};
+
+export type SkillIssue = 'invalid' | 'conflict';
 
 export type SkillCatalogEntry = SkillMetadata & {
   folder: string;
-  source: 'global' | 'user';
+  source: SkillScope;
+  issue?: SkillIssue;
 };
 
-let userRoot: string | null = null;
-let cached: Skill[] | null = null;
+/** Agent Skills spec: name is 1–64 chars, lowercase / digits / hyphens. */
+export const SKILL_NAME_MAX = 64;
+export const SKILL_DESCRIPTION_MAX = 1024;
+const SKILL_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+export function isSpecSkillName(name: string): boolean {
+  return (
+    name.length >= 1 &&
+    name.length <= SKILL_NAME_MAX &&
+    SKILL_NAME_RE.test(name)
+  );
+}
+
+let configuredRoots: SkillRoot[] | null = null;
+const extraRoots = new AsyncLocalStorage<SkillRoot[]>();
+
+/** Bound-folder packs: `<workspace>/.agents/skills`. Empty when unbound (Home). */
+export function extraSkillRoots(workspaceRoot?: string): SkillRoot[] {
+  if (!workspaceRoot) return [];
+  return [
+    {
+      scope: 'workspace',
+      path: path.join(workspaceRoot, '.agents', 'skills'),
+    },
+  ];
+}
+
+/** Overlay `extra` for this call (and its async work). Empty `extra` keeps the current overlay. */
+export function runWithSkillRoots<T>(extra: SkillRoot[], fn: () => T): T {
+  if (extra.length === 0) return fn();
+  return extraRoots.run(
+    extra.map((root) => ({
+      scope: root.scope,
+      path: path.resolve(root.path),
+    })),
+    fn,
+  );
+}
 
 export function resolveSkillsRoot(): string {
   const starts = [process.cwd()];
@@ -27,11 +74,11 @@ export function resolveSkillsRoot(): string {
     /* CJS bundle without __dirname */
   }
 
-  const candidates: string[] = [];
+  const candidates: string[] = [path.resolve(__dirname, '../../../skills')];
   for (const start of starts) {
     let dir = path.resolve(start);
     for (let i = 0; i < 8; i++) {
-      candidates.push(path.join(dir, 'skills'));
+      // Built-ins only: never the first random `skills/` under cwd (F11).
       candidates.push(path.join(dir, 'packages', 'agent-core', 'skills'));
       const parent = path.dirname(dir);
       if (parent === dir) break;
@@ -45,15 +92,28 @@ export function resolveSkillsRoot(): string {
   return path.resolve(process.cwd(), 'packages', 'agent-core', 'skills');
 }
 
-export function configureSkillRoots(nextUserRoot: string | null): void {
-  const resolved = nextUserRoot ? path.resolve(nextUserRoot) : null;
-  if (resolved === userRoot) return;
-  userRoot = resolved;
-  cached = null;
+function defaultRoots(): SkillRoot[] {
+  return [{ scope: 'builtin', path: resolveSkillsRoot() }];
+}
+
+function roots(): SkillRoot[] {
+  const base = configuredRoots ?? defaultRoots();
+  const extra = extraRoots.getStore();
+  return extra && extra.length > 0 ? [...base, ...extra] : base;
+}
+
+/** `null` restores the built-in root only (tests). */
+export function configureSkillRoots(next: SkillRoot[] | null): void {
+  configuredRoots = next
+    ? next.map((root) => ({
+        scope: root.scope,
+        path: path.resolve(root.path),
+      }))
+    : null;
 }
 
 export function invalidateSkillCatalog(): void {
-  cached = null;
+  /* Catalog is read from disk on each call. */
 }
 
 export type ParsedSkill = {
@@ -66,38 +126,60 @@ export function parseSkillMarkdown(
   raw: string,
   fallbackName: string,
 ): ParsedSkill {
-  const trimmed = raw.replace(/^\uFEFF/, '');
+  const trimmed = raw.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
   const end = trimmed.startsWith('---') ? trimmed.indexOf('\n---', 3) : -1;
   if (end < 0) {
     return {
       name: fallbackName,
-      description: fallbackName,
+      description: '',
       instructions: trimmed.trim(),
     };
   }
-  const fm = trimmed.slice(3, end).trim().replace(/\r/g, '');
+  const fm = trimmed.slice(3, end);
   const body = trimmed.slice(end + 4).trim();
   let name = fallbackName;
-  let description = fallbackName;
-  for (const line of fm.split('\n')) {
-    const match = line.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/);
-    if (!match) continue;
-    const key = match[1].toLowerCase();
-    const value = match[2].trim().replace(/^['"]|['"]$/g, '');
-    if (key === 'name' && value) name = value;
-    if (key === 'description' && value) description = value;
+  let description = '';
+  try {
+    const data: unknown = parseYaml(fm);
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      const rec = data as Record<string, unknown>;
+      if (typeof rec.name === 'string' && rec.name.trim()) {
+        name = rec.name.trim();
+      }
+      if (typeof rec.description === 'string' && rec.description.trim()) {
+        description = rec.description.trim();
+      }
+    }
+  } catch {
+    /* invalid YAML → empty description, listing is rejected */
   }
   return { name, description, instructions: body };
 }
 
-function readRoot(root: string): { folder: string; skill: Skill }[] {
+function specIssue(folder: string, parsed: ParsedSkill): boolean {
+  return (
+    !isSpecSkillName(parsed.name) ||
+    parsed.name !== folder ||
+    parsed.description.length < 1 ||
+    parsed.description.length > SKILL_DESCRIPTION_MAX
+  );
+}
+
+type RawListing = {
+  folder: string;
+  source: SkillScope;
+  skill: Skill;
+  invalid: boolean;
+};
+
+function readRoot(root: string, source: SkillScope): RawListing[] {
   let entries: { name: string; isDirectory: () => boolean }[] = [];
   try {
     entries = readdirSync(root, { withFileTypes: true });
   } catch {
     return [];
   }
-  const out: { folder: string; skill: Skill }[] = [];
+  const out: RawListing[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     try {
@@ -107,6 +189,8 @@ function readRoot(root: string): { folder: string; skill: Skill }[] {
       );
       out.push({
         folder: entry.name,
+        source,
+        invalid: specIssue(entry.name, parsed),
         skill: {
           name: parsed.name,
           description: parsed.description,
@@ -120,24 +204,65 @@ function readRoot(root: string): { folder: string; skill: Skill }[] {
   return out;
 }
 
-function catalog(): Skill[] {
-  if (!cached) {
-    const byName = new Map<string, Skill>();
-    for (const { skill } of readRoot(resolveSkillsRoot())) {
-      byName.set(skill.name, skill);
-    }
-    if (userRoot) {
-      for (const { skill } of readRoot(userRoot)) {
-        byName.set(skill.name, skill);
-      }
-    }
-    cached = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+function assemble(): {
+  loadable: Skill[];
+  listings: SkillCatalogEntry[];
+} {
+  const raw = roots().flatMap((root) => readRoot(root.path, root.scope));
+  const winner = new Map<string, RawListing>();
+  for (const row of raw) {
+    if (!row.invalid) winner.set(row.skill.name, row);
   }
-  return cached;
+  const listings = raw.map((row) => {
+    const issue: SkillIssue | undefined = row.invalid
+      ? 'invalid'
+      : winner.get(row.skill.name) !== row
+        ? 'conflict'
+        : undefined;
+    return {
+      name: row.skill.name,
+      description: row.skill.description,
+      folder: row.folder,
+      source: row.source,
+      ...(issue ? { issue } : {}),
+    };
+  });
+  listings.sort((a, b) => a.name.localeCompare(b.name));
+  const loadable = [...winner.values()]
+    .map((row) => row.skill)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return { loadable, listings };
+}
+
+function catalog(): Skill[] {
+  return assemble().loadable;
 }
 
 export function listSkills(): SkillMetadata[] {
   return catalog().map(({ name, description }) => ({ name, description }));
+}
+
+/** Raw SKILL.md from the highest-precedence root that has this folder. */
+export function readSkillFile(folder: string): string | null {
+  if (
+    !folder ||
+    folder.includes('..') ||
+    folder.includes('/') ||
+    folder.includes('\\')
+  ) {
+    return null;
+  }
+  for (const root of [...roots()].reverse()) {
+    const file = path.join(root.path, folder, 'SKILL.md');
+    const rel = path.relative(root.path, file);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) continue;
+    try {
+      return readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }
 
 export function getSkill(name: string): Skill | undefined {
@@ -159,13 +284,18 @@ export const PINNED_SKILLS_MAX_CHARS = 24_000;
 const CORE_HEADING = /^##\s+core rules\s*$/im;
 
 /** `## ` sections of a skill body, in order. Text before the first heading is the preamble. */
-export function skillSections(instructions: string): { title: string; body: string }[] {
+export function skillSections(
+  instructions: string,
+): { title: string; body: string }[] {
   const parts = instructions.split(/\n(?=##\s)/);
   const sections: { title: string; body: string }[] = [];
   for (const part of parts) {
     const match = part.match(/^##\s+(.+)\n?/);
     if (!match) continue;
-    sections.push({ title: match[1]!.trim(), body: part.slice(match[0].length).trim() });
+    sections.push({
+      title: match[1]!.trim(),
+      body: part.slice(match[0].length).trim(),
+    });
   }
   return sections;
 }
@@ -175,7 +305,9 @@ export function skillSections(instructions: string): { title: string; body: stri
  * the `## Core rules` section, else the first paragraph or list block.
  */
 export function skillCore(instructions: string): string {
-  const core = skillSections(instructions).find((section) => CORE_HEADING.test(`## ${section.title}`));
+  const core = skillSections(instructions).find((section) =>
+    CORE_HEADING.test(`## ${section.title}`),
+  );
   if (core) return core.body.trim();
   const firstBlock = instructions.trim().split(/\n\s*\n/)[0] ?? '';
   return firstBlock.length > SKILL_CORE_FALLBACK_CHARS
@@ -201,7 +333,10 @@ function contentsLine(skill: Skill): string {
   const sections = skillSections(skill.instructions);
   if (sections.length === 0) return '';
   return `Sections (load_skill with section): ${sections
-    .map((section) => `${section.title} (~${Math.round(section.body.length / 4)} tokens)`)
+    .map(
+      (section) =>
+        `${section.title} (~${Math.round(section.body.length / 4)} tokens)`,
+    )
     .join('; ')}`;
 }
 
@@ -212,13 +347,19 @@ export function skillForLoad(skill: Skill, section?: string): string {
     const found = skillSections(skill.instructions).find(
       (item) => item.title.toLowerCase() === wanted,
     );
-    if (!found) return `Section "${section}" not found in ${skill.name}. ${contentsLine(skill)}`;
+    if (!found)
+      return `Section "${section}" not found in ${skill.name}. ${contentsLine(skill)}`;
     return found.body.length > SKILL_SECTION_MAX_CHARS
       ? `${found.body.slice(0, SKILL_SECTION_MAX_CHARS)}\n…(section cut at ${SKILL_SECTION_MAX_CHARS} chars)`
       : found.body;
   }
   if (skill.instructions.length <= SKILL_LARGE_CHARS) return skill.instructions;
-  return [`# ${skill.name} — core rules`, skillCore(skill.instructions), '', contentsLine(skill)]
+  return [
+    `# ${skill.name} — core rules`,
+    skillCore(skill.instructions),
+    '',
+    contentsLine(skill),
+  ]
     .filter(Boolean)
     .join('\n');
 }
@@ -229,8 +370,10 @@ export function skillForLoad(skill: Skill, section?: string): string {
  */
 export function skillCard(name: string, loadedAtIteration?: number): string {
   const skill = getSkill(name);
-  const when = loadedAtIteration !== undefined ? ` at iteration ${loadedAtIteration}` : '';
-  if (!skill) return `(skill card) ${name} was loaded${when}; call load_skill again for the full text.`;
+  const when =
+    loadedAtIteration !== undefined ? ` at iteration ${loadedAtIteration}` : '';
+  if (!skill)
+    return `(skill card) ${name} was loaded${when}; call load_skill again for the full text.`;
   return `(skill card) ${skill.name} loaded${when}. Core rules:\n${skillCore(skill.instructions)}\nCall load_skill again for the full text or a section.`;
 }
 
@@ -313,25 +456,15 @@ export function formatSkillsCatalog(skills: SkillMetadata[]): string {
 }
 
 export function listSkillCatalogs(): {
-  global: SkillCatalogEntry[];
+  builtin: SkillCatalogEntry[];
   user: SkillCatalogEntry[];
+  workspace: SkillCatalogEntry[];
 } {
-  const toEntries = (
-    root: string,
-    source: SkillCatalogEntry['source'],
-  ): SkillCatalogEntry[] =>
-    readRoot(root)
-      .map(({ folder, skill }) => ({
-        name: skill.name,
-        description: skill.description,
-        folder,
-        source,
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-
+  const listings = assemble().listings;
   return {
-    global: toEntries(resolveSkillsRoot(), 'global'),
-    user: userRoot ? toEntries(userRoot, 'user') : [],
+    builtin: listings.filter((entry) => entry.source === 'builtin'),
+    user: listings.filter((entry) => entry.source === 'user'),
+    workspace: listings.filter((entry) => entry.source === 'workspace'),
   };
 }
 
@@ -351,7 +484,8 @@ export const load_skill: Tool = {
           },
           section: {
             type: 'string',
-            description: 'Optional section title, for large skills that list their sections.',
+            description:
+              'Optional section title, for large skills that list their sections.',
           },
         },
         required: ['skill_name'],

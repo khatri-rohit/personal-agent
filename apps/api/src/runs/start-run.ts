@@ -19,9 +19,11 @@ import {
   webTrustFromLedger,
   createStreamModelCall,
   createSubagentRunner,
+  extraSkillRoots,
   getOllamaModelConfig,
   modelOwnsAuto,
   peekOllamaModelConfig,
+  runWithSkillRoots,
   taskRecordFromRun,
 } from '@agent/agent-core';
 
@@ -247,9 +249,12 @@ async function startClaimedRun(
   const ledgerBefore = await store.readLedger(threadId, 0);
   const isFirstUserTurn = ledgerBefore.length === 0 && Boolean(message);
   const priorUser = lastUserEnvelope(ledgerBefore);
-  const skillNames = resolveRequestedSkills(
-    rawSkills,
-    message ? undefined : priorUser?.skills?.selected,
+  const skillRoots = extraSkillRoots(thread.workspaceRoot);
+  const skillNames = runWithSkillRoots(skillRoots, () =>
+    resolveRequestedSkills(
+      rawSkills,
+      message ? undefined : priorUser?.skills?.selected,
+    ),
   );
 
   const useModel = model ?? thread.model ?? HOME_MODE.model;
@@ -331,7 +336,9 @@ async function startClaimedRun(
         plan: payload.plan,
       }),
   };
-  let prepared = await prepareRun(prepareInput);
+  let prepared = await runWithSkillRoots(skillRoots, () =>
+    prepareRun(prepareInput),
+  );
   // Oversized start (window switched down, big mention, long last run):
   // compact before the first model call instead of carrying it all run.
   const preRunSnapshot = await compactThread({
@@ -344,7 +351,10 @@ async function startClaimedRun(
     report: prepared.report,
     modelSettings,
   });
-  if (preRunSnapshot) prepared = await prepareRun(prepareInput);
+  if (preRunSnapshot)
+    prepared = await runWithSkillRoots(skillRoots, () =>
+      prepareRun(prepareInput),
+    );
 
   // Auto (System 1) starts from the model's default; the router moves from
   // there. A model that lists its own `auto` level gets that value instead.
@@ -475,6 +485,7 @@ async function startClaimedRun(
         : {}),
       trace: threadTraceSink(store, threadId),
       ...(skillNames.length > 0 ? { pinnedSkills: skillNames } : {}),
+      ...(skillRoots.length > 0 ? { skillRoots } : {}),
       ...(capacity ? { capacity } : {}),
       ...(system1 ? { system1 } : {}),
       effortPolicy,

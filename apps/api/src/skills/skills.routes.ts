@@ -1,20 +1,23 @@
 import { Router, type Request, type Response } from 'express';
-import { listSkillCatalogs } from '@agent/agent-core';
+import {
+  extraSkillRoots,
+  listSkillCatalogs,
+  runWithSkillRoots,
+} from '@agent/agent-core';
 
-import { getAgentHome } from '../platform/instances';
+import { getAgentHome, getThreadStore } from '../platform/instances';
 import { asyncRoute } from '../platform/http-errors';
 import {
-  SkillImportError,
+  SkillError,
   createUserSkill,
   deleteUserSkill,
-  installGitHubSkills,
-  previewGitHubSkills,
+  readSkillDocument,
 } from './user-skills';
 
 const router = Router();
 
 function fail(res: Response, error: unknown): void {
-  if (error instanceof SkillImportError) {
+  if (error instanceof SkillError) {
     res.status(error.status).json({ error: error.message });
     return;
   }
@@ -23,46 +26,19 @@ function fail(res: Response, error: unknown): void {
   });
 }
 
-router.get('/skills', (_req: Request, res: Response) => {
-  try {
+async function overlayForThread(threadId: unknown) {
+  const id = typeof threadId === 'string' ? threadId.trim() : '';
+  if (!id) return [];
+  const store = await getThreadStore();
+  return extraSkillRoots(store.getThread(id)?.workspaceRoot);
+}
+
+router.get(
+  '/skills',
+  asyncRoute(async (req: Request, res: Response) => {
     getAgentHome();
-    res.json(listSkillCatalogs());
-  } catch (error) {
-    fail(res, error);
-  }
-});
-
-router.post(
-  '/skills/preview',
-  asyncRoute(async (req: Request, res: Response) => {
-    try {
-      res.json(await previewGitHubSkills(String(req.body?.repoUrl ?? '')));
-    } catch (error) {
-      fail(res, error);
-    }
-  }),
-);
-
-router.post(
-  '/skills/install',
-  asyncRoute(async (req: Request, res: Response) => {
-    try {
-      const skills = Array.isArray(req.body?.skills) ? req.body.skills : [];
-      await installGitHubSkills({
-        agentHome: getAgentHome(),
-        repoUrl: String(req.body?.repoUrl ?? ''),
-        commit: String(req.body?.commit ?? ''),
-        skills: skills.map(
-          (skill: { pathInRepo?: string; folderName?: string }) => ({
-            pathInRepo: String(skill.pathInRepo ?? ''),
-            folderName: String(skill.folderName ?? ''),
-          }),
-        ),
-      });
-      res.json(listSkillCatalogs());
-    } catch (error) {
-      fail(res, error);
-    }
+    const extra = await overlayForThread(req.query.threadId);
+    res.json(runWithSkillRoots(extra, () => listSkillCatalogs()));
   }),
 );
 
@@ -82,11 +58,33 @@ router.post(
   }),
 );
 
+router.get(
+  '/skills/:folder',
+  asyncRoute(async (req: Request, res: Response) => {
+    try {
+      getAgentHome();
+      const extra = await overlayForThread(req.query.threadId);
+      res.json(
+        await runWithSkillRoots(extra, () =>
+          readSkillDocument({
+            folder: String(req.params.folder ?? ''),
+          }),
+        ),
+      );
+    } catch (error) {
+      fail(res, error);
+    }
+  }),
+);
+
 router.delete(
   '/skills/:folder',
   asyncRoute(async (req: Request, res: Response) => {
     try {
-      await deleteUserSkill(getAgentHome(), String(req.params.folder ?? ''));
+      await deleteUserSkill({
+        agentHome: getAgentHome(),
+        folderName: String(req.params.folder ?? ''),
+      });
       res.json(listSkillCatalogs());
     } catch (error) {
       fail(res, error);
