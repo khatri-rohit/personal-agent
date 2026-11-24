@@ -149,7 +149,7 @@ describe('skill catalog roots', () => {
     return dir;
   }
 
-  it('loads a spec-valid user skill and skips invalid or reserved names', () => {
+  it('lets a user pack override a builtin; invalid folders stay listed', () => {
     const builtin = tmp();
     const user = tmp();
     writeSkill(
@@ -177,10 +177,11 @@ describe('skill catalog roots', () => {
       { scope: 'user', path: user },
     ]);
 
-    expect(listSkills().map((s) => s.name).sort()).toEqual([
-      'caveman-review',
-      'ok-pack',
-    ]);
+    expect(
+      listSkills()
+        .map((s) => s.name)
+        .sort(),
+    ).toEqual(['caveman-review', 'ok-pack']);
     expect(getSkill('caveman-review')?.description).toBe('Shadow attempt.');
     expect(getSkill('ok-pack')?.instructions).toContain('Do the thing.');
 
@@ -226,16 +227,25 @@ describe('skill catalog roots', () => {
       { scope: 'user', path: agents },
       { scope: 'user', path: home },
     ]);
-    expect(listSkills().map((s) => s.name).sort()).toEqual(['dup', 'keep-me']);
+    expect(
+      listSkills()
+        .map((s) => s.name)
+        .sort(),
+    ).toEqual(['dup', 'keep-me']);
     expect(getSkill('dup')?.description).toBe('From home.');
     const dups = listSkillCatalogs().user.filter((s) => s.name === 'dup');
     expect(dups).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ description: 'From agents.', issue: 'conflict' }),
+        expect.objectContaining({
+          description: 'From agents.',
+          issue: 'conflict',
+        }),
         expect.objectContaining({ description: 'From home.' }),
       ]),
     );
-    expect(dups.find((s) => s.description === 'From home.')?.issue).toBeUndefined();
+    expect(
+      dups.find((s) => s.description === 'From home.')?.issue,
+    ).toBeUndefined();
   });
 
   it('lets a workspace pack beat a user pack of the same name', () => {
@@ -288,9 +298,10 @@ describe('skill catalog roots', () => {
       'late-pack',
       '---\nname: late-pack\ndescription: Added later.\n---\n\nHi.\n',
     );
-    expect(listSkills().map((s) => s.name).sort()).toEqual([
-      'keep-me',
-      'late-pack',
-    ]);
+    expect(
+      listSkills()
+        .map((s) => s.name)
+        .sort(),
+    ).toEqual(['keep-me', 'late-pack']);
   });
 });

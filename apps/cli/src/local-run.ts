@@ -36,11 +36,14 @@ const runs = new RunManager();
 async function resolveBudget(model: string): Promise<ContextBudget> {
   let modelMax: number | null = null;
   try {
-    modelMax = (await getOllamaModelConfig(model, 'cloud')).contextLength ?? null;
+    modelMax =
+      (await getOllamaModelConfig(model, 'cloud')).contextLength ?? null;
   } catch {
     // Keep the fallback window when /api/show is unavailable.
   }
-  return contextBudgetForWindow(resolveContextWindow({ mode: 'default', modelMax }).windowTokens);
+  return contextBudgetForWindow(
+    resolveContextWindow({ mode: 'default', modelMax }).windowTokens,
+  );
 }
 
 /**
@@ -71,30 +74,35 @@ export async function runLocally(input: {
     ? await loadWorkspaceRules(workspaceRoot)
     : { agentsMd: '', project: '' };
   const skillRoots = extraSkillRoots(workspaceRoot);
+  const plan = await planStore.read();
+  const budget = await resolveBudget(input.model);
   const { messages, report } = runWithSkillRoots(skillRoots, () =>
-    assembleContext({
-    tools,
-    memory: {
-      user: '',
-      notes: '',
-      ...(rules.agentsMd ? { agentsMd: rules.agentsMd } : {}),
-      ...(rules.project ? { project: rules.project } : {}),
-    },
-    snapshot: null,
-    plan: await planStore.read(),
-    envelopes: [
+    assembleContext(
       {
-        v: 1,
-        seq: 1,
-        ts: new Date().toISOString(),
-        threadId: 'local',
-        runId: null,
-        record: { role: 'user', content: input.query },
+        tools,
+        memory: {
+          user: '',
+          notes: '',
+          ...(rules.agentsMd ? { agentsMd: rules.agentsMd } : {}),
+          ...(rules.project ? { project: rules.project } : {}),
+        },
+        snapshot: null,
+        plan,
+        envelopes: [
+          {
+            v: 1,
+            seq: 1,
+            ts: new Date().toISOString(),
+            threadId: 'local',
+            runId: null,
+            record: { role: 'user', content: input.query },
+          },
+        ],
+        mode: mode.name,
+        posture,
       },
-    ],
-    mode: mode.name,
-    posture,
-  }, await resolveBudget(input.model)),
+      budget,
+    ),
   );
 
   const claimed = runs.claim(`local-${Date.now()}`);
@@ -123,7 +131,9 @@ export async function runLocally(input: {
   const onEvent = (event: AgentEvent) => {
     if (event.type === 'choice.requested') {
       const first = event.options[0];
-      console.log(`[auto-choice] ${event.question} → ${first?.label ?? 'skip'}`);
+      console.log(
+        `[auto-choice] ${event.question} → ${first?.label ?? 'skip'}`,
+      );
       queueMicrotask(() =>
         runs.resolveChoice(
           runId,

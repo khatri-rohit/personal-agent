@@ -128,7 +128,7 @@ function CatalogRow({
         ) : null}
         {skill.issue === 'conflict' ? (
           <p className="mt-1 text-xs text-[var(--warning-fg)]">
-            Not loaded. This name is reserved or duplicated.
+            Not loaded. Another pack with this name takes priority.
           </p>
         ) : null}
       </div>

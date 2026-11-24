@@ -26,17 +26,18 @@ function fail(res: Response, error: unknown): void {
   });
 }
 
+async function overlayForThread(threadId: unknown) {
+  const id = typeof threadId === 'string' ? threadId.trim() : '';
+  if (!id) return [];
+  const store = await getThreadStore();
+  return extraSkillRoots(store.getThread(id)?.workspaceRoot);
+}
+
 router.get(
   '/skills',
   asyncRoute(async (req: Request, res: Response) => {
     getAgentHome();
-    const threadId =
-      typeof req.query.threadId === 'string' ? req.query.threadId.trim() : '';
-    let extra = extraSkillRoots();
-    if (threadId) {
-      const store = await getThreadStore();
-      extra = extraSkillRoots(store.getThread(threadId)?.workspaceRoot);
-    }
+    const extra = await overlayForThread(req.query.threadId);
     res.json(runWithSkillRoots(extra, () => listSkillCatalogs()));
   }),
 );
@@ -62,10 +63,13 @@ router.get(
   asyncRoute(async (req: Request, res: Response) => {
     try {
       getAgentHome();
+      const extra = await overlayForThread(req.query.threadId);
       res.json(
-        await readSkillDocument({
-          folder: String(req.params.folder ?? ''),
-        }),
+        await runWithSkillRoots(extra, () =>
+          readSkillDocument({
+            folder: String(req.params.folder ?? ''),
+          }),
+        ),
       );
     } catch (error) {
       fail(res, error);

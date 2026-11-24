@@ -8,10 +8,8 @@ import type { Skill, SkillMetadata, Tool } from './types';
 
 /**
  * Built-in packs: packages/agent-core/skills/<name>/SKILL.md.
- * Host roots, lowest to highest: builtin, ~/.agents/skills, $AGENT_HOME/skills,
- * then a bound workspace's .agents/skills (per run, via runWithSkillRoots).
- * Same name: later root wins. load_skill is in Home and Workspace; the model
- * self-invokes from the catalog.
+ * Process roots (low → high): builtin, ~/.agents/skills, $AGENT_HOME/skills.
+ * A bound folder adds `.agents/skills` for that run. Same name: later root wins.
  */
 
 export type SkillScope = 'builtin' | 'user' | 'workspace';
@@ -56,7 +54,7 @@ export function extraSkillRoots(workspaceRoot?: string): SkillRoot[] {
   ];
 }
 
-/** Later roots in `extra` beat process roots on the same skill name. */
+/** Overlay `extra` for this call (and its async work). Empty `extra` keeps the current overlay. */
 export function runWithSkillRoots<T>(extra: SkillRoot[], fn: () => T): T {
   if (extra.length === 0) return fn();
   return extraRoots.run(
@@ -211,35 +209,28 @@ function assemble(): {
   listings: SkillCatalogEntry[];
 } {
   const raw = roots().flatMap((root) => readRoot(root.path, root.scope));
-  const listings: SkillCatalogEntry[] = [];
-  const winnerAt = new Map<string, number>();
-  const loadableByName = new Map<string, Skill>();
-
+  const winner = new Map<string, RawListing>();
   for (const row of raw) {
-    const entry: SkillCatalogEntry = {
+    if (!row.invalid) winner.set(row.skill.name, row);
+  }
+  const listings = raw.map((row) => {
+    const issue: SkillIssue | undefined = row.invalid
+      ? 'invalid'
+      : winner.get(row.skill.name) !== row
+        ? 'conflict'
+        : undefined;
+    return {
       name: row.skill.name,
       description: row.skill.description,
       folder: row.folder,
       source: row.source,
+      ...(issue ? { issue } : {}),
     };
-    if (row.invalid) {
-      listings.push({ ...entry, issue: 'invalid' });
-      continue;
-    }
-    const prev = winnerAt.get(row.skill.name);
-    if (prev !== undefined) {
-      listings[prev] = { ...listings[prev], issue: 'conflict' };
-      loadableByName.delete(row.skill.name);
-    }
-    winnerAt.set(row.skill.name, listings.length);
-    listings.push(entry);
-    loadableByName.set(row.skill.name, row.skill);
-  }
-
-  const loadable = [...loadableByName.values()].sort((a, b) =>
-    a.name.localeCompare(b.name),
-  );
+  });
   listings.sort((a, b) => a.name.localeCompare(b.name));
+  const loadable = [...winner.values()]
+    .map((row) => row.skill)
+    .sort((a, b) => a.name.localeCompare(b.name));
   return { loadable, listings };
 }
 
