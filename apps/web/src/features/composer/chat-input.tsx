@@ -404,7 +404,11 @@ export function ChatInput({
     void fetchSkillCatalogs()
       .then((catalogs) => {
         if (cancelled) return;
-        setSkillCatalog([...catalogs.global, ...catalogs.user]);
+        setSkillCatalog(
+          [...catalogs.builtin, ...catalogs.user].filter(
+            (skill) => !skill.issue,
+          ),
+        );
       })
       .catch(() => {
         if (!cancelled) setSkillCatalog([]);

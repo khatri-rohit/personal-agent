@@ -1,16 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, Search, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Search, Trash2 } from 'lucide-react';
 import {
   deleteUserSkill,
   fetchSkillCatalogs,
-  installSkills,
-  previewSkills,
-  type FoundSkill,
   type SkillCatalogItem,
   type SkillCatalogs,
-  type SkillPreview,
 } from '@/api/skills-client';
 import { toastError } from '@/hooks/use-toast';
 import { Badge } from '@/components/ui/badge';
@@ -19,16 +15,16 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { SkillCreateForm } from './skill-create-form';
 import { cn } from '@/lib/utils';
 
-type Tab = 'catalog' | 'import' | 'create';
+type Tab = 'catalog' | 'create';
+
+const ADD_COMMAND = 'npx skills add owner/repo -g';
 
 function matchesQuery(
   skill: { name: string; description: string },
@@ -42,10 +38,6 @@ function matchesQuery(
   );
 }
 
-function shortSha(sha: string): string {
-  return sha.slice(0, 7);
-}
-
 function CatalogSkeleton() {
   return (
     <div className="flex flex-col gap-2.5" aria-busy="true" aria-live="polite">
@@ -57,8 +49,22 @@ function CatalogSkeleton() {
   );
 }
 
-function OriginBadge({ source }: { source: SkillCatalogItem['source'] }) {
-  return source === 'global' ? (
+function OriginBadge({ skill }: { skill: SkillCatalogItem }) {
+  if (skill.issue === 'invalid') {
+    return (
+      <Badge variant="outline" className="shrink-0 font-normal">
+        Invalid
+      </Badge>
+    );
+  }
+  if (skill.issue === 'conflict') {
+    return (
+      <Badge variant="outline" className="shrink-0 font-normal">
+        Conflict
+      </Badge>
+    );
+  }
+  return skill.source === 'builtin' ? (
     <Badge variant="secondary" className="shrink-0 font-normal">
       Built-in
     </Badge>
@@ -71,13 +77,11 @@ function OriginBadge({ source }: { source: SkillCatalogItem['source'] }) {
 
 function CatalogRow({
   skill,
-  overrides,
   expanded,
   onToggleExpand,
   action,
 }: {
   skill: SkillCatalogItem;
-  overrides: boolean;
   expanded: boolean;
   onToggleExpand: () => void;
   action?: React.ReactNode;
@@ -89,7 +93,7 @@ function CatalogRow({
           <p className="truncate text-sm font-medium text-foreground">
             {skill.name}
           </p>
-          <OriginBadge source={skill.source} />
+          <OriginBadge skill={skill} />
         </div>
         <button
           type="button"
@@ -103,12 +107,18 @@ function CatalogRow({
               expanded ? 'whitespace-pre-wrap' : 'line-clamp-2',
             )}
           >
-            {skill.description}
+            {skill.description || 'No description'}
           </p>
         </button>
-        {overrides ? (
+        {skill.issue === 'invalid' ? (
           <p className="mt-1 text-xs text-[var(--warning-fg)]">
-            Overrides the built-in skill with this name
+            Not loaded. Folder name must match the spec name, with a
+            description.
+          </p>
+        ) : null}
+        {skill.issue === 'conflict' ? (
+          <p className="mt-1 text-xs text-[var(--warning-fg)]">
+            Not loaded. This name is reserved or duplicated.
           </p>
         ) : null}
       </div>
@@ -119,46 +129,13 @@ function CatalogRow({
   );
 }
 
-function ImportRow({
-  skill,
-  checked,
-  onToggle,
-}: {
-  skill: FoundSkill;
-  checked: boolean;
-  onToggle: () => void;
-}) {
-  const id = `import-skill-${skill.pathInRepo}`;
+function AddHint() {
   return (
-    <li className="flex items-start gap-3 rounded-lg px-2 py-2.5">
-      <input
-        id={id}
-        type="checkbox"
-        checked={checked}
-        onChange={onToggle}
-        className="mt-1 size-4 shrink-0 rounded border-input accent-foreground"
-      />
-      <label htmlFor={id} className="min-w-0 flex-1 cursor-pointer">
-        <p className="truncate text-sm font-medium text-foreground">
-          {skill.name}
-        </p>
-        <p className="type-ui mt-0.5 line-clamp-2 leading-5 text-muted-foreground">
-          {skill.description}
-        </p>
-        <p className="mt-1 truncate font-mono text-xs text-muted-foreground">
-          {skill.pathInRepo}
-          {skill.folderName !== skill.pathInRepo
-            ? ` → ${skill.folderName}`
-            : ''}
-        </p>
-        {skill.folderCollision ? (
-          <p className="mt-1 text-xs text-[var(--warning-fg)]">
-            Folder name {skill.folderName} collides with another pack in this
-            repo. Uncheck one before installing.
-          </p>
-        ) : null}
-      </label>
-    </li>
+    <p className="type-caption shrink-0 leading-4 text-muted-foreground">
+      Add packs with{' '}
+      <span className="font-mono text-foreground/80">{ADD_COMMAND}</span>, then
+      reopen this panel. Type / in the composer to attach a loadable skill.
+    </p>
   );
 }
 
@@ -171,17 +148,12 @@ export function SkillsPanel({
 }) {
   const [tab, setTab] = useState<Tab>('catalog');
   const [catalogs, setCatalogs] = useState<SkillCatalogs>({
-    global: [],
+    builtin: [],
     user: [],
   });
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  const [repoUrl, setRepoUrl] = useState('');
-  const [preview, setPreview] = useState<SkillPreview | null>(null);
-  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
-  const [checking, setChecking] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [confirmFolder, setConfirmFolder] = useState<string | null>(null);
   const [deletingFolder, setDeletingFolder] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -209,83 +181,13 @@ export function SkillsPanel({
     void loadCatalogs();
   }, [open, loadCatalogs]);
 
-  const globalNames = useMemo(
-    () => new Set(catalogs.global.map((skill) => skill.name)),
-    [catalogs.global],
-  );
-
-  const filteredGlobal = catalogs.global.filter((skill) =>
+  const filteredBuiltin = catalogs.builtin.filter((skill) =>
     matchesQuery(skill, query),
   );
   const filteredUser = catalogs.user.filter((skill) =>
     matchesQuery(skill, query),
   );
-  const catalogCount = catalogs.global.length + catalogs.user.length;
-  const selectedCount = preview
-    ? preview.skills.filter((skill) => selectedPaths.has(skill.pathInRepo))
-        .length
-    : 0;
-  const selectedCollisions = useMemo(() => {
-    if (!preview) return [];
-    const counts = new Map<string, number>();
-    for (const skill of preview.skills) {
-      if (!selectedPaths.has(skill.pathInRepo)) continue;
-      counts.set(skill.folderName, (counts.get(skill.folderName) ?? 0) + 1);
-    }
-    return [...counts.entries()]
-      .filter(([, count]) => count > 1)
-      .map(([name]) => name);
-  }, [preview, selectedPaths]);
-
-  function resetPreview() {
-    setPreview(null);
-    setSelectedPaths(new Set());
-  }
-
-  async function handleCheck() {
-    const url = repoUrl.trim();
-    if (!url) return;
-    setChecking(true);
-    resetPreview();
-    try {
-      const next = await previewSkills(url);
-      setPreview(next);
-      setSelectedPaths(new Set(next.skills.map((skill) => skill.pathInRepo)));
-    } catch (error) {
-      toastError(
-        error instanceof Error ? error.message : 'Could not check repository',
-      );
-    } finally {
-      setChecking(false);
-    }
-  }
-
-  async function handleSave() {
-    if (!preview || selectedCount === 0) return;
-    setSaving(true);
-    try {
-      const next = await installSkills({
-        repoUrl,
-        commit: preview.commit,
-        skills: preview.skills
-          .filter((skill) => selectedPaths.has(skill.pathInRepo))
-          .map((skill) => ({
-            pathInRepo: skill.pathInRepo,
-            folderName: skill.folderName,
-          })),
-      });
-      setCatalogs(next);
-      resetPreview();
-      setRepoUrl('');
-      setTab('catalog');
-    } catch (error) {
-      toastError(
-        error instanceof Error ? error.message : 'Could not save skills',
-      );
-    } finally {
-      setSaving(false);
-    }
-  }
+  const catalogCount = catalogs.builtin.length + catalogs.user.length;
 
   async function handleDelete(folder: string) {
     setDeletingFolder(folder);
@@ -299,15 +201,6 @@ export function SkillsPanel({
     } finally {
       setDeletingFolder(null);
     }
-  }
-
-  function toggleSelected(pathInRepo: string) {
-    setSelectedPaths((current) => {
-      const next = new Set(current);
-      if (next.has(pathInRepo)) next.delete(pathInRepo);
-      else next.add(pathInRepo);
-      return next;
-    });
   }
 
   function toggleExpand(key: string) {
@@ -324,8 +217,6 @@ export function SkillsPanel({
       open={open}
       onOpenChange={(next) => {
         if (!next) {
-          resetPreview();
-          setRepoUrl('');
           setQuery('');
           setConfirmFolder(null);
           setExpanded(new Set());
@@ -335,8 +226,7 @@ export function SkillsPanel({
     >
       <DialogContent
         className={cn(
-          'grid max-h-[min(90dvh,44rem)] w-full grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0',
-          // The editor needs room for code; catalog and import stay compact.
+          'grid max-h-[min(90dvh,44rem)] w-full grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0',
           tab === 'create' ? 'sm:max-w-3xl' : 'sm:max-w-xl',
         )}
         showCloseButton
@@ -344,11 +234,11 @@ export function SkillsPanel({
         <DialogHeader className="shrink-0 gap-1.5 border-b border-border/60 px-4 py-3.5 pr-12">
           <DialogTitle>Skills</DialogTitle>
           <DialogDescription>
-            Catalog of procedure packs. Import from GitHub or write your own
-            into your home skills folder. Type / in the composer to attach a
-            pack to this send. The agent always sees this catalog and loads a
-            body with <span className="font-mono text-xs">load_skill</span> when
-            intent fits.
+            Procedure packs the agent can load. Write your own, or add folders
+            with <span className="font-mono text-xs">{ADD_COMMAND}</span>. Type
+            / in the composer to attach a pack. The agent loads a body with{' '}
+            <span className="font-mono text-xs">load_skill</span> when intent
+            fits.
           </DialogDescription>
         </DialogHeader>
 
@@ -378,22 +268,6 @@ export function SkillsPanel({
                   · {catalogCount}
                 </span>
               ) : null}
-            </button>
-            <button
-              type="button"
-              role="tab"
-              id="skills-tab-import"
-              aria-controls="skills-panel-import"
-              aria-selected={tab === 'import'}
-              onClick={() => setTab('import')}
-              className={cn(
-                'flex-1 rounded-md px-2 py-1.5 font-medium transition-colors',
-                tab === 'import'
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              Import
             </button>
             <button
               type="button"
@@ -450,7 +324,7 @@ export function SkillsPanel({
                   </div>
                   <ScrollArea className="h-[min(48vh,22rem)] pr-2">
                     <div className="pb-1">
-                      {filteredGlobal.length === 0 &&
+                      {filteredBuiltin.length === 0 &&
                       filteredUser.length === 0 ? (
                         <div className="px-0.5 py-8 text-center">
                           <p className="text-sm text-muted-foreground">
@@ -458,36 +332,24 @@ export function SkillsPanel({
                               ? 'No skills match that search.'
                               : 'No skills in the catalog yet.'}
                           </p>
-                          {!query ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="mt-3"
-                              onClick={() => setTab('import')}
-                            >
-                              Import from GitHub
-                            </Button>
-                          ) : null}
                         </div>
                       ) : (
                         <div className="space-y-1">
-                          {filteredGlobal.length > 0 ? (
+                          {filteredBuiltin.length > 0 ? (
                             <section>
                               <h3 className="sticky top-0 z-10 bg-popover px-2 pt-1 pb-1 text-xs font-medium text-muted-foreground">
-                                Built-in · {filteredGlobal.length}
+                                Built-in · {filteredBuiltin.length}
                               </h3>
                               <ul className="space-y-0.5">
-                                {filteredGlobal.map((skill) => (
+                                {filteredBuiltin.map((skill) => (
                                   <CatalogRow
-                                    key={`global:${skill.folder}`}
+                                    key={`builtin:${skill.folder}`}
                                     skill={skill}
-                                    overrides={false}
                                     expanded={expanded.has(
-                                      `global:${skill.folder}`,
+                                      `builtin:${skill.folder}`,
                                     )}
                                     onToggleExpand={() =>
-                                      toggleExpand(`global:${skill.folder}`)
+                                      toggleExpand(`builtin:${skill.folder}`)
                                     }
                                   />
                                 ))}
@@ -502,20 +364,9 @@ export function SkillsPanel({
                               <div className="px-2 pb-3">
                                 <p className="text-sm text-muted-foreground">
                                   {query
-                                    ? 'No imported skills match that search.'
-                                    : 'Nothing imported yet.'}
+                                    ? 'No skills match that search.'
+                                    : 'Nothing in your skills folders yet.'}
                                 </p>
-                                {!query ? (
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    className="mt-2"
-                                    onClick={() => setTab('import')}
-                                  >
-                                    Import from GitHub
-                                  </Button>
-                                ) : null}
                               </div>
                             ) : (
                               <ul className="space-y-0.5">
@@ -526,7 +377,6 @@ export function SkillsPanel({
                                     <CatalogRow
                                       key={`user:${skill.folder}`}
                                       skill={skill}
-                                      overrides={globalNames.has(skill.name)}
                                       expanded={expanded.has(
                                         `user:${skill.folder}`,
                                       )}
@@ -589,14 +439,11 @@ export function SkillsPanel({
                       )}
                     </div>
                   </ScrollArea>
-                  <p className="type-caption shrink-0 leading-4 text-muted-foreground">
-                    Type / in the composer to attach a pack to this send. The
-                    agent can also load any catalog skill with load_skill.
-                  </p>
+                  <AddHint />
                 </>
               )}
             </div>
-          ) : tab === 'create' ? (
+          ) : (
             <div
               id="skills-panel-create"
               role="tabpanel"
@@ -611,127 +458,8 @@ export function SkillsPanel({
                 onCancel={() => setTab('catalog')}
               />
             </div>
-          ) : (
-            <div
-              id="skills-panel-import"
-              role="tabpanel"
-              aria-labelledby="skills-tab-import"
-              className="flex min-h-0 flex-1 flex-col gap-3"
-            >
-              <div className="shrink-0 space-y-1.5">
-                <Label htmlFor="skill-repo-url">GitHub repository</Label>
-                <div className="flex gap-2">
-                  <input
-                    id="skill-repo-url"
-                    value={repoUrl}
-                    onChange={(event) => {
-                      setRepoUrl(event.target.value);
-                      if (preview) resetPreview();
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault();
-                        void handleCheck();
-                      }
-                    }}
-                    placeholder="https://github.com/owner/repo"
-                    className="h-9 min-w-0 flex-1 rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-9 shrink-0"
-                    disabled={checking || !repoUrl.trim()}
-                    onClick={() => void handleCheck()}
-                  >
-                    {checking ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : null}
-                    Check
-                  </Button>
-                </div>
-              </div>
-
-              {checking ? (
-                <CatalogSkeleton />
-              ) : preview ? (
-                <div className="flex min-h-0 flex-1 flex-col">
-                  <p className="mb-1.5 shrink-0 text-xs text-muted-foreground">
-                    {preview.owner}/{preview.repo} @ {shortSha(preview.commit)}
-                    {preview.skills.length === 0
-                      ? ' — no SKILL.md files'
-                      : ` · ${selectedCount} of ${preview.skills.length} selected`}
-                  </p>
-                  {preview.skills.length === 0 ? (
-                    <p className="rounded-lg border border-dashed border-border px-3 py-6 text-sm text-muted-foreground">
-                      This repository has no skill packs the agent can import.
-                    </p>
-                  ) : (
-                    <ScrollArea className="h-[min(40vh,18rem)] pr-2">
-                      <ul className="space-y-0.5 pb-1">
-                        {preview.skills.map((skill) => (
-                          <ImportRow
-                            key={skill.pathInRepo}
-                            skill={skill}
-                            checked={selectedPaths.has(skill.pathInRepo)}
-                            onToggle={() => toggleSelected(skill.pathInRepo)}
-                          />
-                        ))}
-                      </ul>
-                    </ScrollArea>
-                  )}
-                </div>
-              ) : (
-                <div className="flex flex-1 items-center justify-center rounded-lg border border-dashed border-border px-4 py-8">
-                  <p className="max-w-sm text-center text-sm text-muted-foreground">
-                    Paste a public GitHub URL, then Check to preview skill
-                    packs. Nothing is written until you install.
-                  </p>
-                </div>
-              )}
-            </div>
           )}
         </div>
-
-        {tab === 'import' ? (
-          <DialogFooter className="mt-0 shrink-0">
-            <div className="flex w-full flex-col items-stretch gap-2">
-              {selectedCollisions.length > 0 ? (
-                <p className="text-xs text-[var(--warning-fg)]">
-                  Two packs flatten to {selectedCollisions.join(', ')}. Uncheck
-                  one before installing.
-                </p>
-              ) : null}
-              <div className="flex items-center justify-end gap-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onOpenChange(false)}
-                >
-                  Close
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={
-                    !preview ||
-                    selectedCount === 0 ||
-                    saving ||
-                    selectedCollisions.length > 0
-                  }
-                  onClick={() => void handleSave()}
-                >
-                  {saving ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : null}
-                  {selectedCount > 0 ? `Install ${selectedCount}` : 'Install'}
-                </Button>
-              </div>
-            </div>
-          </DialogFooter>
-        ) : null}
       </DialogContent>
     </Dialog>
   );

@@ -130,8 +130,7 @@
     "cors": "^2.8.6",
     "express": "^4.21.2",
     "pino": "^9.5.0",
-    "pino-http": "^10.3.0",
-    "tar": "^7.4.3"
+    "pino-http": "^10.3.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

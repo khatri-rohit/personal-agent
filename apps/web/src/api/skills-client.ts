@@ -4,27 +4,13 @@ export type SkillCatalogItem = {
   name: string;
   description: string;
   folder: string;
-  source: 'global' | 'user';
+  source: 'builtin' | 'user';
+  issue?: 'invalid' | 'conflict';
 };
 
 export type SkillCatalogs = {
-  global: SkillCatalogItem[];
+  builtin: SkillCatalogItem[];
   user: SkillCatalogItem[];
-};
-
-export type FoundSkill = {
-  name: string;
-  description: string;
-  folderName: string;
-  pathInRepo: string;
-  folderCollision?: boolean;
-};
-
-export type SkillPreview = {
-  owner: string;
-  repo: string;
-  commit: string;
-  skills: FoundSkill[];
 };
 
 async function readJson<T>(res: Response): Promise<T> {
@@ -40,29 +26,7 @@ export async function fetchSkillCatalogs(): Promise<SkillCatalogs> {
   return readJson<SkillCatalogs>(res);
 }
 
-export async function previewSkills(repoUrl: string): Promise<SkillPreview> {
-  const res = await fetch(`${API_BASE}/api/agent/skills/preview`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repoUrl }),
-  });
-  return readJson<SkillPreview>(res);
-}
-
-export async function installSkills(input: {
-  repoUrl: string;
-  commit: string;
-  skills: { pathInRepo: string; folderName: string }[];
-}): Promise<SkillCatalogs> {
-  const res = await fetch(`${API_BASE}/api/agent/skills/install`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  });
-  return readJson<SkillCatalogs>(res);
-}
-
-/** Save a hand-written SKILL.md under the home skills folder. */
+/** Save a hand-authored SKILL.md under the home skills folder. */
 export async function createUserSkill(input: {
   name: string;
   content: string;

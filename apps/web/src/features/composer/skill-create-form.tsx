@@ -35,13 +35,16 @@ Agent: what it does and what it reports.
 `;
 }
 
-/** Folder-safe slug; mirrors the API's folder-name rule. */
+/** Agent Skills spec: lowercase, digits, hyphens, ≤ 64, matches folder. */
 function toSkillName(raw: string): string {
   return raw
     .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^[^a-z0-9]+/, '')
-    .slice(0, 80);
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/g, '')
+    .replace(/-{2,}/g, '-')
+    .slice(0, 64)
+    .replace(/-+$/g, '');
 }
 
 /** Keep the frontmatter and title in step with the name field. */
@@ -102,9 +105,9 @@ export function SkillCreateForm({
           className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 font-mono text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
         />
         <p className="type-caption text-subtle-foreground">
-          Saved as{' '}
-          <span className="font-mono">skills/{name || '…'}/SKILL.md</span>. The
-          description tells the agent when to load it.
+          Saved in your home skills folder as{' '}
+          <span className="font-mono">{name || '…'}/SKILL.md</span>. Name must
+          match the folder. The description tells the agent when to load it.
         </p>
       </div>
 
