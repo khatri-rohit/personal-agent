@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { Circle, MessageSquare } from 'lucide-react';
+import { Kbd } from '@/components/ui/kbd';
 import { cn } from '@/lib/utils';
 import { clampChatTitle } from '@/features/threads/thread-title';
 import { formatRelativeTime } from '@/lib/format-relative-time';
@@ -179,6 +180,11 @@ export function RecentThreadsSwitcher() {
           advance(e.shiftKey ? -1 : 1);
           return;
         }
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          advance(e.key === 'ArrowDown' ? 1 : -1);
+          return;
+        }
         if (e.key === 'Enter') {
           e.preventDefault();
           const entry = entriesRef.current[selectedRef.current];
@@ -223,15 +229,15 @@ export function RecentThreadsSwitcher() {
         }
       }}
     >
-      <div
-        role="listbox"
-        aria-label="Recently viewed"
-        className="w-full max-w-md overflow-hidden rounded-lg bg-popover text-popover-foreground shadow-2xl ring-1 ring-foreground/10"
-      >
-        <div className="type-caption px-3 pt-2.5 pb-1.5 font-medium text-muted-foreground">
+      <div className="w-full max-w-2xl overflow-hidden rounded-lg bg-popover text-popover-foreground shadow-2xl ring-1 ring-foreground/10">
+        <div className="type-caption px-4 pt-3 pb-1.5 font-medium text-muted-foreground">
           Recently Viewed
         </div>
-        <ul className="max-h-[min(420px,60vh)] overflow-y-auto px-1.5 pb-1.5">
+        <ul
+          role="listbox"
+          aria-label="Recently viewed"
+          className="max-h-[min(480px,60vh)] overflow-y-auto px-2 pb-2"
+        >
           {entries.map((entry, index) => {
             const selected = index === selectedIndex;
             return (
@@ -240,8 +246,13 @@ export function RecentThreadsSwitcher() {
                   type="button"
                   role="option"
                   aria-selected={selected}
+                  ref={
+                    selected
+                      ? (el) => el?.scrollIntoView({ block: 'nearest' })
+                      : undefined
+                  }
                   className={cn(
-                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none',
+                    'type-body flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left outline-none',
                     selected
                       ? 'bg-accent text-foreground'
                       : 'text-foreground/90 hover:bg-accent/60',
@@ -251,12 +262,12 @@ export function RecentThreadsSwitcher() {
                 >
                   {entry.kind === 'home' ? (
                     <Circle
-                      className="size-3.5 shrink-0 text-muted-foreground"
+                      className="size-4 shrink-0 text-muted-foreground"
                       aria-hidden
                     />
                   ) : (
                     <MessageSquare
-                      className="size-3.5 shrink-0 text-muted-foreground"
+                      className="size-4 shrink-0 text-muted-foreground"
                       aria-hidden
                     />
                   )}
@@ -266,14 +277,27 @@ export function RecentThreadsSwitcher() {
                       {formatRelativeTime(entry.updatedAt)}
                     </span>
                   ) : null}
-                  <span className="type-caption shrink-0 text-subtle-foreground">
-                    Agent
-                  </span>
                 </button>
               </li>
             );
           })}
         </ul>
+        <div className="flex items-center gap-4 border-t border-foreground/10 px-4 py-2 text-xs text-muted-foreground">
+          <span>
+            <Kbd className="bg-foreground/10 text-muted-foreground">Ctrl</Kbd>{' '}
+            <Kbd className="bg-foreground/10 text-muted-foreground">`</Kbd> cycle
+          </span>
+          <span>
+            <Kbd className="bg-foreground/10 text-muted-foreground">↑</Kbd>{' '}
+            <Kbd className="bg-foreground/10 text-muted-foreground">↓</Kbd> select
+          </span>
+          <span>
+            <Kbd className="bg-foreground/10 text-muted-foreground">Enter</Kbd> open
+          </span>
+          <span>
+            <Kbd className="bg-foreground/10 text-muted-foreground">Esc</Kbd> close
+          </span>
+        </div>
       </div>
     </div>
   );

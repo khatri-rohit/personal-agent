@@ -283,6 +283,7 @@ async function runLoopCore(
       name: skill.name,
       tokens: Math.ceil(skill.instructions.length / CHARS_PER_TOKEN),
       source: 'pick',
+      scope: skill.scope,
     });
   }
 

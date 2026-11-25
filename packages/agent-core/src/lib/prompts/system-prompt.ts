@@ -238,15 +238,13 @@ function homeRecordLine(registry: ToolRegistry): string {
 
 /**
  * Home with a short identity: how to read the turn and how to answer, with
- * compact tool guidance. The long house style lives in the
- * ai-writing-guidelines skill, loaded when finished prose matters.
+ * compact tool guidance. A long house style is an optional pack the user
+ * installs (repo `skills/ai-writing-guidelines`); the catalog surfaces it
+ * when present, so the prompt names no skill that may not exist.
  */
 function compactHomePrompt(registry: ToolRegistry): string {
-  const styleSkill = registry.byName.has('load_skill')
-    ? '\nFor finished prose the user will keep (docs, posts, emails), load the ai-writing-guidelines skill first.'
-    : '';
   return `
-${HOME_COMPACT_IDENTITY}${styleSkill}
+${HOME_COMPACT_IDENTITY}
 
 # Tools
 ${toolProtocol(registry, false)}

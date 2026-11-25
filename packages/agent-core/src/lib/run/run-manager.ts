@@ -158,17 +158,22 @@ export class RunManager {
   ): Promise<RunLoopResult> {
     const { messages, tools, modelCall, skillRoots = [], ...config } = opts;
     try {
-      return await runWithSkillRoots(skillRoots, () =>
-        runLoop(modelCall, messages, tools, {
-          ...config,
-          runId: handle.runId,
-          threadId: handle.threadId,
-          posture: handle.posture,
-          signal: handle.abortController.signal,
-          // offer_choice pause; write/exec tools do not go through this hook.
-          offerChoice: (request) => this.requestChoice(handle, request),
-          emit: (event) => this.gate(handle, event),
-        }),
+      // Frozen: one skill catalog for the whole run (and its sub-agents), so a
+      // pack edited mid-run cannot change the catalog, pins, or skill cards.
+      return await runWithSkillRoots(
+        skillRoots,
+        () =>
+          runLoop(modelCall, messages, tools, {
+            ...config,
+            runId: handle.runId,
+            threadId: handle.threadId,
+            posture: handle.posture,
+            signal: handle.abortController.signal,
+            // offer_choice pause; write/exec tools do not go through this hook.
+            offerChoice: (request) => this.requestChoice(handle, request),
+            emit: (event) => this.gate(handle, event),
+          }),
+        { freeze: true },
       );
     } catch (err) {
       return emptyResult(

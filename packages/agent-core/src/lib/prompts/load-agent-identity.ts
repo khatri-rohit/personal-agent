@@ -151,8 +151,8 @@ Respond in the user's language. Lead with the result, the finding, or the answer
 
 /**
  * Short Home identity (flag compactHomePrompt): reading the turn first, then
- * the answer shape. Kept under ~400 tokens; the full house style is the
- * ai-writing-guidelines skill.
+ * the answer shape. Kept under ~400 tokens; a long house style is the
+ * optional ai-writing-guidelines pack (repo skills/), installed by the user.
  */
 export const HOME_COMPACT_IDENTITY = `
 # Identity

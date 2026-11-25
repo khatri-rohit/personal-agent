@@ -33,6 +33,7 @@ import type {
 import { manageWorkingSet } from '../context/residency';
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
 import type { RunManager } from '../run/run-manager';
+import { getSkill } from '../tools/skills';
 import { traitsResolver } from '../tools/traits';
 import type { ToolRegistry } from '../tools/types';
 import { createToolRegistry, listTools } from '../tools/registry';
@@ -423,12 +424,14 @@ export function createSubagentRunner(deps: {
       ]);
       const childTrace = host.trace(threadId);
       for (const skill of bound) {
+        const scope = getSkill(skill.name)?.scope;
         childTrace?.({
           type: 'skill_loaded',
           runId: subRunId,
           name: skill.name,
           tokens: Math.ceil(skill.body.length / 4),
           source: profile.skills.includes(skill.name) ? 'profile' : 'pick',
+          ...(scope ? { scope } : {}),
         });
       }
       const system = buildSubagentPrompt({

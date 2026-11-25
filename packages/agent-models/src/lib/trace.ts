@@ -247,6 +247,8 @@ export type TraceEvent =
       section?: string;
       tokens: number;
       source: 'model' | 'pick' | 'profile';
+      /** Which root the pack came from (absent in traces before 2026-11-25). */
+      scope?: 'builtin' | 'user' | 'workspace';
     }
   | {
       type: 'skill_evicted';

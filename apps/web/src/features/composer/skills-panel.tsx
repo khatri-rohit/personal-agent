@@ -5,6 +5,10 @@ import { Search, Trash2 } from 'lucide-react';
 import {
   deleteUserSkill,
   fetchSkillCatalogs,
+  fetchSkillDocument,
+  OWN_SKILL_ROOT,
+  SHARED_SKILL_ROOT,
+  skillRowKey,
   type SkillCatalogItem,
   type SkillCatalogs,
 } from '@/api/skills-client';
@@ -78,10 +82,86 @@ function OriginBadge({ skill }: { skill: SkillCatalogItem }) {
       </Badge>
     );
   }
+  if (skill.root === SHARED_SKILL_ROOT) {
+    return (
+      <Badge
+        variant="outline"
+        className="shrink-0 font-normal"
+        title="~/.agents/skills, shared with other agents and npx skills"
+      >
+        Shared
+      </Badge>
+    );
+  }
   return (
     <Badge variant="outline" className="shrink-0 font-normal">
       Yours
     </Badge>
+  );
+}
+
+/** The pack's SKILL.md, read on demand: what the model will actually be told. */
+function SkillSource({
+  skill,
+  threadId,
+}: {
+  skill: SkillCatalogItem;
+  threadId?: string;
+}) {
+  const [state, setState] = useState<
+    | { kind: 'idle' }
+    | { kind: 'loading' }
+    | { kind: 'ready'; content: string }
+    | { kind: 'error'; message: string }
+  >({ kind: 'idle' });
+
+  async function load() {
+    setState({ kind: 'loading' });
+    try {
+      const doc = await fetchSkillDocument({
+        folder: skill.folder,
+        ...(skill.root ? { root: skill.root } : {}),
+        ...(threadId ? { threadId } : {}),
+      });
+      setState({ kind: 'ready', content: doc.content });
+    } catch (error) {
+      setState({
+        kind: 'error',
+        message: error instanceof Error ? error.message : 'Could not read SKILL.md',
+      });
+    }
+  }
+
+  if (state.kind === 'ready') {
+    return (
+      <div className="mt-2">
+        <pre className="max-h-64 overflow-auto rounded-md border border-border bg-muted/40 p-2 font-mono text-[11px] leading-4 whitespace-pre-wrap break-words text-foreground/90">
+          {state.content}
+        </pre>
+        <button
+          type="button"
+          className="mt-1 text-xs text-muted-foreground underline-offset-2 hover:underline"
+          onClick={() => setState({ kind: 'idle' })}
+        >
+          Hide SKILL.md
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        className="text-xs text-muted-foreground underline-offset-2 hover:underline disabled:opacity-60"
+        disabled={state.kind === 'loading'}
+        onClick={() => void load()}
+      >
+        {state.kind === 'loading' ? 'Reading…' : 'View SKILL.md'}
+      </button>
+      {state.kind === 'error' ? (
+        <p className="mt-1 text-xs text-[var(--warning-fg)]">{state.message}</p>
+      ) : null}
+    </div>
   );
 }
 
@@ -90,11 +170,13 @@ function CatalogRow({
   expanded,
   onToggleExpand,
   action,
+  threadId,
 }: {
   skill: SkillCatalogItem;
   expanded: boolean;
   onToggleExpand: () => void;
   action?: React.ReactNode;
+  threadId?: string;
 }) {
   return (
     <li className="flex items-start gap-2 rounded-lg px-2 py-2.5">
@@ -122,15 +204,25 @@ function CatalogRow({
         </button>
         {skill.issue === 'invalid' ? (
           <p className="mt-1 text-xs text-[var(--warning-fg)]">
-            Not loaded. Folder name must match the spec name, with a
-            description.
+            Not loaded: {skill.reason ?? 'the folder breaks the Agent Skills spec'}.
           </p>
         ) : null}
         {skill.issue === 'conflict' ? (
           <p className="mt-1 text-xs text-[var(--warning-fg)]">
-            Not loaded. Another pack with this name takes priority.
+            Not loaded: {skill.reason ?? 'another pack with this name takes priority'}.
           </p>
         ) : null}
+        {expanded && skill.root === SHARED_SKILL_ROOT ? (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Installed in ~/.agents/skills, which other agents share. Remove it
+            with{' '}
+            <span className="font-mono text-foreground/80">
+              npx skills remove {skill.folder} -g
+            </span>
+            .
+          </p>
+        ) : null}
+        {expanded ? <SkillSource skill={skill} threadId={threadId} /> : null}
       </div>
       {action ? (
         <div className="flex shrink-0 items-start gap-0.5 pt-0.5">{action}</div>
@@ -209,7 +301,7 @@ export function SkillsPanel({
   async function handleDelete(folder: string) {
     setDeletingFolder(folder);
     try {
-      setCatalogs(await deleteUserSkill(folder));
+      setCatalogs(await deleteUserSkill(folder, threadId));
       setConfirmFolder(null);
     } catch (error) {
       toastError(
@@ -361,13 +453,12 @@ export function SkillsPanel({
                               <ul className="space-y-0.5">
                                 {filteredWorkspace.map((skill) => (
                                   <CatalogRow
-                                    key={`workspace:${skill.folder}`}
+                                    key={skillRowKey(skill)}
                                     skill={skill}
-                                    expanded={expanded.has(
-                                      `workspace:${skill.folder}`,
-                                    )}
+                                    threadId={threadId}
+                                    expanded={expanded.has(skillRowKey(skill))}
                                     onToggleExpand={() =>
-                                      toggleExpand(`workspace:${skill.folder}`)
+                                      toggleExpand(skillRowKey(skill))
                                     }
                                   />
                                 ))}
@@ -382,13 +473,12 @@ export function SkillsPanel({
                               <ul className="space-y-0.5">
                                 {filteredBuiltin.map((skill) => (
                                   <CatalogRow
-                                    key={`builtin:${skill.folder}`}
+                                    key={skillRowKey(skill)}
                                     skill={skill}
-                                    expanded={expanded.has(
-                                      `builtin:${skill.folder}`,
-                                    )}
+                                    threadId={threadId}
+                                    expanded={expanded.has(skillRowKey(skill))}
                                     onToggleExpand={() =>
-                                      toggleExpand(`builtin:${skill.folder}`)
+                                      toggleExpand(skillRowKey(skill))
                                     }
                                   />
                                 ))}
@@ -410,20 +500,23 @@ export function SkillsPanel({
                             ) : (
                               <ul className="space-y-0.5">
                                 {filteredUser.map((skill) => {
-                                  const confirming =
-                                    confirmFolder === skill.folder;
+                                  const rowKey = skillRowKey(skill);
+                                  const confirming = confirmFolder === rowKey;
+                                  // Only hand-written packs ($AGENT_HOME/skills)
+                                  // are removable here; ~/.agents/skills belongs
+                                  // to npx skills and other agents.
+                                  const removable =
+                                    skill.root === undefined ||
+                                    skill.root === OWN_SKILL_ROOT;
                                   return (
                                     <CatalogRow
-                                      key={`user:${skill.folder}`}
+                                      key={rowKey}
                                       skill={skill}
-                                      expanded={expanded.has(
-                                        `user:${skill.folder}`,
-                                      )}
-                                      onToggleExpand={() =>
-                                        toggleExpand(`user:${skill.folder}`)
-                                      }
+                                      threadId={threadId}
+                                      expanded={expanded.has(rowKey)}
+                                      onToggleExpand={() => toggleExpand(rowKey)}
                                       action={
-                                        confirming ? (
+                                        !removable ? undefined : confirming ? (
                                           <div className="flex flex-col items-stretch gap-1 sm:flex-row">
                                             <Button
                                               type="button"
@@ -461,7 +554,7 @@ export function SkillsPanel({
                                             className="size-7 text-muted-foreground hover:text-destructive"
                                             aria-label={`Remove ${skill.name}`}
                                             onClick={() =>
-                                              setConfirmFolder(skill.folder)
+                                              setConfirmFolder(rowKey)
                                             }
                                           >
                                             <Trash2 className="size-3.5" />
@@ -490,6 +583,7 @@ export function SkillsPanel({
               className="flex min-h-[min(60vh,28rem)] flex-1 flex-col"
             >
               <SkillCreateForm
+                threadId={threadId}
                 onCreated={(next) => {
                   setCatalogs(next);
                   setTab('catalog');

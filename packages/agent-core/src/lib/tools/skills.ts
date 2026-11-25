@@ -1,5 +1,13 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  type Dirent,
+  type Stats,
+} from 'node:fs';
 import path from 'node:path';
 
 import { parse as parseYaml } from 'yaml';
@@ -7,9 +15,20 @@ import { parse as parseYaml } from 'yaml';
 import type { Skill, SkillMetadata, Tool } from './types';
 
 /**
- * Built-in packs: packages/agent-core/skills/<name>/SKILL.md.
- * Process roots (low → high): builtin, ~/.agents/skills, $AGENT_HOME/skills.
- * A bound folder adds `.agents/skills` for that run. Same name: later root wins.
+ * Where skills come from, and who wins a name.
+ *
+ * Roots, in precedence order:
+ * - builtin: packages/agent-core/skills (ships with the harness).
+ * - user: the host's process roots, in order (`~/.agents/skills`, then
+ *   `$AGENT_HOME/skills`). A later user root wins a name over earlier user
+ *   roots and over builtin: your own packs are yours to override with.
+ * - workspace: a bound folder's `.agents/skills`, overlaid per run. A
+ *   workspace pack only adds names no other root has; it never replaces a
+ *   builtin or user pack. An opened repo must not silently change the
+ *   procedures you (or a sub-agent profile) rely on.
+ *
+ * Every root is trusted as-is: whatever sits in these folders is loadable.
+ * Packs that break the Agent Skills spec are listed with a reason, never loaded.
  */
 
 export type SkillScope = 'builtin' | 'user' | 'workspace';
@@ -17,6 +36,8 @@ export type SkillScope = 'builtin' | 'user' | 'workspace';
 export type SkillRoot = {
   scope: SkillScope;
   path: string;
+  /** Stable label for this root (`agent-home`, `agents`, …). Defaults to the scope. */
+  id?: string;
 };
 
 export type SkillIssue = 'invalid' | 'conflict';
@@ -24,12 +45,21 @@ export type SkillIssue = 'invalid' | 'conflict';
 export type SkillCatalogEntry = SkillMetadata & {
   folder: string;
   source: SkillScope;
+  /** Id of the root the folder sits in. */
+  root: string;
   issue?: SkillIssue;
+  /** Why the pack is invalid or shadowed. */
+  reason?: string;
 };
+
+/** A loadable skill plus where it came from. */
+export type CatalogSkill = Skill & { scope: SkillScope; root: string };
 
 /** Agent Skills spec: name is 1–64 chars, lowercase / digits / hyphens. */
 export const SKILL_NAME_MAX = 64;
 export const SKILL_DESCRIPTION_MAX = 1024;
+/** A SKILL.md above this is not prompt text; it is listed invalid and never read. */
+export const SKILL_FILE_MAX_BYTES = 1024 * 1024;
 const SKILL_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 export function isSpecSkillName(name: string): boolean {
@@ -40,8 +70,31 @@ export function isSpecSkillName(name: string): boolean {
   );
 }
 
-let configuredRoots: SkillRoot[] | null = null;
-const extraRoots = new AsyncLocalStorage<SkillRoot[]>();
+type ResolvedRoot = Required<SkillRoot>;
+
+type Assembled = {
+  byName: Map<string, CatalogSkill>;
+  loadable: CatalogSkill[];
+  listings: SkillCatalogEntry[];
+};
+
+type SkillContext = {
+  extra: ResolvedRoot[];
+  /** Set for a run: the catalog is read once and held until the run ends. */
+  freeze: boolean;
+  frozen?: Assembled;
+};
+
+let configuredRoots: ResolvedRoot[] | null = null;
+const context = new AsyncLocalStorage<SkillContext>();
+
+function resolveRoot(root: SkillRoot): ResolvedRoot {
+  return {
+    scope: root.scope,
+    path: path.resolve(root.path),
+    id: root.id ?? root.scope,
+  };
+}
 
 /** Bound-folder packs: `<workspace>/.agents/skills`. Empty when unbound (Home). */
 export function extraSkillRoots(workspaceRoot?: string): SkillRoot[] {
@@ -49,77 +102,159 @@ export function extraSkillRoots(workspaceRoot?: string): SkillRoot[] {
   return [
     {
       scope: 'workspace',
+      id: 'workspace',
       path: path.join(workspaceRoot, '.agents', 'skills'),
     },
   ];
 }
 
-/** Overlay `extra` for this call (and its async work). Empty `extra` keeps the current overlay. */
-export function runWithSkillRoots<T>(extra: SkillRoot[], fn: () => T): T {
-  if (extra.length === 0) return fn();
-  return extraRoots.run(
-    extra.map((root) => ({
-      scope: root.scope,
-      path: path.resolve(root.path),
-    })),
+/**
+ * The shared ecosystem root (`~/.agents/skills`, where `npx skills add -g`
+ * and other agents install) and this harness's own `$AGENT_HOME/skills`
+ * (hand-written packs). Lowest to highest.
+ */
+export function standardUserSkillRoots(
+  agentHome: string,
+  homedir: string,
+): SkillRoot[] {
+  return [
+    { scope: 'user', id: 'agents', path: path.join(homedir, '.agents', 'skills') },
+    { scope: 'user', id: 'agent-home', path: path.join(agentHome, 'skills') },
+  ];
+}
+
+/**
+ * Overlay `extra` for this call and its async work. Empty `extra` keeps the
+ * current overlay. `freeze` (a run) reads the catalog once and serves that
+ * snapshot to every lookup inside, so a pack edited mid-run cannot change
+ * the catalog, a pin, or a skill card halfway through.
+ */
+export function runWithSkillRoots<T>(
+  extra: SkillRoot[],
+  fn: () => T,
+  options: { freeze?: boolean } = {},
+): T {
+  const current = context.getStore();
+  const freeze = options.freeze === true;
+  if (extra.length === 0 && !freeze) return fn();
+  if (extra.length === 0 && current?.freeze) return fn();
+  return context.run(
+    {
+      extra: extra.length > 0 ? extra.map(resolveRoot) : (current?.extra ?? []),
+      freeze: freeze || current?.freeze === true,
+    },
     fn,
   );
 }
 
+const CORE_PACKAGE = '@agent/agent-core';
+
+/** `dir` is `<agent-core package>/skills`: its parent's package.json names agent-core. */
+function isCoreSkillsDir(dir: string): boolean {
+  if (!existsSync(dir)) return false;
+  try {
+    const pkg = JSON.parse(
+      readFileSync(path.join(path.dirname(dir), 'package.json'), 'utf8'),
+    ) as { name?: unknown };
+    return pkg.name === CORE_PACKAGE;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The built-in packs folder. Only a `skills/` next to agent-core's own
+ * package.json qualifies, so a stray `skills/` under cwd (or beside a
+ * bundled build) is never mistaken for built-ins.
+ */
+let builtinRoot: string | null = null;
+
 export function resolveSkillsRoot(): string {
-  const starts = [process.cwd()];
+  // The package does not move while the process runs; hosts call this often.
+  if (builtinRoot) return builtinRoot;
+  const starts: string[] = [];
   try {
     starts.push(__dirname);
   } catch {
-    /* CJS bundle without __dirname */
+    /* ESM bundle without __dirname */
   }
+  starts.push(process.cwd());
 
-  const candidates: string[] = [path.resolve(__dirname, '../../../skills')];
   for (const start of starts) {
     let dir = path.resolve(start);
-    for (let i = 0; i < 8; i++) {
-      // Built-ins only: never the first random `skills/` under cwd (F11).
-      candidates.push(path.join(dir, 'packages', 'agent-core', 'skills'));
+    for (let i = 0; i < 10; i++) {
+      for (const candidate of [
+        path.join(dir, 'skills'),
+        path.join(dir, 'packages', 'agent-core', 'skills'),
+      ]) {
+        if (isCoreSkillsDir(candidate)) {
+          builtinRoot = candidate;
+          return candidate;
+        }
+      }
       const parent = path.dirname(dir);
       if (parent === dir) break;
       dir = parent;
     }
   }
-
-  for (const dir of candidates) {
-    if (existsSync(dir)) return dir;
-  }
+  // Not found: do not memoize, so a later call (other cwd) can still find it.
   return path.resolve(process.cwd(), 'packages', 'agent-core', 'skills');
 }
 
-function defaultRoots(): SkillRoot[] {
-  return [{ scope: 'builtin', path: resolveSkillsRoot() }];
+function defaultRoots(): ResolvedRoot[] {
+  return [resolveRoot({ scope: 'builtin', path: resolveSkillsRoot() })];
 }
 
-function roots(): SkillRoot[] {
+/** Path identity for de-duplication (symlinks resolved, case-folded on Windows). */
+function rootIdentity(root: string): string {
+  let real = root;
+  try {
+    real = realpathSync.native(root);
+  } catch {
+    /* missing root: compare the resolved path */
+  }
+  return process.platform === 'win32' ? real.toLowerCase() : real;
+}
+
+/**
+ * Process roots, then the overlay. A folder reachable through two roots
+ * (a workspace bound at `~`, so its `.agents/skills` is the user root) is
+ * read once, under the first (higher-trust) root that names it.
+ */
+function roots(): ResolvedRoot[] {
   const base = configuredRoots ?? defaultRoots();
-  const extra = extraRoots.getStore();
-  return extra && extra.length > 0 ? [...base, ...extra] : base;
+  const extra = context.getStore()?.extra ?? [];
+  const seen = new Set<string>();
+  const out: ResolvedRoot[] = [];
+  for (const root of [...base, ...extra]) {
+    const key = rootIdentity(root.path);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(root);
+  }
+  return out;
 }
 
 /** `null` restores the built-in root only (tests). */
 export function configureSkillRoots(next: SkillRoot[] | null): void {
-  configuredRoots = next
-    ? next.map((root) => ({
-        scope: root.scope,
-        path: path.resolve(root.path),
-      }))
-    : null;
+  const resolved = next ? next.map(resolveRoot) : null;
+  // Hosts call this on every request; only a real change drops the cache.
+  if (JSON.stringify(resolved) === JSON.stringify(configuredRoots)) return;
+  configuredRoots = resolved;
+  cache = null;
 }
 
+/** Drop the cached catalog (after the host writes or removes a pack). */
 export function invalidateSkillCatalog(): void {
-  /* Catalog is read from disk on each call. */
+  cache = null;
 }
 
 export type ParsedSkill = {
   name: string;
   description: string;
   instructions: string;
+  /** Why the frontmatter could not be read, when it could not. */
+  error?: string;
 };
 
 export function parseSkillMarkdown(
@@ -133,6 +268,7 @@ export function parseSkillMarkdown(
       name: fallbackName,
       description: '',
       instructions: trimmed.trim(),
+      error: 'no --- frontmatter block',
     };
   }
   const fm = trimmed.slice(3, end);
@@ -149,54 +285,100 @@ export function parseSkillMarkdown(
       if (typeof rec.description === 'string' && rec.description.trim()) {
         description = rec.description.trim();
       }
+    } else {
+      return { name, description, instructions: body, error: 'frontmatter is not a YAML map' };
     }
   } catch {
-    /* invalid YAML → empty description, listing is rejected */
+    // Strict YAML rejects common hand-written slips, most often an unquoted
+    // ": " inside a description ("Each comment is one line: location, …").
+    // Other harnesses still load those packs, so read the two fields we need
+    // line by line before calling the pack invalid.
+    const loose = looseFrontmatter(fm);
+    if (loose.name && loose.description) {
+      return { name: loose.name, description: loose.description, instructions: body };
+    }
+    return { name, description, instructions: body, error: 'frontmatter is not valid YAML' };
   }
   return { name, description, instructions: body };
 }
 
-function specIssue(folder: string, parsed: ParsedSkill): boolean {
-  return (
-    !isSpecSkillName(parsed.name) ||
-    parsed.name !== folder ||
-    parsed.description.length < 1 ||
-    parsed.description.length > SKILL_DESCRIPTION_MAX
-  );
+/**
+ * Top-level `name:` / `description:` read without YAML: the value runs to
+ * the end of the line (outer quotes dropped), or for a `>` / `|` block, the
+ * indented lines that follow (folded with spaces, or kept as lines).
+ */
+function looseFrontmatter(fm: string): { name?: string; description?: string } {
+  const lines = fm.split('\n');
+  const out: { name?: string; description?: string } = {};
+  for (let i = 0; i < lines.length; i++) {
+    const match = /^(name|description)\s*:\s*(.*)$/.exec(lines[i] ?? '');
+    if (!match) continue;
+    const key = match[1] as 'name' | 'description';
+    let value = (match[2] ?? '').trim();
+    const block = /^([>|])[+-]?$/.exec(value);
+    if (block) {
+      const parts: string[] = [];
+      while (i + 1 < lines.length && /^(\s+\S|\s*$)/.test(lines[i + 1] ?? '')) {
+        parts.push((lines[++i] ?? '').trim());
+      }
+      value = (block[1] === '>' ? parts.join(' ') : parts.join('\n'))
+        .replace(/\s+$/, '')
+        .trim();
+    } else {
+      value = value.replace(/^(['"])(.*)\1$/, '$2').trim();
+    }
+    if (value && out[key] === undefined) out[key] = value;
+  }
+  return out;
 }
 
-type RawListing = {
-  folder: string;
-  source: SkillScope;
-  skill: Skill;
-  invalid: boolean;
-};
+/** Why a pack breaks the spec, or null when it is loadable. */
+function specReason(folder: string, parsed: ParsedSkill): string | null {
+  if (parsed.error) return parsed.error;
+  if (!isSpecSkillName(parsed.name)) {
+    return `name "${parsed.name}" must be 1–${SKILL_NAME_MAX} lowercase letters, digits and single hyphens`;
+  }
+  if (parsed.name !== folder) {
+    return `name "${parsed.name}" must match its folder "${folder}"`;
+  }
+  if (parsed.description.length < 1) return 'description is missing';
+  if (parsed.description.length > SKILL_DESCRIPTION_MAX) {
+    return `description is over ${SKILL_DESCRIPTION_MAX} characters`;
+  }
+  return null;
+}
 
-function readRoot(root: string, source: SkillScope): RawListing[] {
-  let entries: { name: string; isDirectory: () => boolean }[] = [];
+type ScannedFolder = { folder: string; file: string; stat: Stats };
+
+/**
+ * Skill folders in one root: directories, and symlinks or junctions that
+ * point at one (how shared installers often place packs). A folder without
+ * a SKILL.md is not a skill and is skipped.
+ */
+function scanRoot(root: string): ScannedFolder[] {
+  let entries: Dirent[] = [];
   try {
     entries = readdirSync(root, { withFileTypes: true });
   } catch {
     return [];
   }
-  const out: RawListing[] = [];
+  const out: ScannedFolder[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith('.')) continue;
+    const dir = path.join(root, entry.name);
+    if (!entry.isDirectory()) {
+      if (!entry.isSymbolicLink()) continue;
+      try {
+        if (!statSync(dir).isDirectory()) continue;
+      } catch {
+        continue; // broken link
+      }
+    }
+    const file = path.join(dir, 'SKILL.md');
     try {
-      const parsed = parseSkillMarkdown(
-        readFileSync(path.join(root, entry.name, 'SKILL.md'), 'utf8'),
-        entry.name,
-      );
-      out.push({
-        folder: entry.name,
-        source,
-        invalid: specIssue(entry.name, parsed),
-        skill: {
-          name: parsed.name,
-          description: parsed.description,
-          instructions: parsed.instructions,
-        },
-      });
+      const stat = statSync(file);
+      if (!stat.isFile()) continue;
+      out.push({ folder: entry.name, file, stat });
     } catch {
       continue;
     }
@@ -204,59 +386,193 @@ function readRoot(root: string, source: SkillScope): RawListing[] {
   return out;
 }
 
-function assemble(): {
-  loadable: Skill[];
-  listings: SkillCatalogEntry[];
-} {
-  const raw = roots().flatMap((root) => readRoot(root.path, root.scope));
-  const winner = new Map<string, RawListing>();
-  for (const row of raw) {
-    if (!row.invalid) winner.set(row.skill.name, row);
-  }
-  const listings = raw.map((row) => {
-    const issue: SkillIssue | undefined = row.invalid
-      ? 'invalid'
-      : winner.get(row.skill.name) !== row
-        ? 'conflict'
-        : undefined;
+type RawListing = {
+  folder: string;
+  root: ResolvedRoot;
+  skill: Skill;
+  reason: string | null;
+};
+
+function readListing(root: ResolvedRoot, scanned: ScannedFolder): RawListing {
+  const empty = { name: scanned.folder, description: '', instructions: '' };
+  if (scanned.stat.size > SKILL_FILE_MAX_BYTES) {
     return {
+      folder: scanned.folder,
+      root,
+      skill: empty,
+      reason: `SKILL.md is larger than ${Math.round(SKILL_FILE_MAX_BYTES / 1024)} KB`,
+    };
+  }
+  let raw: string;
+  try {
+    raw = readFileSync(scanned.file, 'utf8');
+  } catch {
+    return { folder: scanned.folder, root, skill: empty, reason: 'SKILL.md could not be read' };
+  }
+  const parsed = parseSkillMarkdown(raw, scanned.folder);
+  return {
+    folder: scanned.folder,
+    root,
+    reason: specReason(scanned.folder, parsed),
+    skill: {
+      name: parsed.name,
+      description: parsed.description,
+      instructions: parsed.instructions,
+    },
+  };
+}
+
+function nameKey(name: string): string {
+  return name.toLowerCase();
+}
+
+function assembleFrom(
+  rows: RawListing[],
+): Assembled {
+  // Pass 1: builtin and user roots, in order; a later root wins a name.
+  const winner = new Map<string, RawListing>();
+  for (const row of rows) {
+    if (row.reason || row.root.scope === 'workspace') continue;
+    winner.set(nameKey(row.skill.name), row);
+  }
+  // Pass 2: workspace roots add only names nobody else has.
+  for (const row of rows) {
+    if (row.reason || row.root.scope !== 'workspace') continue;
+    const key = nameKey(row.skill.name);
+    if (!winner.has(key)) winner.set(key, row);
+  }
+
+  const listings: SkillCatalogEntry[] = rows.map((row) => {
+    const base = {
       name: row.skill.name,
       description: row.skill.description,
       folder: row.folder,
-      source: row.source,
-      ...(issue ? { issue } : {}),
+      source: row.root.scope,
+      root: row.root.id,
     };
+    if (row.reason) return { ...base, issue: 'invalid' as const, reason: row.reason };
+    const won = winner.get(nameKey(row.skill.name));
+    if (won !== row && won) {
+      return {
+        ...base,
+        issue: 'conflict' as const,
+        reason:
+          row.root.scope === 'workspace'
+            ? `workspace packs cannot replace the ${won.root.scope} pack "${won.skill.name}"`
+            : `replaced by the ${won.root.scope} pack in ${won.root.id}`,
+      };
+    }
+    return base;
   });
-  listings.sort((a, b) => a.name.localeCompare(b.name));
+  listings.sort(
+    (a, b) => a.name.localeCompare(b.name) || a.root.localeCompare(b.root),
+  );
+
   const loadable = [...winner.values()]
-    .map((row) => row.skill)
+    .map(
+      (row): CatalogSkill => ({
+        ...row.skill,
+        scope: row.root.scope,
+        root: row.root.id,
+      }),
+    )
     .sort((a, b) => a.name.localeCompare(b.name));
-  return { loadable, listings };
+  return {
+    byName: new Map(loadable.map((skill) => [nameKey(skill.name), skill])),
+    loadable,
+    listings,
+  };
 }
 
-function catalog(): Skill[] {
-  return assemble().loadable;
+/**
+ * The catalog is cheap to validate and costly to rebuild: one readdir and
+ * one stat per pack decide whether anything changed (folder set, SKILL.md
+ * size, mtime or ctime); only then are files read and YAML parsed.
+ */
+/** One entry per root set (Home, each bound workspace), so threads do not evict each other. */
+const CACHE_MAX_ROOT_SETS = 16;
+let cache: Map<string, { key: string; value: Assembled }> | null = null;
+
+function buildCatalog(): Assembled {
+  const resolved = roots();
+  const rootsKey = resolved
+    .map((root) => `${root.scope}|${root.id}|${root.path}`)
+    .join('\n');
+  const scans = resolved.map((root) => ({ root, scanned: scanRoot(root.path) }));
+  const key = scans
+    .map(({ scanned }) =>
+      scanned
+        .map(
+          ({ folder, stat }) =>
+            `${folder}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`,
+        )
+        .join('\n'),
+    )
+    .join('\n\n');
+  cache ??= new Map();
+  const hit = cache.get(rootsKey);
+  if (hit && hit.key === key) {
+    // Refresh recency.
+    cache.delete(rootsKey);
+    cache.set(rootsKey, hit);
+    return hit.value;
+  }
+  const rows = scans.flatMap(({ root, scanned }) =>
+    scanned.map((item) => readListing(root, item)),
+  );
+  const value = assembleFrom(rows);
+  cache.delete(rootsKey);
+  cache.set(rootsKey, { key, value });
+  while (cache.size > CACHE_MAX_ROOT_SETS) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+  return value;
+}
+
+function current(): Assembled {
+  const store = context.getStore();
+  if (store?.freeze) {
+    store.frozen ??= buildCatalog();
+    return store.frozen;
+  }
+  return buildCatalog();
+}
+
+function catalog(): CatalogSkill[] {
+  return current().loadable;
 }
 
 export function listSkills(): SkillMetadata[] {
   return catalog().map(({ name, description }) => ({ name, description }));
 }
 
-/** Raw SKILL.md from the highest-precedence root that has this folder. */
-export function readSkillFile(folder: string): string | null {
+/**
+ * Raw SKILL.md for `folder`. With `rootId`, only that root is read (so the
+ * text matches the listing the caller showed); without it, the
+ * highest-precedence root that has the folder.
+ */
+export function readSkillFile(folder: string, rootId?: string): string | null {
   if (
     !folder ||
+    folder === '.' ||
     folder.includes('..') ||
     folder.includes('/') ||
-    folder.includes('\\')
+    folder.includes('\\') ||
+    folder.includes('\0')
   ) {
     return null;
   }
-  for (const root of [...roots()].reverse()) {
+  const candidates = [...roots()]
+    .reverse()
+    .filter((root) => rootId === undefined || root.id === rootId);
+  for (const root of candidates) {
     const file = path.join(root.path, folder, 'SKILL.md');
     const rel = path.relative(root.path, file);
     if (rel.startsWith('..') || path.isAbsolute(rel)) continue;
     try {
+      if (statSync(file).size > SKILL_FILE_MAX_BYTES) return null;
       return readFileSync(file, 'utf8');
     } catch {
       continue;
@@ -265,10 +581,10 @@ export function readSkillFile(folder: string): string | null {
   return null;
 }
 
-export function getSkill(name: string): Skill | undefined {
+export function getSkill(name: string): CatalogSkill | undefined {
   const key = name.trim().toLowerCase();
   if (!key) return undefined;
-  return catalog().find((item) => item.name.toLowerCase() === key);
+  return current().byName.get(key);
 }
 
 /** User-requested bodies (`/` picks). Not host guesses. */
@@ -460,7 +776,7 @@ export function listSkillCatalogs(): {
   user: SkillCatalogEntry[];
   workspace: SkillCatalogEntry[];
 } {
-  const listings = assemble().listings;
+  const listings = current().listings;
   return {
     builtin: listings.filter((entry) => entry.source === 'builtin'),
     user: listings.filter((entry) => entry.source === 'user'),

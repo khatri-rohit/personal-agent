@@ -51,6 +51,9 @@ async function resolveBudget(model: string): Promise<ContextBudget> {
  * set, context assembly, and RunManager (lifecycle, events, outcome). The
  * thread is the one query; plans live in memory and memory files are not
  * read or written, so local runs never touch the real agent home.
+ * Skills follow the same rule: built-ins plus the workspace's
+ * `.agents/skills`, never `~/.agents/skills` or `$AGENT_HOME/skills`, so a
+ * local run gives the same result on any machine.
  */
 export async function runLocally(input: {
   query: string;

@@ -3,6 +3,7 @@ import {
   extraSkillRoots,
   listSkillCatalogs,
   runWithSkillRoots,
+  type SkillRoot,
 } from '@agent/agent-core';
 
 import { getAgentHome, getThreadStore } from '../platform/instances';
@@ -26,8 +27,14 @@ function fail(res: Response, error: unknown): void {
   });
 }
 
-async function overlayForThread(threadId: unknown) {
-  const id = typeof threadId === 'string' ? threadId.trim() : '';
+/**
+ * `?threadId=` binds the request to that thread's workspace, so every
+ * response (list, read, and the catalog returned after create / delete)
+ * shows the same roots a run in that thread would see.
+ */
+async function overlayFor(req: Request): Promise<SkillRoot[]> {
+  const raw = req.query.threadId;
+  const id = typeof raw === 'string' ? raw.trim() : '';
   if (!id) return [];
   const store = await getThreadStore();
   return extraSkillRoots(store.getThread(id)?.workspaceRoot);
@@ -37,7 +44,7 @@ router.get(
   '/skills',
   asyncRoute(async (req: Request, res: Response) => {
     getAgentHome();
-    const extra = await overlayForThread(req.query.threadId);
+    const extra = await overlayFor(req);
     res.json(runWithSkillRoots(extra, () => listSkillCatalogs()));
   }),
 );
@@ -46,12 +53,14 @@ router.post(
   '/skills/create',
   asyncRoute(async (req: Request, res: Response) => {
     try {
+      const agentHome = getAgentHome();
+      const extra = await overlayFor(req);
       await createUserSkill({
-        agentHome: getAgentHome(),
+        agentHome,
         name: String(req.body?.name ?? ''),
         content: String(req.body?.content ?? ''),
       });
-      res.json(listSkillCatalogs());
+      res.json(runWithSkillRoots(extra, () => listSkillCatalogs()));
     } catch (error) {
       fail(res, error);
     }
@@ -63,11 +72,13 @@ router.get(
   asyncRoute(async (req: Request, res: Response) => {
     try {
       getAgentHome();
-      const extra = await overlayForThread(req.query.threadId);
+      const extra = await overlayFor(req);
+      const root = typeof req.query.root === 'string' ? req.query.root : undefined;
       res.json(
         await runWithSkillRoots(extra, () =>
           readSkillDocument({
             folder: String(req.params.folder ?? ''),
+            ...(root ? { root } : {}),
           }),
         ),
       );
@@ -81,11 +92,15 @@ router.delete(
   '/skills/:folder',
   asyncRoute(async (req: Request, res: Response) => {
     try {
-      await deleteUserSkill({
-        agentHome: getAgentHome(),
-        folderName: String(req.params.folder ?? ''),
-      });
-      res.json(listSkillCatalogs());
+      const agentHome = getAgentHome();
+      const extra = await overlayFor(req);
+      await runWithSkillRoots(extra, () =>
+        deleteUserSkill({
+          agentHome,
+          folderName: String(req.params.folder ?? ''),
+        }),
+      );
+      res.json(runWithSkillRoots(extra, () => listSkillCatalogs()));
     } catch (error) {
       fail(res, error);
     }

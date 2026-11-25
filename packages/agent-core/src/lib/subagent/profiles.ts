@@ -5,6 +5,7 @@ import type { ModelRole, SubagentThoroughness } from '@agent/agent-models';
 
 import type { ProfileThinking } from '../system1/effort';
 import { getSkill } from '../tools/skills';
+import { ANTI_SLOP_EXAMPLES, REVIEW_STYLE } from './review-guides';
 import type { SubagentContext, SubagentLimits, SubagentProfile } from './types';
 
 /**
@@ -65,7 +66,9 @@ const BUILTIN_PROFILES: SubagentProfile[] = [
     context: 'diff',
     rules: true,
     report: true,
-    skills: ['caveman-review', 'anti-slop-examples'],
+    // Review style and anti-slop examples are part of the profile itself
+    // (review-guides.ts), not catalog skills a user pack could replace.
+    skills: [],
     inheritPickedSkills: true,
     source: 'builtin',
     prompt: `You are a code reviewer with no stake in the change.
@@ -73,7 +76,13 @@ const BUILTIN_PROFILES: SubagentProfile[] = [
 - Use web tools only to check a library or API fact the change relies on.
 - Report real defects: wrong behavior, broken contracts, missed edge cases, rule violations. Skip style nits the project rules do not require.
 - Mark anything outside the user's request as out of scope instead of asking for it.
-- Each issue: location (path:line), problem, fix, severity.`,
+- Each issue: location (path:line), problem, fix, severity.
+
+# Review style
+${REVIEW_STYLE}
+
+# Anti-slop examples
+${ANTI_SLOP_EXAMPLES}`,
   },
   {
     name: 'advisor',
