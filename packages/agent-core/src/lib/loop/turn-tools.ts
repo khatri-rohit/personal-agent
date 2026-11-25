@@ -14,6 +14,7 @@ import {
 } from '@agent/agent-models';
 
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
+import { getSkill } from '../tools/skills';
 import type { Tool } from '../tools/types';
 import { REPEAT_BLOCKED, type AdmissionRun, type Verdict } from './admission';
 import { guardResultWindow, manageResidency } from './residency-pass';
@@ -188,6 +189,7 @@ function shapeBareResult(
   if (toolName === 'load_skill' && !result.startsWith('Skill not found')) {
     const name = String(args.skill_name ?? '').trim();
     s.skillLoads.set(toolCallId, { name, iteration: s.iterations });
+    const scope = getSkill(name)?.scope;
     s.trace({
       type: 'skill_loaded',
       runId: s.runId,
@@ -196,6 +198,7 @@ function shapeBareResult(
       ...(typeof args.section === 'string' ? { section: args.section } : {}),
       tokens: Math.ceil(result.length / CHARS_PER_TOKEN),
       source: 'model',
+      ...(scope ? { scope } : {}),
     });
     return result;
   }

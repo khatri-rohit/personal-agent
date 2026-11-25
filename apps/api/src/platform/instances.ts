@@ -5,15 +5,17 @@ import path from 'node:path';
 import {
   configureSkillRoots,
   configureSubagentRoot,
+  listSkillCatalogs,
   listTools,
   resolveSkillsRoot,
   RunManager,
+  skillLintWarnings,
+  standardUserSkillRoots,
   subagentProfileWarnings,
 } from '@agent/agent-core';
 
 import { resolveAgentHome } from './agent-home.js';
 import { MemoryStore } from '../memory/memory-store.js';
-import { userSkillDirectories } from '../skills/user-skills.js';
 import { openThreadStore, type ThreadStore } from '../threads/thread-store.js';
 
 function home(): string {
@@ -34,13 +36,11 @@ let memoryStore: MemoryStore | undefined;
 export function getAgentHome(): string {
   const dir = home();
   // Lowest to highest: builtin, ~/.agents/skills, $AGENT_HOME/skills.
-  // A bound workspace's .agents/skills is overlaid per run.
+  // A bound workspace's .agents/skills is overlaid per run and only adds
+  // names (core `skills.ts`). No-op when unchanged.
   configureSkillRoots([
-    { scope: 'builtin', path: resolveSkillsRoot() },
-    ...userSkillDirectories(dir).map((skillPath) => ({
-      scope: 'user' as const,
-      path: skillPath,
-    })),
+    { scope: 'builtin', id: 'builtin', path: resolveSkillsRoot() },
+    ...standardUserSkillRoots(dir, os.homedir()),
   ]);
   if (!agentsConfigured) {
     agentsConfigured = true;
@@ -51,6 +51,17 @@ export function getAgentHome(): string {
     );
     for (const warning of subagentProfileWarnings()) {
       console.warn(`[agents] skipped ${warning}`);
+    }
+    // Once at boot: packs that will not load, and large packs that lose
+    // most of their rules when evicted (no `## Core rules`).
+    const catalogs = listSkillCatalogs();
+    for (const entry of [...catalogs.builtin, ...catalogs.user]) {
+      if (entry.issue === 'invalid') {
+        console.warn(`[skills] skipped ${entry.root}/${entry.folder}: ${entry.reason ?? 'invalid'}`);
+      }
+    }
+    for (const warning of skillLintWarnings()) {
+      console.warn(`[skills] ${warning}`);
     }
   }
   return dir;

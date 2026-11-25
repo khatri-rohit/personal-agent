@@ -12,6 +12,7 @@ import {
   parseStartRunRequest,
   type RunPosture,
 } from '@agent/agent-models';
+import { extraSkillRoots, runWithSkillRoots } from '@agent/agent-core';
 
 import { getThreadStore, runManager } from '../platform/instances';
 import { asyncRoute } from '../platform/http-errors';
@@ -105,18 +106,22 @@ router.post('/context/estimate', asyncRoute(async (req: Request, res: Response) 
 
   const estimateThread = id === 'draft' ? undefined : store.getThread(id);
   const useModel = model ?? estimateThread?.model ?? HOME_MODE.model;
-  const { report } = await prepareRun({
-    threadId: id,
-    thread: estimateThread,
-    webSearch,
-    posture: normalizeRunPosture(posture),
-    lastUserSeq: store.lastUserSeq(envelopes) ?? 0,
-    envelopes,
-    model: useModel,
-    endpoint: endpointFromLocal(local),
-    skillNames: resolveRequestedSkills(rawSkills),
-    ...(previewWindowMode ? { contextWindowMode: previewWindowMode } : {}),
-  });
+  // Same skill roots a run in this thread sees (its workspace's packs).
+  const skillRoots = extraSkillRoots(estimateThread?.workspaceRoot);
+  const { report } = await runWithSkillRoots(skillRoots, () =>
+    prepareRun({
+      threadId: id,
+      thread: estimateThread,
+      webSearch,
+      posture: normalizeRunPosture(posture),
+      lastUserSeq: store.lastUserSeq(envelopes) ?? 0,
+      envelopes,
+      model: useModel,
+      endpoint: endpointFromLocal(local),
+      skillNames: resolveRequestedSkills(rawSkills),
+      ...(previewWindowMode ? { contextWindowMode: previewWindowMode } : {}),
+    }),
+  );
 
   return res.json({
     estimatedPromptTokens: report.occupiedTokens,

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { BookMarked, Folder, User } from 'lucide-react';
-import type { SkillCatalogItem } from '@/api/skills-client';
+import { skillRowKey, type SkillCatalogItem } from '@/api/skills-client';
 import { cn } from '@/lib/utils';
 
 export function skillQueryAtCaret(
@@ -163,7 +163,7 @@ export function SkillSlashPicker({
             const hit = needle ? skill.name.toLowerCase().indexOf(needle) : -1;
             return (
               <button
-                key={`${skill.source}:${skill.folder}`}
+                key={skillRowKey(skill)}
                 type="button"
                 role="option"
                 aria-selected={active}

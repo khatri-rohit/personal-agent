@@ -65,9 +65,12 @@ function escapeRegExp(value: string): string {
 export function SkillCreateForm({
   onCreated,
   onCancel,
+  threadId,
 }: {
   onCreated: (catalogs: SkillCatalogs) => void;
   onCancel: () => void;
+  /** Keeps the returned catalog bound to this thread's workspace packs. */
+  threadId?: string;
 }) {
   const [name, setName] = useState(DEFAULT_NAME);
   const [content, setContent] = useState(() => skillTemplate(DEFAULT_NAME));
@@ -80,7 +83,13 @@ export function SkillCreateForm({
     setSaving(true);
     setError(null);
     try {
-      onCreated(await createUserSkill({ name, content }));
+      onCreated(
+        await createUserSkill({
+          name,
+          content,
+          ...(threadId ? { threadId } : {}),
+        }),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

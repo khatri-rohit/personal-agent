@@ -18,11 +18,14 @@ export {
   parseSkillMarkdown,
   readSkillFile,
   SKILL_DESCRIPTION_MAX,
+  standardUserSkillRoots,
 } from './lib/tools/skills';
 export type {
+  CatalogSkill,
   SkillCatalogEntry,
   SkillIssue,
   SkillRoot,
+  SkillScope,
 } from './lib/tools/skills';
 
 // Model layer
