@@ -439,6 +439,13 @@ async function startClaimedRun(
     });
   const codeVersion = await harnessVersion();
 
+  // First turn's title: titleNewThread writes the seed synchronously and
+  // resolves once the model's replacement is on disk (or failed → seed
+  // stands). onFinished waits for that, bounded, so run.settled — the
+  // client's last thread-list refresh — usually carries the final title.
+  const TITLE_SETTLE_WAIT_MS = 3_000;
+  let titleLanded: Promise<void> | undefined;
+
   claim.start(
     {
       model: useModel,
@@ -542,6 +549,23 @@ async function startClaimedRun(
           enabled: prepared.flags.learningLoop,
           modelSettings,
         });
+        // The first turn's title, before run.settled goes out: the client's
+        // settle-time refresh is the last one that shows it without a new
+        // send or navigation. Bounded: a slow title path must not hold the
+        // run's end hostage; a late title still writes for the next refresh.
+        if (titleLanded) {
+          let settleTimer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              titleLanded,
+              new Promise<void>((resolve) => {
+                settleTimer = setTimeout(resolve, TITLE_SETTLE_WAIT_MS);
+              }),
+            ]);
+          } finally {
+            clearTimeout(settleTimer);
+          }
+        }
         // A cancelled run leaves compaction to the next run's pre-run pass, so
         // nothing it writes can race that run's rewind.
         if (outcome === 'cancelled' || !result.contextReport) return;
@@ -568,7 +592,7 @@ async function startClaimedRun(
   if (preRunSnapshot) emitCompacted(store, runId, threadId, preRunSnapshot);
 
   if (isFirstUserTurn && message) {
-    titleNewThread(
+    titleLanded = titleNewThread(
       store,
       threadId,
       message.content || 'Image chat',

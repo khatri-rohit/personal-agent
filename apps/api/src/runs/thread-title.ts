@@ -97,7 +97,9 @@ async function generateThreadTitle(
 /**
  * First turn: write the seed title now, so POST /run returns at once, and the
  * model's title when it arrives, unless the thread was renamed or deleted in
- * the meantime. The web picks it up on its next thread refresh.
+ * the meantime. Resolves once the replacement is written (or the call failed
+ * and the seed stands): the run's end awaits this, bounded, so the client's
+ * settle-time refresh usually shows the final title.
  */
 export function titleNewThread(
   store: ThreadStore,
@@ -106,10 +108,10 @@ export function titleNewThread(
   model: string,
   endpoint: OllamaEndpoint,
   modelSettings?: ResolvedModelSettings,
-): void {
+): Promise<void> {
   const seed = seedThreadTitle(firstMessage);
   store.updateThread(threadId, { title: seed, model });
-  void generateThreadTitle(firstMessage, model, endpoint, modelSettings).then((title) => {
+  return generateThreadTitle(firstMessage, model, endpoint, modelSettings).then((title) => {
     if (store.getThread(threadId)?.title === seed) {
       store.updateThread(threadId, { title });
     }

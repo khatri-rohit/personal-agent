@@ -26,7 +26,7 @@ export type HarnessFlags = {
   harnessNotes: boolean;
   /**
    * Home gets a short identity and compact tool guidance; the long house
-   * style stays in the ai-writing-guidelines skill. A voice change: off
+   * style is the optional ai-writing-guidelines pack (repo skills/). A voice change: off
    * until reviewed.
    */
   compactHomePrompt: boolean;

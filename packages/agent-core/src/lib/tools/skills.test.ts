@@ -69,6 +69,49 @@ describe('parseSkillMarkdown', () => {
     expect(parsed.instructions).toBe('Body.');
   });
 
+  it('still reads a description with an unquoted ": " (invalid strict YAML)', () => {
+    const parsed = parseSkillMarkdown(
+      [
+        '---',
+        'name: caveman-review',
+        'description: Each comment is one line: location, problem, fix.',
+        '---',
+        '',
+        'Body.',
+      ].join('\n'),
+      'caveman-review',
+    );
+    expect(parsed.error).toBeUndefined();
+    expect(parsed.name).toBe('caveman-review');
+    expect(parsed.description).toBe(
+      'Each comment is one line: location, problem, fix.',
+    );
+  });
+
+  it('folds a block description in the loose fallback', () => {
+    const parsed = parseSkillMarkdown(
+      [
+        '---',
+        'name: loose-fold',
+        'description: >',
+        '  Use when: the user asks',
+        '  for a fold.',
+        'tags: [unclosed',
+        '---',
+        '',
+        'Body.',
+      ].join('\n'),
+      'loose-fold',
+    );
+    expect(parsed.error).toBeUndefined();
+    expect(parsed.description).toBe('Use when: the user asks for a fold.');
+  });
+
+  it('keeps a pack invalid when even the loose read finds no description', () => {
+    const parsed = parseSkillMarkdown('---\nname: [unclosed\n---\n\nX.\n', 'x');
+    expect(parsed.error).toMatch(/YAML/);
+  });
+
   it('reads name and description and ignores extra frontmatter', () => {
     const parsed: ParsedSkill = parseSkillMarkdown(
       [

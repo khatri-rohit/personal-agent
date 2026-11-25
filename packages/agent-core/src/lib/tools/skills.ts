@@ -289,9 +289,47 @@ export function parseSkillMarkdown(
       return { name, description, instructions: body, error: 'frontmatter is not a YAML map' };
     }
   } catch {
+    // Strict YAML rejects common hand-written slips, most often an unquoted
+    // ": " inside a description ("Each comment is one line: location, …").
+    // Other harnesses still load those packs, so read the two fields we need
+    // line by line before calling the pack invalid.
+    const loose = looseFrontmatter(fm);
+    if (loose.name && loose.description) {
+      return { name: loose.name, description: loose.description, instructions: body };
+    }
     return { name, description, instructions: body, error: 'frontmatter is not valid YAML' };
   }
   return { name, description, instructions: body };
+}
+
+/**
+ * Top-level `name:` / `description:` read without YAML: the value runs to
+ * the end of the line (outer quotes dropped), or for a `>` / `|` block, the
+ * indented lines that follow (folded with spaces, or kept as lines).
+ */
+function looseFrontmatter(fm: string): { name?: string; description?: string } {
+  const lines = fm.split('\n');
+  const out: { name?: string; description?: string } = {};
+  for (let i = 0; i < lines.length; i++) {
+    const match = /^(name|description)\s*:\s*(.*)$/.exec(lines[i] ?? '');
+    if (!match) continue;
+    const key = match[1] as 'name' | 'description';
+    let value = (match[2] ?? '').trim();
+    const block = /^([>|])[+-]?$/.exec(value);
+    if (block) {
+      const parts: string[] = [];
+      while (i + 1 < lines.length && /^(\s+\S|\s*$)/.test(lines[i + 1] ?? '')) {
+        parts.push((lines[++i] ?? '').trim());
+      }
+      value = (block[1] === '>' ? parts.join(' ') : parts.join('\n'))
+        .replace(/\s+$/, '')
+        .trim();
+    } else {
+      value = value.replace(/^(['"])(.*)\1$/, '$2').trim();
+    }
+    if (value && out[key] === undefined) out[key] = value;
+  }
+  return out;
 }
 
 /** Why a pack breaks the spec, or null when it is loadable. */

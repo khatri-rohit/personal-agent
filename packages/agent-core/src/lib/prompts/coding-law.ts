@@ -1,6 +1,7 @@
 /**
  * Always-on harness law. Project-agnostic. Not a skill — the model cannot skip it.
- * Keep this band short; examples live in the anti-slop-examples skill.
+ * Keep this band short; the review sub-agent carries the before/after
+ * examples (subagent/review-guides.ts).
  * The engineering workflow itself lives in the workspace prompt sections.
  */
 export const ANTI_SLOP_CODE_LAW = `
