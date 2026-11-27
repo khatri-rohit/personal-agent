@@ -1,0 +1,294 @@
+{
+  "models": [
+    "golden-model"
+  ],
+  "prompts": [
+    {
+      "roles": "system,user",
+      "chars": 11107,
+      "sha256": "704877c0967d6cb0de367643b1d1bab7dd398a66defc50bbd7b59dd166e70d00",
+      "tools": [
+        "delegate",
+        "diff",
+        "edit_file",
+        "glob",
+        "grep",
+        "load_skill",
+        "memory",
+        "offer_choice",
+        "plan",
+        "read_file",
+        "recall",
+        "record_finding",
+        "run_terminal",
+        "session_search",
+        "todo",
+        "web_fetch",
+        "web_search"
+      ]
+    },
+    {
+      "roles": "system,user,assistant,tool",
+      "chars": 11375,
+      "sha256": "de4bc92d27478f976583d4bd083185c97e7dbc5803d86a950a86490ea9c5e268",
+      "tools": [
+        "delegate",
+        "diff",
+        "edit_file",
+        "glob",
+        "grep",
+        "load_skill",
+        "memory",
+        "offer_choice",
+        "plan",
+        "read_file",
+        "recall",
+        "record_finding",
+        "run_terminal",
+        "session_search",
+        "todo",
+        "web_fetch",
+        "web_search"
+      ]
+    },
+    {
+      "roles": "system,user,assistant,tool,assistant,tool,user",
+      "chars": 12131,
+      "sha256": "4c13d69cd18c312cb86112719aa782814ca0ad6e082538118b049c4ad974b920",
+      "tools": [
+        "delegate",
+        "diff",
+        "edit_file",
+        "glob",
+        "grep",
+        "load_skill",
+        "memory",
+        "offer_choice",
+        "plan",
+        "read_file",
+        "recall",
+        "record_finding",
+        "run_terminal",
+        "session_search",
+        "todo",
+        "web_fetch",
+        "web_search"
+      ]
+    },
+    {
+      "roles": "system,user,assistant,tool,assistant,tool,assistant,tool,user",
+      "chars": 12288,
+      "sha256": "17fe00dd97325115cacf0e2e0d55f0b735f437150fa1d7b68b98ed7ff9361c85",
+      "tools": [
+        "delegate",
+        "diff",
+        "edit_file",
+        "glob",
+        "grep",
+        "load_skill",
+        "memory",
+        "offer_choice",
+        "plan",
+        "read_file",
+        "recall",
+        "record_finding",
+        "run_terminal",
+        "session_search",
+        "todo",
+        "web_fetch",
+        "web_search"
+      ]
+    },
+    {
+      "roles": "system,user,assistant,tool,assistant,tool,assistant,tool,assistant,tool,user",
+      "chars": 12644,
+      "sha256": "0fc0180bcb2431b18111e3c15587dc5ec33d96db098a2fbd8863742c3a4956e4",
+      "tools": [
+        "delegate",
+        "diff",
+        "edit_file",
+        "glob",
+        "grep",
+        "load_skill",
+        "memory",
+        "offer_choice",
+        "plan",
+        "read_file",
+        "recall",
+        "record_finding",
+        "run_terminal",
+        "session_search",
+        "todo",
+        "web_fetch",
+        "web_search"
+      ]
+    }
+  ],
+  "sse": [
+    "run.started",
+    "turn.started",
+    "assistant.started",
+    "plan.updated",
+    "assistant.completed",
+    "tool.started",
+    "tool.completed",
+    "turn.completed",
+    "turn.started",
+    "assistant.started",
+    "assistant.completed",
+    "tool.started",
+    "tool.completed",
+    "turn.completed",
+    "turn.started",
+    "assistant.started",
+    "assistant.completed",
+    "tool.started",
+    "tool.completed",
+    "turn.completed",
+    "turn.started",
+    "assistant.started",
+    "assistant.completed",
+    "tool.started",
+    "choice.requested",
+    "choice.resolved",
+    "tool.completed",
+    "turn.completed",
+    "turn.started",
+    "assistant.started",
+    "assistant.completed",
+    "turn.completed",
+    "run.completed",
+    "run.settled"
+  ],
+  "settled": {
+    "incomplete": false,
+    "cancelled": false
+  },
+  "tools": [
+    {
+      "tool": "read_file",
+      "outcome": "ok"
+    },
+    {
+      "tool": "edit_file",
+      "outcome": "ok"
+    },
+    {
+      "tool": "run_terminal",
+      "outcome": "ok"
+    },
+    {
+      "tool": "offer_choice",
+      "outcome": "ok"
+    }
+  ],
+  "ledger": [
+    {
+      "seq": 1,
+      "run": null,
+      "role": "user",
+      "content": "Make greet() return \"hi\", run the check, and ask me which wording the README should use."
+    },
+    {
+      "seq": 2,
+      "run": "run",
+      "role": "assistant",
+      "calls": [
+        "read_file"
+      ]
+    },
+    {
+      "seq": 3,
+      "run": "run",
+      "role": "tool",
+      "tool": "read_file"
+    },
+    {
+      "seq": 4,
+      "run": "run",
+      "role": "assistant",
+      "calls": [
+        "edit_file"
+      ]
+    },
+    {
+      "seq": 5,
+      "run": "run",
+      "role": "tool",
+      "tool": "edit_file"
+    },
+    {
+      "seq": 6,
+      "run": "run",
+      "role": "assistant",
+      "calls": [
+        "run_terminal"
+      ]
+    },
+    {
+      "seq": 7,
+      "run": "run",
+      "role": "tool",
+      "tool": "run_terminal"
+    },
+    {
+      "seq": 8,
+      "run": "run",
+      "role": "assistant",
+      "calls": [
+        "offer_choice"
+      ]
+    },
+    {
+      "seq": 9,
+      "run": "run",
+      "role": "tool",
+      "tool": "offer_choice"
+    },
+    {
+      "seq": 10,
+      "run": "run",
+      "role": "assistant",
+      "content": "Done: greet() now returns \"hi\" and the check passes. README wording: hi."
+    }
+  ],
+  "trace": [
+    "run_start",
+    "context_shape",
+    "llm_request",
+    "llm_response",
+    "tool_start",
+    "task_phase",
+    "tool_complete",
+    "context_shape",
+    "llm_request",
+    "llm_response",
+    "tool_start",
+    "task_phase",
+    "tool_complete",
+    "policy_decision",
+    "context_shape",
+    "llm_request",
+    "llm_response",
+    "tool_start",
+    "task_phase",
+    "tool_complete",
+    "context_shape",
+    "llm_request",
+    "llm_response",
+    "tool_start",
+    "tool_complete",
+    "context_shape",
+    "llm_request",
+    "llm_response",
+    "task_phase",
+    "task_state",
+    "run_finish"
+  ],
+  "runFinish": {
+    "status": "completed",
+    "iterations": 5,
+    "toolCalls": 4,
+    "limitReason": null
+  }
+}

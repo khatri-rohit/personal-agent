@@ -3,11 +3,12 @@
   "version": "0.0.1",
   "private": true,
   "nx": {
+    "targets": { "typecheck": { "executor": "nx:run-commands", "options": { "command": "tsc -p tsconfig.app.json --noEmit", "cwd": "{projectRoot}" } }, "lint": { "executor": "@nx/eslint:lint", "options": {} } },
     "projectType": "application",
     "sourceRoot": "apps/web/src",
     "tags": [
       "scope:web",
-      "type:app"
+      "type:ui"
     ]
   },
   "dependencies": {

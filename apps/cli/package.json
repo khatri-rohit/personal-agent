@@ -5,6 +5,7 @@
   "nx": {
     "projectType": "application",
     "targets": {
+      "lint": { "executor": "@nx/eslint:lint", "options": {} },
       "build": {
         "executor": "@nx/esbuild:esbuild",
         "outputs": [

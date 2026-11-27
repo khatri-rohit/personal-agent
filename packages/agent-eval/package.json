@@ -14,8 +14,9 @@
     }
   },
   "nx": {
-    "tags": ["scope:agent", "type:logic"],
+    "tags": ["scope:agent", "type:engine"],
     "targets": {
+      "lint": { "executor": "@nx/eslint:lint", "options": {} },
       "test": {
         "options": {
           "command": "node scripts/run-vitest.mjs run"

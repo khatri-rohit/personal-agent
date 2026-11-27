@@ -17,9 +17,11 @@
   "nx": {
     "tags": [
       "scope:agent",
-      "type:logic"
+      "type:engine",
+      "runtime:core"
     ],
     "targets": {
+      "lint": { "executor": "@nx/eslint:lint", "options": {} },
       "test": {
         "options": {
           "command": "node scripts/run-vitest.mjs run"

@@ -36,7 +36,8 @@ describe('parseVoiceCapabilities', () => {
 async function appWith(env: Record<string, string | undefined>) {
   vi.resetModules();
   for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v as string);
-  const { voiceRouter } = await import('./voice.routes');
+  // A dynamic import is an ES import under `nodenext`, so it names the file.
+  const { voiceRouter } = await import('./voice.routes.js');
   const app = express();
   app.use(express.json());
   app.use('/api/voice', voiceRouter);

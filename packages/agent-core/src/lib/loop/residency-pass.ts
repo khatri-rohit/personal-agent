@@ -492,8 +492,8 @@ function atVerifiedMilestone(s: ResidencyView): boolean {
   return ownTokens >= MILESTONE_SHARE_OF_HIGH * inRunMarks(s.contextBudget).high;
 }
 
-/** Share of the input budget a lifted high mark may reach (`RunState.markLift`). */
-const LIFTED_HIGH_CEILING = 0.95;
+/** Share of the input budget a lifted high mark may reach (`RunState.markLift`). Exported for the invariants test only. */
+export const LIFTED_HIGH_CEILING = 0.95;
 
 /** A milestone folds once the run's own steps reach this share of the high mark (smaller is not worth a prefix break). */
 const MILESTONE_SHARE_OF_HIGH = 0.1;

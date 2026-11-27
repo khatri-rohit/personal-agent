@@ -41,7 +41,9 @@ Nx monorepo for a personal agent harness. One runtime (`agent-core`), two bindin
 | `apps/eval` | Next.js viewer over `agent-eval`. Does not import `agent-core`. | Suite results, run traces, usage, thread/run **Review**. Not the chat UI. |
 | `evals/` | Task corpus (not an Nx project). | `evals/tasks`, `evals/baselines`, plan of record in `evals/ROADMAP.md`. |
 
-Lint (`@nx/enforce-module-boundaries` in `eslint.config.mjs`) matches this: `type:data` → `type:logic` → `type:app`. `scope:web` cannot import logic packages. `apps/eval` is `scope:eval` and still does not import `agent-core`.
+Lint (`@nx/enforce-module-boundaries` in `eslint.config.mjs`) matches this, using the tiers from `docs/adr/0003` §8: `type:data` (agent-models) ← `type:engine` (agent-core, agent-eval) ← `type:service` ← `type:adapter` ← `type:app`; `type:client` and `type:ui` (web) see only data and client. `apps/eval` is `scope:eval` and may not import anything tagged `runtime:core` (agent-core). Every project has an explicit `lint` target (Nx's inferred one only covered `apps/api`), so `nx run-many -t lint` enforces these rules everywhere.
+
+**Behaviour guards** (keep green; `docs/plans/one-binary-host-plan.md`): `apps/api/src/__contract__/` pins every HTTP route, the access rules and SSE, plus one golden Workspace run with a scripted model (`__golden__/workspace-run.json`); `agent-core` `loop/__replay__/` pins event and trace order. A deliberate behaviour change re-records them (`vitest -u`) and says why in the commit.
 
 ## Chat flow
 
