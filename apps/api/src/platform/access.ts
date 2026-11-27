@@ -5,13 +5,17 @@ import path from 'node:path';
 import type { NextFunction, Request, Response } from 'express';
 
 /**
- * Who may drive the API (B1). The API listens on loopback, so the threat is
- * the browser: any page the user has open can send requests to localhost.
+ * Who may drive the API (B1, ADR-0003 §4.6). The API listens on loopback, so
+ * the threat is the browser: any page the user has open can send requests to
+ * localhost.
  *
- * - The web app is always cross-origin to the API (another port), so its
- *   `fetch` and `EventSource` requests carry an `Origin`. A loopback origin
- *   (or one in CORS_ORIGIN) is the web app; any other origin is refused.
- * - A request with no `Origin` is not from a page's script (CLI tools, the
+ * - The chat UI is served from this server's own origin. A browser marks
+ *   every request it sends with `Sec-Fetch-Site`, which page scripts cannot
+ *   forge: only `same-origin` is our page. When the browser also sends an
+ *   `Origin`, it must equal this server's exact origin (scheme, host, port).
+ *   Another localhost port is `same-site`, a foreign page `cross-site`: both
+ *   are refused, and no CORS headers are ever sent.
+ * - A request with neither header is not from a browser page (CLI tools, the
  *   eval runner, curl): it must carry the token from AGENT_HOME/api-token.
  *   A page cannot read that file; a local process that can is already past
  *   any boundary this API could draw.
@@ -56,26 +60,41 @@ function listEnv(raw: string | undefined): string[] {
 
 export type AccessPolicy = {
   token: string;
-  /** Exact origins (CORS_ORIGIN). Empty = any loopback origin, any port. */
-  origins: string[];
   /** Extra host names (AGENT_ALLOWED_HOSTS), for an API reached by another name. */
   hosts: string[];
+  /**
+   * Whether a same-origin browser page is admitted without the token. Off when
+   * the server is bound to a non-loopback address: then every request needs it.
+   */
+  browser: boolean;
 };
 
-export function accessPolicyFromEnv(token: string, env: NodeJS.ProcessEnv = process.env): AccessPolicy {
-  return { token, origins: listEnv(env.CORS_ORIGIN), hosts: listEnv(env.AGENT_ALLOWED_HOSTS) };
+export function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTNAMES.has(host.trim().toLowerCase());
 }
 
-/** The web app's origin: one of CORS_ORIGIN, or else any http(s) loopback origin. `null` (sandboxed frames, files) never. */
-export function isAllowedOrigin(origin: string, policy: Pick<AccessPolicy, 'origins'>): boolean {
-  const value = origin.trim().toLowerCase();
-  if (policy.origins.length > 0) return policy.origins.includes(value);
-  try {
-    const url = new URL(value);
-    return (url.protocol === 'http:' || url.protocol === 'https:') && LOOPBACK_HOSTNAMES.has(url.hostname);
-  } catch {
-    return false;
-  }
+export function accessPolicyFromEnv(
+  token: string,
+  env: NodeJS.ProcessEnv = process.env,
+  options: { browser?: boolean } = {},
+): AccessPolicy {
+  return { token, hosts: listEnv(env.AGENT_ALLOWED_HOSTS), browser: options.browser ?? true };
+}
+
+/** This server's origin as the browser sees it: the (allow-listed) Host it was reached by. */
+function ownOrigin(req: Request): string {
+  return `${req.protocol}://${String(req.headers.host ?? '').trim().toLowerCase()}`;
+}
+
+/** A browser request is ours only when the browser says so (Fetch Metadata) and any Origin is exactly ours. */
+export function isSameOriginBrowser(req: Request): boolean {
+  if (req.headers['sec-fetch-site'] !== 'same-origin') return false;
+  const origin = req.headers.origin;
+  return origin === undefined || origin.trim().toLowerCase() === ownOrigin(req);
+}
+
+function isBrowserRequest(req: Request): boolean {
+  return req.headers['sec-fetch-site'] !== undefined || req.headers.origin !== undefined;
 }
 
 function tokenOf(req: Request): string | undefined {
@@ -92,18 +111,25 @@ function sameToken(given: string, expected: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-/** Express middleware, mounted before CORS and every router. */
-export function accessGuard(policy: AccessPolicy) {
+/** Express middleware: the Host check, for every path (the UI shell included). */
+export function hostGuard(policy: AccessPolicy) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const host = typeof req.headers.host === 'string' ? hostnameOf(req.headers.host) : '';
     if (!LOOPBACK_HOSTNAMES.has(host) && !policy.hosts.includes(host)) {
       res.status(403).json({ error: `Host "${host}" is not this API. Set AGENT_ALLOWED_HOSTS to reach it by another name.` });
       return;
     }
-    const origin = req.headers.origin;
-    if (typeof origin === 'string') {
-      if (!isAllowedOrigin(origin, policy)) {
-        res.status(403).json({ error: `Origin ${origin} may not use this API. Set CORS_ORIGIN to allow it.` });
+    next();
+  };
+}
+
+/** Express middleware for `/api`, mounted after `hostGuard` and before every router. */
+export function accessGuard(policy: AccessPolicy) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (isBrowserRequest(req)) {
+      if (!policy.browser || !isSameOriginBrowser(req)) {
+        const from = req.headers.origin ?? `a ${String(req.headers['sec-fetch-site'] ?? 'browser')} page`;
+        res.status(403).json({ error: `${from} may not use this API: only this server's own page may.` });
         return;
       }
       res.locals.client = 'browser' satisfies ApiClientKind;

@@ -1,14 +1,15 @@
 /**
- * Contract: who may drive the API (platform/access.ts), CORS, and /version.
- * Pins today's behaviour; the migration's auth change (ADR-0003 §4.6) must
- * update this file deliberately, not by accident.
+ * Contract: who may drive the API (platform/access.ts) and /version.
+ * Updated deliberately in stage 4 for ADR-0003 §4.6: a browser is admitted
+ * only as this server's own page (Fetch Metadata + exact origin), never from
+ * another localhost port; local processes keep the token; no CORS at all.
  */
 import path from 'node:path';
 
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { bootContractApp, type ContractApp } from './harness';
+import { bootContractApp, sameOriginBrowser, type ContractApp } from './harness';
 
 let api: ContractApp;
 
@@ -42,12 +43,37 @@ describe('access guard', () => {
     expect((await request(api.app).get('/api/agent/threads').set('x-agent-token', api.token)).status).toBe(200);
   });
 
-  it('admits any loopback Origin (the web app on another port) without a token', async () => {
-    for (const origin of ['http://localhost:4200', 'http://127.0.0.1:5173']) {
-      const res = await request(api.app).get('/api/agent/threads').set('Origin', origin);
-      expect(res.status, origin).toBe(200);
-      expect(res.headers['access-control-allow-origin'], origin).toBe(origin);
-    }
+  it('admits the server own page (same-origin) without a token, reads and writes', async () => {
+    expect((await request(api.app).get('/api/agent/threads').set(sameOriginBrowser)).status).toBe(200);
+    // Browsers omit Origin on same-origin GETs (and EventSource): Fetch Metadata alone is enough.
+    const { Origin: _origin, ...noOrigin } = sameOriginBrowser;
+    expect((await request(api.app).get('/api/agent/threads').set(noOrigin)).status).toBe(200);
+    const created = await request(api.app).post('/api/agent/threads').set(sameOriginBrowser).send({ title: 'same-origin' });
+    expect(created.status).toBe(201);
+    expect(created.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('refuses a page on another localhost port: writes and the event stream', async () => {
+    const otherPort = { Host: 'localhost:3333', Origin: 'http://localhost:4200', 'Sec-Fetch-Site': 'same-site' };
+    const write = await request(api.app).post('/api/agent/threads').set(otherPort).send({ title: 'x' });
+    expect(write.status).toBe(403);
+    expect(write.body.error).toMatch(/may not use this API/);
+    const stream = await request(api.app).get('/api/agent/run/x/events').set(otherPort);
+    expect(stream.status).toBe(403);
+    // Even a page that claims same-origin is refused when its Origin is not exactly ours.
+    const spoofed = await request(api.app)
+      .post('/api/agent/threads')
+      .set({ ...otherPort, 'Sec-Fetch-Site': 'same-origin' })
+      .send({ title: 'x' });
+    expect(spoofed.status).toBe(403);
+  });
+
+  it('refuses a browser request without Fetch Metadata (fails closed), even with the token', async () => {
+    const res = await request(api.app)
+      .get('/api/agent/threads')
+      .set({ Host: 'localhost:3333', Origin: 'http://localhost:3333' })
+      .set(api.auth);
+    expect(res.status).toBe(403);
   });
 
   it('refuses a non-loopback Origin even with the token', async () => {
@@ -56,14 +82,24 @@ describe('access guard', () => {
     expect(res.body.error).toMatch(/may not use this API/);
   });
 
-  it('answers a CORS preflight from a loopback origin', async () => {
+  it('sends no CORS headers: a preflight from another port is refused', async () => {
     const res = await request(api.app)
       .options('/api/agent/run')
-      .set('Origin', 'http://localhost:4200')
+      .set({ Host: 'localhost:3333', Origin: 'http://localhost:4200', 'Sec-Fetch-Site': 'same-site' })
       .set('Access-Control-Request-Method', 'POST');
-    expect(res.status).toBe(204);
-    expect(res.headers['access-control-allow-origin']).toBe('http://localhost:4200');
-    expect(res.headers['access-control-allow-methods']).toContain('POST');
+    expect(res.status).toBe(403);
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+});
+
+describe('access guard, bound beyond loopback', () => {
+  it('needs the token for every request, the same-origin page included', async () => {
+    // One service per process (ADR-0003 §4.2): a second app over the same one.
+    const { createApp } = await import('../app.js');
+    const { createLogger } = await import('../platform/logger.js');
+    const open = createApp(api.service, createLogger('contract'), { browser: false });
+    expect((await request(open).get('/api/agent/threads').set(sameOriginBrowser)).status).toBe(403);
+    expect((await request(open).get('/api/agent/threads').set(api.auth)).status).toBe(200);
   });
 });
 

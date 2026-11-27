@@ -34,7 +34,20 @@ export type ContractApp = {
   close: () => Promise<void>;
 };
 
-export async function bootContractApp(env: Record<string, string> = {}): Promise<ContractApp> {
+/**
+ * Headers the chat UI's own page sends (ADR-0003 §4.6): the browser marks it
+ * same-origin, and Origin (when sent) is this server's exact origin.
+ */
+export const sameOriginBrowser = {
+  Host: 'localhost:3333',
+  Origin: 'http://localhost:3333',
+  'Sec-Fetch-Site': 'same-origin',
+} as const;
+
+export async function bootContractApp(
+  env: Record<string, string> = {},
+  appOptions: import('../app').AppOptions = {},
+): Promise<ContractApp> {
   const home = await mkdtemp(path.join(os.tmpdir(), 'agent-contract-home-'));
   const userHome = await mkdtemp(path.join(os.tmpdir(), 'agent-contract-user-'));
   const fixed: Record<string, string> = {
@@ -51,7 +64,6 @@ export async function bootContractApp(env: Record<string, string> = {}): Promise
     AGENT_MODEL_STRONG: '',
     AGENT_MODEL_FAST: '',
     AGENT_WORKSPACE_ROOTS: '',
-    CORS_ORIGIN: '',
     AGENT_ALLOWED_HOSTS: '',
     AGENT_RECORD_MODEL_CALLS: '',
     TAVILY_API_KEY: '',
@@ -73,7 +85,7 @@ export async function bootContractApp(env: Record<string, string> = {}): Promise
   const { createLogger } = await import('../platform/logger.js');
   // As main.ts does: the config is read once, after the env above is in place.
   const service = createAgentService({ config: loadConfig(process.env, os.homedir()) });
-  const app = createApp(service, createLogger('contract'));
+  const app = createApp(service, createLogger('contract'), appOptions);
   const token = (await readFile(path.join(home, 'api-token'), 'utf8')).trim();
 
   return {

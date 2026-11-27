@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, use, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { normalizeRunPosture } from '@agent/agent-models';
 import { ChatHeader } from '@/features/conversation/chat-header';
 import { MessageList } from '@/features/conversation/message-list';
@@ -12,12 +12,7 @@ import { useAgentRun } from '@/features/conversation/use-agent-run';
 import { takePendingMessage } from '@/api/agent-client';
 import { resolveOllamaModel } from '@/features/composer/ollama-models';
 
-export default function ChatThreadPage({
-  params,
-}: {
-  params: Promise<{ threadId: string }>;
-}) {
-  const { threadId } = use(params);
+export default function ChatThreadPage({ threadId }: { threadId: string }) {
   const {
     messages,
     chatState,

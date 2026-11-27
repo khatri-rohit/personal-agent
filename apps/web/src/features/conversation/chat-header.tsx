@@ -1,7 +1,6 @@
 'use client';
 
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { Link, useNavigate } from 'react-router';
 import { useEffect, useRef, useState } from 'react';
 import {
   ExternalLink,
@@ -120,7 +119,7 @@ export function ChatHeader({ threadId }: { threadId: string }) {
           <ol className="flex min-w-0 items-center gap-1.5 text-[length:var(--text-body)] leading-snug">
             <li className="max-w-[14rem] shrink-0 truncate">
               <Link
-                href="/"
+                to="/"
                 title={workspaceRoot ?? 'Home'}
                 onClick={() => setWorkspaceRoot(workspaceRoot)}
                 className="crumb-link"
@@ -133,7 +132,7 @@ export function ChatHeader({ threadId }: { threadId: string }) {
                 <CrumbSeparator />
                 <li className="flex min-w-0 max-w-[40%] shrink items-center gap-1.5">
                   <Link
-                    href={`/chat/${parentId}`}
+                    to={`/chat/${parentId}`}
                     title={parentThread?.title}
                     className="crumb-link truncate"
                   >
@@ -254,7 +253,7 @@ function ThreadMenu({
   canRename: boolean;
   onRename: () => void;
 }) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const isPinned = Boolean(thread.pinned);
   const href = `/chat/${thread.id}`;
 
@@ -302,7 +301,7 @@ function ThreadMenu({
         <DropdownMenuItem
           variant="destructive"
           onSelect={() => {
-            void removeThread(thread.id).then(() => router.push('/'));
+            void removeThread(thread.id).then(() => navigate('/'));
           }}
         >
           <Trash2 className="size-4" />

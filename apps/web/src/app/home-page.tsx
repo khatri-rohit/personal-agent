@@ -1,8 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { Link, useNavigate } from 'react-router';
 import {
   isWorkspaceKind,
   normalizeRunPosture,
@@ -57,7 +56,7 @@ function restoreHomeDraft(content: string, attachments?: MessageAttachment[]) {
 }
 
 export default function HomePage() {
-  const router = useRouter();
+  const navigate = useNavigate();
   const { workspaceRoot } = useAgentSpace();
   const bound = Boolean(workspaceRoot);
   const threads = useThreads();
@@ -140,7 +139,7 @@ export default function HomePage() {
                 );
                 return;
               }
-              router.push(`/chat/${thread.id}`);
+              navigate(`/chat/${thread.id}`);
             } catch {
               setPendingContent(false);
               restoreHomeDraft(content, attachments);
@@ -174,7 +173,7 @@ export default function HomePage() {
               {recentThreads.map((thread) => (
                 <li key={thread.id}>
                   <Link
-                    href={`/chat/${thread.id}`}
+                    to={`/chat/${thread.id}`}
                     className="flex items-center gap-3 rounded-md px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent/45 hover:text-foreground"
                   >
                     <span className="min-w-0 flex-1 truncate">

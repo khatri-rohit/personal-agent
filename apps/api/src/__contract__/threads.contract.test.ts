@@ -10,7 +10,7 @@ import { CHECKPOINT_NOT_COVERED, HOME_MODE } from '@agent/agent-models';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { bootContractApp, type ContractApp } from './harness';
+import { bootContractApp, sameOriginBrowser, type ContractApp } from './harness';
 
 const picker = vi.hoisted(() => ({
   next: { ok: false, reason: 'cancelled' } as
@@ -23,7 +23,7 @@ vi.mock('../threads/pick-folder', () => ({
 
 let api: ContractApp;
 let folder: string;
-const browser = { Origin: 'http://localhost:4200' };
+const browser = sameOriginBrowser;
 
 beforeAll(async () => {
   api = await bootContractApp();

@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import { Link } from 'react-router';
 import { AlertCircle, Check, XCircle } from 'lucide-react';
 
 import type { SubagentActivity } from './chat-store';
@@ -96,7 +96,7 @@ export function SubagentCard({ activity }: { activity: SubagentActivity }) {
       )}
       {activity.subThreadId ? (
         <Link
-          href={`/chat/${activity.subThreadId}`}
+          to={`/chat/${activity.subThreadId}`}
           className="type-ui mt-1 inline-block text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground"
         >
           View conversation <span aria-hidden="true">→</span>
@@ -170,7 +170,7 @@ export function SubagentDockRows({
           </span>
           {item.subThreadId ? (
             <Link
-              href={`/chat/${item.subThreadId}`}
+              to={`/chat/${item.subThreadId}`}
               className="type-caption shrink-0 text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground"
             >
               View live <span aria-hidden="true">→</span>

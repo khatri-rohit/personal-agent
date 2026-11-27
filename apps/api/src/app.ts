@@ -1,47 +1,42 @@
 import express, { type Express } from 'express';
-import cors from 'cors';
 import { API_MOUNTS, API_ROUTES, PROTOCOL_VERSION } from '@agent/agent-models';
 
 import { memoryRouter } from './memory/memory.routes';
 import { modelsRouter } from './models/models.routes';
-import { accessGuard, accessPolicyFromEnv, isAllowedOrigin, loadOrCreateApiToken } from './platform/access';
+import { accessGuard, accessPolicyFromEnv, hostGuard, loadOrCreateApiToken } from './platform/access';
 import { harnessVersion } from '@agent/agent-service';
 import { errorHandler } from './platform/http-errors';
 import type { AgentService } from '@agent/agent-service';
 import type { Logger } from './platform/logger';
 import { createHttpLogger } from './platform/logger';
+import { staticUi } from './platform/static-ui';
 import { runsRouter } from './runs/runs.routes';
 import { skillsRouter } from './skills/skills.routes';
 import { threadsRouter } from './threads/threads.routes';
 import { voiceRouter } from './voice/voice.routes';
+
+export type AppOptions = {
+  /** The built chat UI to serve on this origin; `null` or absent = headless (API only). */
+  uiDir?: string | null;
+  /** Admit a same-origin browser page without the token (off when bound beyond loopback). */
+  browser?: boolean;
+};
 
 /**
  * The HTTP app with every middleware and router, in the order the API has
  * always mounted them. `main.ts` only adds `listen` and start-up work, so
  * the contract tests drive exactly what users hit.
  */
-export function createApp(service: AgentService, logger: Logger): Express {
+export function createApp(service: AgentService, logger: Logger, options: AppOptions = {}): Express {
   const app = express();
 
   // Only this machine's own apps drive the API (platform/access.ts): a loopback
-  // Host, and either the web app's origin or the token in AGENT_HOME/api-token.
-  const access = accessPolicyFromEnv(loadOrCreateApiToken(service.home()));
-  app.use(accessGuard(access));
-
-  app.use(
-    cors({
-      // Reflects only origins the guard let in; never an arbitrary site.
-      origin: (origin, callback) => callback(null, origin === undefined || isAllowedOrigin(origin, access)),
-      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: [
-        'Content-Type',
-        'Accept',
-        'Origin',
-        'X-Requested-With',
-        'X-Voice-Context',
-      ],
-    }),
-  );
+  // Host, and either this server's own page or the token in AGENT_HOME/api-token.
+  const access = accessPolicyFromEnv(loadOrCreateApiToken(service.home()), process.env, {
+    browser: options.browser ?? true,
+  });
+  app.use(hostGuard(access));
+  app.use('/api', accessGuard(access));
 
   app.use(express.json({ limit: '25mb' }));
 
@@ -70,6 +65,9 @@ export function createApp(service: AgentService, logger: Logger): Express {
   // Voice add-on (Speaches, not Ollama). The voice module decides which routes
   // exist; nothing on the run path depends on them.
   app.use(API_MOUNTS.voice, voiceRouter);
+
+  // The chat UI on the same origin; any other GET outside /api gets its shell.
+  if (options.uiDir) app.use(staticUi(options.uiDir));
 
   app.use(errorHandler);
   return app;

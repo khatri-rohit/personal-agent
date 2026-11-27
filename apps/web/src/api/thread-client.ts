@@ -7,7 +7,7 @@ import type {
   ThreadKind,
 } from '@agent/agent-models';
 
-import { API_BASE, api } from './client';
+import { api } from './client';
 
 async function readError(res: Response, fallback: string): Promise<string> {
   const body = await res.json().catch(() => ({}));
@@ -31,7 +31,7 @@ export async function pickWorkspaceFolder(
     } });
   } catch {
     throw new Error(
-      `Cannot reach the API at ${API_BASE}. Start it with nx serve @agent/api, then try again.`,
+      'Cannot reach the agent host. Start it with npm start, then try again.',
     );
   }
   if (res.status === 204) return null;
