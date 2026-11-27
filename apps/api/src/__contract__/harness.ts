@@ -18,7 +18,7 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
-import { getThreadStore } from '@agent/agent-service';
+import { createAgentService, loadConfig, type AgentService } from '@agent/agent-service';
 import type { Express } from 'express';
 import { vi } from 'vitest';
 
@@ -26,6 +26,7 @@ export const localFetch: typeof fetch = globalThis.fetch.bind(globalThis);
 
 export type ContractApp = {
   app: Express;
+  service: AgentService;
   home: string;
   token: string;
   /** Headers a local process (CLI, eval runner) sends. */
@@ -70,16 +71,19 @@ export async function bootContractApp(env: Record<string, string> = {}): Promise
 
   const { createApp } = await import('../app.js');
   const { createLogger } = await import('../platform/logger.js');
-  const app = createApp(createLogger('contract'));
+  // As main.ts does: the config is read once, after the env above is in place.
+  const service = createAgentService({ config: loadConfig(process.env, os.homedir()) });
+  const app = createApp(service, createLogger('contract'));
   const token = (await readFile(path.join(home, 'api-token'), 'utf8')).trim();
 
   return {
     app,
+    service,
     home,
     token,
     auth: { Authorization: `Bearer ${token}` },
     close: async () => {
-      (await getThreadStore()).close();
+      (await service.threads()).close();
       vi.unstubAllGlobals();
       vi.unstubAllEnvs();
       await rm(home, { recursive: true, force: true }).catch(() => undefined);

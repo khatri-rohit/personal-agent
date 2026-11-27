@@ -22,7 +22,7 @@ import {
 } from '@agent/agent-core';
 
 import { sideCallBudget } from '../models/model-settings-store';
-import { runManager } from '../platform/instances';
+import type { RunManager } from '@agent/agent-core';
 import { threadTraceSink } from '../platform/trace-sink.js';
 import type { ThreadStore } from '../threads/thread-store';
 
@@ -157,12 +157,13 @@ export async function compactThread(input: {
 
 /** UI notice + trace for a snapshot written during `runId`. */
 export function emitCompacted(
+  runs: Pick<RunManager, 'publish'>,
   store: ThreadStore,
   runId: string,
   threadId: string,
   snapshot: Snapshot,
 ): void {
-  runManager.publish(runId, {
+  runs.publish(runId, {
     type: 'context.compacted',
     runId,
     threadId,
@@ -183,6 +184,7 @@ export function emitCompacted(
  * pre-run pass catches anything this estimate misses.
  */
 export async function maybeCompactThread(input: {
+  runs: Pick<RunManager, 'publish'>;
   store: ThreadStore;
   threadId: string;
   runId: string;
@@ -193,7 +195,7 @@ export async function maybeCompactThread(input: {
   modelSettings?: ResolvedModelSettings;
 }): Promise<void> {
   if (!input.report.needsCompaction) return;
-  const { store, threadId, runId } = input;
+  const { runs, store, threadId, runId } = input;
   const snapshot = await compactThread({
     store,
     threadId,
@@ -206,7 +208,7 @@ export async function maybeCompactThread(input: {
     // Announced only when a snapshot will follow: over the mark with nothing
     // left to fold (one long last turn, or a snapshot that already covers
     // it) would leave the client's "compacting" notice on with no end.
-    onStart: () => runManager.publish(runId, { type: 'context.compacting', runId, threadId }),
+    onStart: () => runs.publish(runId, { type: 'context.compacting', runId, threadId }),
   });
-  if (snapshot) emitCompacted(store, runId, threadId, snapshot);
+  if (snapshot) emitCompacted(runs, store, runId, threadId, snapshot);
 }

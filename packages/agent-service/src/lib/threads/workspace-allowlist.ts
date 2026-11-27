@@ -54,11 +54,12 @@ export async function isAllowedWorkspace(input: {
   root: string;
   /** Workspace roots of existing threads. */
   threadRoots: Array<string | undefined>;
-  env?: NodeJS.ProcessEnv;
+  /** The service config's env (AGENT_WORKSPACE_ROOTS). */
+  env: Readonly<{ AGENT_WORKSPACE_ROOTS?: string }>;
 }): Promise<boolean> {
   const { root } = input;
   if (input.threadRoots.some((known) => known !== undefined && sameWorkspaceRoot(known, root))) return true;
-  const configured = (input.env ?? process.env).AGENT_WORKSPACE_ROOTS ?? '';
+  const configured = input.env.AGENT_WORKSPACE_ROOTS ?? '';
   for (const parent of configured.split(path.delimiter).map((item) => item.trim()).filter(Boolean)) {
     if (isWithin(root, parent)) return true;
   }

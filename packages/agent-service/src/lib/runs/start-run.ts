@@ -39,11 +39,7 @@ import {
   resolveContextBudget,
 } from '../models/model-runtime';
 import { resolveModelSettings } from '../models/model-settings-store';
-import {
-  getAgentHome,
-  getThreadStore,
-  runManager,
-} from '../platform/instances';
+import type { AgentService } from '../service';
 import { threadTraceSink } from '../platform/trace-sink.js';
 import {
   checkpointAfter,
@@ -53,10 +49,6 @@ import {
 } from '../threads/checkpoints';
 import { harnessVersion } from '../platform/harness-version';
 import { compactThread, emitCompacted, maybeCompactThread } from './compaction';
-import {
-  rewindLearningCursor,
-  scheduleLearningReview,
-} from '../memory/learning-loop';
 import {
   endpointFromLocal,
   lastUserEnvelope,
@@ -102,10 +94,11 @@ function reject(
  * started.
  */
 export async function startThreadRun(
+  service: AgentService,
   request: StartRunRequest,
 ): Promise<StartRunResult> {
   // Claim before the first await, so two sends cannot both start a run.
-  const claimed = runManager.claim(request.threadId);
+  const claimed = service.runs.claim(request.threadId);
   if (!claimed.ok) {
     return reject(
       'busy',
@@ -115,7 +108,7 @@ export async function startThreadRun(
   }
   const { claim } = claimed;
   try {
-    const result = await startClaimedRun(request, claim);
+    const result = await startClaimedRun(service, request, claim);
     if (!result.ok) claim.release();
     return result;
   } catch (error) {
@@ -125,10 +118,12 @@ export async function startThreadRun(
 }
 
 async function startClaimedRun(
+  service: AgentService,
   request: StartRunRequest,
   claim: RunClaim,
 ): Promise<StartRunResult> {
   const runId = claim.runId;
+  const accountKey = service.config.env.OLLAMA_API_KEY;
   if (!(await claim.ready)) {
     return reject('busy', 'The previous run on this thread is still stopping');
   }
@@ -147,7 +142,7 @@ async function startClaimedRun(
   } = request;
   const posture = normalizeRunPosture(rawPosture);
 
-  const store = await getThreadStore();
+  const store = await service.threads();
   const found = store.getThread(threadId);
   if (!found) {
     return reject('not_found', 'Thread not found');
@@ -194,7 +189,7 @@ async function startClaimedRun(
   // first call. Refuse before anything is written (no rewind, no user row),
   // so the message stays with the client to send after the reset.
   const paused =
-    endpointFromLocal(local) === 'cloud' ? capacityPauseReason() : null;
+    endpointFromLocal(local) === 'cloud' ? capacityPauseReason(accountKey) : null;
   if (paused) {
     return reject(
       'paused',
@@ -230,7 +225,7 @@ async function startClaimedRun(
       if (cutRunIds.length > 0) {
         try {
           restore = await revertRuns({
-            agentHome: getAgentHome(),
+            agentHome: service.home(),
             root: thread.workspaceRoot,
             runIds: cutRunIds,
           });
@@ -243,7 +238,7 @@ async function startClaimedRun(
       }
     }
     await store.rewind(threadId, rewindThroughSeq);
-    await rewindLearningCursor(threadId, rewindThroughSeq);
+    await service.learning.rewindCursor(threadId, rewindThroughSeq);
   }
 
   const ledgerBefore = await store.readLedger(threadId, 0);
@@ -261,7 +256,7 @@ async function startClaimedRun(
   const endpoint = endpointFromLocal(local);
   // Resolved once per run (file > env > run's model) and recorded on
   // run.started; consumers below read this snapshot, never env directly.
-  const modelSettings = await resolveModelSettings(useModel, endpoint);
+  const modelSettings = await resolveModelSettings(service, useModel, endpoint);
 
   // Before the user row is written, so a refusal leaves the ledger as it was.
   if (
@@ -327,9 +322,9 @@ async function startClaimedRun(
     endpoint,
     skillNames,
     onMemoryUpdated: (payload: MemoryUpdatedPayload) =>
-      runManager.publish(runId, { type: 'memory.updated', runId, ...payload }),
+      service.runs.publish(runId, { type: 'memory.updated', runId, ...payload }),
     onPlanUpdated: (payload: PlanUpdatedPayload) =>
-      runManager.publish(runId, {
+      service.runs.publish(runId, {
         type: 'plan.updated',
         runId,
         threadId,
@@ -337,7 +332,7 @@ async function startClaimedRun(
       }),
   };
   let prepared = await runWithSkillRoots(skillRoots, () =>
-    prepareRun(prepareInput),
+    prepareRun(service, prepareInput),
   );
   // Oversized start (window switched down, big mention, long last run):
   // compact before the first model call instead of carrying it all run.
@@ -353,7 +348,7 @@ async function startClaimedRun(
   });
   if (preRunSnapshot)
     prepared = await runWithSkillRoots(skillRoots, () =>
-      prepareRun(prepareInput),
+      prepareRun(service, prepareInput),
     );
 
   // Auto (System 1) starts from the model's default; the router moves from
@@ -390,16 +385,16 @@ async function startClaimedRun(
   const effortPolicy = buildEffortPolicy(
     modelConfig,
     requestedThinking,
-    system1EnforceAvailable(endpoint),
+    system1EnforceAvailable(service.system1, endpoint),
   );
-  const system1 = system1PortForRun(endpoint, prepared.mode.limits.maxWallMs);
+  const system1 = system1PortForRun(service.system1, endpoint, prepared.mode.limits.maxWallMs);
   // Cloud runs share one account: pause on a spent session/week instead of
   // erroring, and steer tighter when behind even weekly pace.
   const capacity =
-    endpoint === 'cloud' && capacityEnabled()
-      ? createCapacityGate()
+    endpoint === 'cloud' && capacityEnabled(accountKey)
+      ? createCapacityGate(accountKey)
       : undefined;
-  const balanceBefore = capacitySnapshot();
+  const balanceBefore = capacitySnapshot(accountKey);
 
   // The run's task record, written as it grows and once more at the end.
   // Writes are chained so an older snapshot never lands after a newer one
@@ -429,7 +424,7 @@ async function startClaimedRun(
   // Last step before the run: nothing below can refuse it, and no tool runs
   // before this snapshot exists. A failed snapshot is logged and the run goes
   // on without undo (the Changes view then says no snapshot exists).
-  const agentHome = getAgentHome();
+  const agentHome = service.home();
   if (checkpointRoot)
     await checkpointBefore({
       agentHome,
@@ -464,7 +459,7 @@ async function startClaimedRun(
       ...(thread.workspaceRoot ? { workspaceRoot: thread.workspaceRoot } : {}),
       putBlob: (text) => store.putBlob(threadId, text),
       // Every model call's exact input/output, for the eval viewer. Off: AGENT_RECORD_MODEL_CALLS=0.
-      recordCalls: process.env.AGENT_RECORD_MODEL_CALLS !== '0',
+      recordCalls: service.config.env.AGENT_RECORD_MODEL_CALLS !== '0',
       readBlob: (sha256, offset, length) =>
         store.readBlobText(threadId, sha256, offset, length),
       onMessage: async (record, meta) => {
@@ -485,8 +480,8 @@ async function startClaimedRun(
       ...(isWorkspaceKind(thread.kind) && thread.workspaceRoot
         ? {
             subagents: createSubagentRunner({
-              runManager,
-              host: createSubagentHost({ store, endpoint, modelSettings }),
+              runManager: service.runs,
+              host: createSubagentHost({ store, endpoint, modelSettings, accountKey }),
             }),
           }
         : {}),
@@ -505,7 +500,7 @@ async function startClaimedRun(
         if (checkpointRoot)
           await checkpointAfter({ agentHome, root: checkpointRoot, runId });
         // Not awaited: the balance read after a run must not delay compaction.
-        void appendUsageLog(agentHome, {
+        void appendUsageLog(accountKey, agentHome, {
           runId: result.runId,
           threadId,
           model: useModel,
@@ -542,7 +537,7 @@ async function startClaimedRun(
         saveTaskRecord(result.task);
         await recordWrites;
         // Restarts the idle timer; the review runs once the thread goes quiet.
-        scheduleLearningReview({
+        service.learning.schedule({
           threadId,
           model: useModel,
           endpoint,
@@ -570,6 +565,7 @@ async function startClaimedRun(
         // nothing it writes can race that run's rewind.
         if (outcome === 'cancelled' || !result.contextReport) return;
         await maybeCompactThread({
+          runs: service.runs,
           store,
           threadId,
           runId,
@@ -583,13 +579,13 @@ async function startClaimedRun(
     },
   );
 
-  runManager.publish(runId, {
+  service.runs.publish(runId, {
     type: 'plan.updated',
     runId,
     threadId,
     plan: await store.readPlan(threadId),
   });
-  if (preRunSnapshot) emitCompacted(store, runId, threadId, preRunSnapshot);
+  if (preRunSnapshot) emitCompacted(service.runs, store, runId, threadId, preRunSnapshot);
 
   if (isFirstUserTurn && message) {
     titleLanded = titleNewThread(

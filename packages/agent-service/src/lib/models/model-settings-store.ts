@@ -13,12 +13,15 @@ import {
   type SideCallThinking,
 } from '@agent/agent-models';
 
-import { getAgentHome } from '../platform/instances.js';
+import type { ServiceCore } from '../service';
+
+/** What the settings file needs from the service: where the home is, and the env role vars. */
+export type SettingsHost = Pick<ServiceCore, 'home' | 'config'>;
 
 const SETTINGS_FILE = 'model-settings.json';
 
-function settingsPath(): string {
-  return path.join(getAgentHome(), SETTINGS_FILE);
+function settingsPath(host: SettingsHost): string {
+  return path.join(host.home(), SETTINGS_FILE);
 }
 
 function isRoleSetting(value: unknown): value is ModelRoleSetting {
@@ -35,11 +38,11 @@ function isRoleSetting(value: unknown): value is ModelRoleSetting {
  * degrade to unset roles — the dialog can never brick the harness; env vars
  * still apply.
  */
-export async function readModelSettings(): Promise<ModelSettings> {
+export async function readModelSettings(host: SettingsHost): Promise<ModelSettings> {
   const defaults = emptyModelSettings();
   let raw: string;
   try {
-    raw = await readFile(settingsPath(), 'utf8');
+    raw = await readFile(settingsPath(host), 'utf8');
   } catch {
     return defaults; // No file yet — normal first-run state.
   }
@@ -89,14 +92,14 @@ export async function readModelSettings(): Promise<ModelSettings> {
 }
 
 /** Atomic write: readers never see a partial file; last write wins. */
-export async function writeModelSettings(settings: ModelSettings): Promise<void> {
-  const target = settingsPath();
+export async function writeModelSettings(host: SettingsHost, settings: ModelSettings): Promise<void> {
+  const target = settingsPath(host);
   const tmp = `${target}.${process.pid}.tmp`;
   await writeFile(tmp, JSON.stringify(settings, null, 2) + '\n', 'utf8');
   await rename(tmp, target);
 }
 
-const ENV_ROLE_VARS: Record<ModelSettingRole, string> = {
+const ENV_ROLE_VARS: Record<ModelSettingRole, 'AGENT_MODEL_FAST' | 'AGENT_MODEL_STRONG' | 'AGENT_MODEL_SUMMARY' | 'TITLE_MODEL'> = {
   fast: 'AGENT_MODEL_FAST',
   strong: 'AGENT_MODEL_STRONG',
   summary: 'AGENT_MODEL_SUMMARY',
@@ -109,10 +112,11 @@ const ENV_ROLE_VARS: Record<ModelSettingRole, string> = {
  * when OLLAMA_API_KEY exists, else it falls back with one warn.
  */
 export async function resolveModelSettings(
+  host: SettingsHost,
   runModel: string,
   runEndpoint: 'cloud' | 'local',
 ): Promise<ResolvedModelSettings> {
-  const settings = await readModelSettings();
+  const settings = await readModelSettings(host);
   const resolved: ResolvedModelSettings = {
     roles: {
       fast: { model: runModel, endpoint: runEndpoint, source: 'default' },
@@ -125,7 +129,7 @@ export async function resolveModelSettings(
   for (const role of MODEL_SETTING_ROLES) {
     const fileSetting = settings.roles[role];
     if (fileSetting.model !== '') {
-      if (fileSetting.endpoint === 'cloud' && !process.env.OLLAMA_API_KEY) {
+      if (fileSetting.endpoint === 'cloud' && !host.config.env.OLLAMA_API_KEY) {
         console.warn(
           `[models] settings role ${role}=${fileSetting.model} needs OLLAMA_API_KEY; falling back`,
         );
@@ -138,7 +142,7 @@ export async function resolveModelSettings(
         continue;
       }
     }
-    const envModel = process.env[ENV_ROLE_VARS[role]]?.trim();
+    const envModel = host.config.env[ENV_ROLE_VARS[role]]?.trim();
     // Env vars hold cloud ids; on local runs they would not resolve, so the
     // run's own model applies (the pre-settings behavior).
     if (envModel && runEndpoint === 'cloud') {

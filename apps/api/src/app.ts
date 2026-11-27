@@ -6,7 +6,7 @@ import { modelsRouter } from './models/models.routes';
 import { accessGuard, accessPolicyFromEnv, isAllowedOrigin, loadOrCreateApiToken } from './platform/access';
 import { harnessVersion } from '@agent/agent-service';
 import { errorHandler } from './platform/http-errors';
-import { getAgentHome } from '@agent/agent-service';
+import type { AgentService } from '@agent/agent-service';
 import type { Logger } from './platform/logger';
 import { createHttpLogger } from './platform/logger';
 import { runsRouter } from './runs/runs.routes';
@@ -19,12 +19,12 @@ import { voiceRouter } from './voice/voice.routes';
  * always mounted them. `main.ts` only adds `listen` and start-up work, so
  * the contract tests drive exactly what users hit.
  */
-export function createApp(logger: Logger): Express {
+export function createApp(service: AgentService, logger: Logger): Express {
   const app = express();
 
   // Only this machine's own apps drive the API (platform/access.ts): a loopback
   // Host, and either the web app's origin or the token in AGENT_HOME/api-token.
-  const access = accessPolicyFromEnv(loadOrCreateApiToken(getAgentHome()));
+  const access = accessPolicyFromEnv(loadOrCreateApiToken(service.home()));
   app.use(accessGuard(access));
 
   app.use(
@@ -52,18 +52,18 @@ export function createApp(logger: Logger): Express {
   // before a suite (a stale API, or one on the wrong home, measures the wrong thing).
   app.get('/api/agent/version', (_req, res, next) => {
     harnessVersion()
-      .then((version) => res.json({ harnessVersion: version, agentHome: getAgentHome() }))
+      .then((version) => res.json({ harnessVersion: version, agentHome: service.home() }))
       .catch(next);
   });
 
   // Agent endpoints (no two routers share a path, so order does not matter)
   app.use(
     '/api/agent',
-    skillsRouter,
-    modelsRouter,
-    threadsRouter,
-    runsRouter,
-    memoryRouter,
+    skillsRouter(service),
+    modelsRouter(service),
+    threadsRouter(service),
+    runsRouter(service),
+    memoryRouter(service),
   );
 
   // Voice add-on (Speaches, not Ollama). The voice module decides which routes

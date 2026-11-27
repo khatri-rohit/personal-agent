@@ -1,11 +1,19 @@
 /**
- * agent-service: the host's state and run logic, moved out of apps/api
- * unchanged (docs/plans/one-binary-host-plan.md, stage 1a). Transports
- * (HTTP routes today) import only from here.
+ * agent-service: the host's state and run logic (docs/plans/one-binary-host-plan.md,
+ * stage 1). Create one `AgentService` per process with `createAgentService`;
+ * transports (HTTP routes today) hold it and call the functions below with it.
  */
 
-// Platform: home, shared instances, version
-export { getAgentHome, getMemoryStore, getThreadStore, runManager } from './lib/platform/instances';
+// The service: config snapshot and the one instance
+export {
+  createAgentService,
+  HOST_ENV_KEYS,
+  loadConfig,
+  type AgentConfig,
+  type AgentService,
+  type HostEnv,
+  type HostEnvKey,
+} from './lib/service';
 export { harnessVersion } from './lib/platform/harness-version';
 
 // Runs
@@ -16,9 +24,6 @@ export { initSystem1, system1AutoFor } from './lib/runs/system1-runtime';
 // Threads: workspace access and file checkpoints
 export { isAllowedWorkspace, rememberWorkspace, WORKSPACE_NOT_PICKED } from './lib/threads/workspace-allowlist';
 export { folderWriter, forgetCheckpoints, revertRuns, runChanges, runFileDiff } from './lib/threads/checkpoints';
-
-// Memory
-export { cancelLearningReview } from './lib/memory/learning-loop';
 
 // Models and capacity
 export { BalanceError, capacityEnabled, getOllamaBalance } from './lib/models/capacity';

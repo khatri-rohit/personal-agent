@@ -1,124 +1,122 @@
 import { Router, type Request, type Response } from 'express';
+import type { AgentService } from '@agent/agent-service';
 import type { OllamaEndpoint } from '@agent/agent-models';
 import { getOllamaModelConfig, listOllamaModels } from '@agent/agent-core';
 import { BalanceError, capacityEnabled, getOllamaBalance } from '@agent/agent-service';
-import {
-  parseModelSettingsBody,
-  readModelSettings,
-  resolveModelSettings,
-  writeModelSettings,
-} from '@agent/agent-service';
+import { parseModelSettingsBody, readModelSettings, resolveModelSettings, writeModelSettings } from '@agent/agent-service';
 import { system1AutoFor } from '@agent/agent-service';
 import { asyncRoute } from '../platform/http-errors';
 
-const router = Router();
+export function modelsRouter(service: AgentService): Router {
+  const router = Router();
 
-router.get('/usage/balance', asyncRoute(async (_req: Request, res: Response) => {
-  if (!capacityEnabled()) {
-    res.status(404).json({ error: 'No OLLAMA_API_KEY configured' });
-    return;
-  }
-
-  try {
-    res.json(await getOllamaBalance());
-  } catch (error) {
-    if (error instanceof BalanceError) {
-      res.status(error.status).json({ error: error.message });
+  router.get('/usage/balance', asyncRoute(async (_req: Request, res: Response) => {
+    if (!capacityEnabled(service.config.env.OLLAMA_API_KEY)) {
+      res.status(404).json({ error: 'No OLLAMA_API_KEY configured' });
       return;
     }
-    res.status(502).json({
-      error: error instanceof Error ? error.message : 'Balance fetch failed',
-    });
-  }
-}));
 
-/** Returns null when the query is present but not a known endpoint. */
-function parseEndpointQuery(
-  value: unknown,
-  fallback: OllamaEndpoint,
-): OllamaEndpoint | null {
-  if (value === undefined || value === '') return fallback;
-  if (value === 'cloud' || value === 'local') return value;
-  return null;
+    try {
+      res.json(await getOllamaBalance(service.config.env.OLLAMA_API_KEY));
+    } catch (error) {
+      if (error instanceof BalanceError) {
+        res.status(error.status).json({ error: error.message });
+        return;
+      }
+      res.status(502).json({
+        error: error instanceof Error ? error.message : 'Balance fetch failed',
+      });
+    }
+  }));
+
+  /** Returns null when the query is present but not a known endpoint. */
+  function parseEndpointQuery(
+    value: unknown,
+    fallback: OllamaEndpoint,
+  ): OllamaEndpoint | null {
+    if (value === undefined || value === '') return fallback;
+    if (value === 'cloud' || value === 'local') return value;
+    return null;
+  }
+
+  /**
+   * GET /api/agent/models/config?model=&endpoint=local|cloud
+   * Proxy for Ollama /api/show (context length, thinking values).
+   * Registered before /models so a future /models/:id never shadows this path.
+   */
+  router.get('/models/config', asyncRoute(async (req: Request, res: Response) => {
+    const model =
+      typeof req.query.model === 'string' ? req.query.model.trim() : '';
+    if (!model) {
+      return res.status(400).json({ error: 'model is required' });
+    }
+    // Default cloud when omitted (backward compatible with existing clients).
+    const endpoint = parseEndpointQuery(req.query.endpoint, 'cloud');
+    if (!endpoint) {
+      return res
+        .status(400)
+        .json({ error: 'endpoint must be "local" or "cloud"' });
+    }
+
+    try {
+      const config = await getOllamaModelConfig(model, endpoint);
+      return res.json({
+        ...config,
+        system1Auto: system1AutoFor(service.system1, endpoint, config),
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(502).json({ error: msg });
+    }
+  }));
+
+  /**
+   * GET /api/agent/models/settings
+   * Merged view for the Settings → Models tab: stored picks, the resolved
+   * model per role with its source, and thinking preferences.
+   */
+  router.get('/models/settings', asyncRoute(async (_req: Request, res: Response) => {
+    const settings = await readModelSettings(service);
+    // Resolution preview against the home-mode default model; the dialog shows
+    // sources, and runs resolve against their own model.
+    const resolved = await resolveModelSettings(service, 'glm-5.2:cloud', 'cloud');
+    return res.json({ settings, resolved });
+  }));
+
+  /**
+   * PUT /api/agent/models/settings
+   * Validate and persist. Unknown fields and bad enums are a 400 with the
+   * problem list; a valid body replaces the whole settings object.
+   */
+  router.put('/models/settings', asyncRoute(async (req: Request, res: Response) => {
+    const parsed = parseModelSettingsBody(req.body);
+    if (!parsed.ok) {
+      return res.status(400).json({ error: 'Invalid model settings', problems: parsed.problems });
+    }
+    await writeModelSettings(service, parsed.settings);
+    const resolved = await resolveModelSettings(service, 'glm-5.2:cloud', 'cloud');
+    return res.json({ settings: parsed.settings, resolved });
+  }));
+
+  /**
+   * GET /api/agent/models?endpoint=local|cloud
+   * Proxy for Ollama GET /api/tags (installed models). Defaults to local.
+   */
+  router.get('/models', asyncRoute(async (req: Request, res: Response) => {
+    const endpoint = parseEndpointQuery(req.query.endpoint, 'local');
+    if (!endpoint) {
+      return res
+        .status(400)
+        .json({ error: 'endpoint must be "local" or "cloud"' });
+    }
+    try {
+      const models = await listOllamaModels(endpoint);
+      return res.json({ endpoint, models });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(502).json({ error: msg });
+    }
+  }));
+
+  return router;
 }
-
-/**
- * GET /api/agent/models/config?model=&endpoint=local|cloud
- * Proxy for Ollama /api/show (context length, thinking values).
- * Registered before /models so a future /models/:id never shadows this path.
- */
-router.get('/models/config', asyncRoute(async (req: Request, res: Response) => {
-  const model =
-    typeof req.query.model === 'string' ? req.query.model.trim() : '';
-  if (!model) {
-    return res.status(400).json({ error: 'model is required' });
-  }
-  // Default cloud when omitted (backward compatible with existing clients).
-  const endpoint = parseEndpointQuery(req.query.endpoint, 'cloud');
-  if (!endpoint) {
-    return res
-      .status(400)
-      .json({ error: 'endpoint must be "local" or "cloud"' });
-  }
-
-  try {
-    const config = await getOllamaModelConfig(model, endpoint);
-    return res.json({
-      ...config,
-      system1Auto: system1AutoFor(endpoint, config),
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return res.status(502).json({ error: msg });
-  }
-}));
-
-/**
- * GET /api/agent/models/settings
- * Merged view for the Settings → Models tab: stored picks, the resolved
- * model per role with its source, and thinking preferences.
- */
-router.get('/models/settings', asyncRoute(async (_req: Request, res: Response) => {
-  const settings = await readModelSettings();
-  // Resolution preview against the home-mode default model; the dialog shows
-  // sources, and runs resolve against their own model.
-  const resolved = await resolveModelSettings('glm-5.2:cloud', 'cloud');
-  return res.json({ settings, resolved });
-}));
-
-/**
- * PUT /api/agent/models/settings
- * Validate and persist. Unknown fields and bad enums are a 400 with the
- * problem list; a valid body replaces the whole settings object.
- */
-router.put('/models/settings', asyncRoute(async (req: Request, res: Response) => {
-  const parsed = parseModelSettingsBody(req.body);
-  if (!parsed.ok) {
-    return res.status(400).json({ error: 'Invalid model settings', problems: parsed.problems });
-  }
-  await writeModelSettings(parsed.settings);
-  const resolved = await resolveModelSettings('glm-5.2:cloud', 'cloud');
-  return res.json({ settings: parsed.settings, resolved });
-}));
-
-/**
- * GET /api/agent/models?endpoint=local|cloud
- * Proxy for Ollama GET /api/tags (installed models). Defaults to local.
- */
-router.get('/models', asyncRoute(async (req: Request, res: Response) => {
-  const endpoint = parseEndpointQuery(req.query.endpoint, 'local');
-  if (!endpoint) {
-    return res
-      .status(400)
-      .json({ error: 'endpoint must be "local" or "cloud"' });
-  }
-  try {
-    const models = await listOllamaModels(endpoint);
-    return res.json({ endpoint, models });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return res.status(502).json({ error: msg });
-  }
-}));
-
-export { router as modelsRouter };

@@ -15,6 +15,8 @@ import {
   resolveReasoningEffort,
 } from '@agent/agent-core';
 
+import type { HostEnv } from '../service';
+
 /** Per-model call knobs: thinking effort from /api/show, endpoint, temperature. */
 export async function resolveCallOptions(
   model: string,
@@ -77,11 +79,11 @@ export async function resolveContextBudget(
 }
 
 /** Sub-agent model roles. AGENT_MODEL_FAST / AGENT_MODEL_STRONG default to the parent's model. */
-export function modelRolesFor(main: string): ModelRoles {
+export function modelRolesFor(env: HostEnv, main: string): ModelRoles {
   return resolveModelRoles({
     main,
-    ...(process.env.AGENT_MODEL_FAST ? { fast: process.env.AGENT_MODEL_FAST } : {}),
-    ...(process.env.AGENT_MODEL_STRONG ? { strong: process.env.AGENT_MODEL_STRONG } : {}),
+    ...(env.AGENT_MODEL_FAST ? { fast: env.AGENT_MODEL_FAST } : {}),
+    ...(env.AGENT_MODEL_STRONG ? { strong: env.AGENT_MODEL_STRONG } : {}),
   });
 }
 
@@ -89,10 +91,10 @@ export function modelRolesFor(main: string): ModelRoles {
  * Boot check: a sub-agent role model without tool support would fail mid-run.
  * Warns once per configured role; never blocks startup.
  */
-export async function warnRoleModelsWithoutTools(): Promise<void> {
+export async function warnRoleModelsWithoutTools(env: HostEnv): Promise<void> {
   const roles = [
-    ['AGENT_MODEL_FAST', process.env.AGENT_MODEL_FAST?.trim()],
-    ['AGENT_MODEL_STRONG', process.env.AGENT_MODEL_STRONG?.trim()],
+    ['AGENT_MODEL_FAST', env.AGENT_MODEL_FAST?.trim()],
+    ['AGENT_MODEL_STRONG', env.AGENT_MODEL_STRONG?.trim()],
   ] as const;
   for (const [name, model] of roles) {
     if (!model) continue;

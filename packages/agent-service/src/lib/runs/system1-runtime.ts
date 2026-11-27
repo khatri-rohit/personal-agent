@@ -13,8 +13,10 @@ import type {
   System1Mode,
 } from '@agent/agent-models';
 
+import type { HostEnv } from '../service';
+
 /**
- * Host wiring for System 1, from env:
+ * Host wiring for System 1, from the service config (env keys):
  * - OLLAMA_SYSTEMONE_URL   endpoint; unset = disabled everywhere
  * - SYSTEMONE_MODEL        scorer model (default nimble-v3:9b)
  * - SYSTEMONE_MODE         off | shadow | enforce (default enforce: Auto is offered,
@@ -22,7 +24,7 @@ import type {
  * - SYSTEMONE_TIMEOUT_MS   per-call timeout (default 5000)
  * - SYSTEMONE_WITH_LOCAL   1 = also on local-endpoint runs (shares the daemon's VRAM)
  */
-type System1Settings = {
+export type System1Settings = {
   client: System1ClientConfig;
   mode: System1Mode;
   withLocal: boolean;
@@ -36,7 +38,6 @@ const RUN_BUDGET_SHARE = 0.05;
 
 // One daemon serves every run: breaker and in-flight limit are process-wide.
 const health = new System1Health();
-let cached: System1Settings | null | undefined;
 
 function parseMode(raw: string | undefined): System1Mode {
   const value = raw?.trim().toLowerCase();
@@ -56,24 +57,20 @@ function parseTimeout(raw: string | undefined): number {
     : DEFAULT_TIMEOUT_MS;
 }
 
-export function system1Settings(): System1Settings | null {
-  if (cached !== undefined) return cached;
-  const url = process.env.OLLAMA_SYSTEMONE_URL?.trim();
-  const mode = parseMode(process.env.SYSTEMONE_MODE);
-  if (!url || mode === 'off') {
-    cached = null;
-    return cached;
-  }
-  cached = {
+/** Read once, when the service is created; null = disabled. */
+export function system1SettingsFrom(env: HostEnv): System1Settings | null {
+  const url = env.OLLAMA_SYSTEMONE_URL?.trim();
+  const mode = parseMode(env.SYSTEMONE_MODE);
+  if (!url || mode === 'off') return null;
+  return {
     client: {
       url,
-      model: process.env.SYSTEMONE_MODEL?.trim() || DEFAULT_MODEL,
-      timeoutMs: parseTimeout(process.env.SYSTEMONE_TIMEOUT_MS),
+      model: env.SYSTEMONE_MODEL?.trim() || DEFAULT_MODEL,
+      timeoutMs: parseTimeout(env.SYSTEMONE_TIMEOUT_MS),
     },
     mode,
-    withLocal: process.env.SYSTEMONE_WITH_LOCAL === '1',
+    withLocal: env.SYSTEMONE_WITH_LOCAL === '1',
   };
-  return cached;
 }
 
 /** Local runs share the daemon's VRAM with the scorer: off unless opted in. */
@@ -86,10 +83,10 @@ function allowedFor(
 
 /** A fresh port for one run, or undefined (never consulted). */
 export function system1PortForRun(
+  settings: System1Settings | null,
   endpoint: OllamaEndpoint,
   maxWallMs: number,
 ): System1Port | undefined {
-  const settings = system1Settings();
   if (!settings || settings.mode === 'off' || !allowedFor(settings, endpoint))
     return undefined;
   const runBudgetMs = Math.min(RUN_BUDGET_CAP_MS, maxWallMs * RUN_BUDGET_SHARE);
@@ -102,8 +99,7 @@ export function system1PortForRun(
 }
 
 /** System 1 may apply effort decisions on this endpoint (Auto is meaningful). */
-export function system1EnforceAvailable(endpoint: OllamaEndpoint): boolean {
-  const settings = system1Settings();
+export function system1EnforceAvailable(settings: System1Settings | null, endpoint: OllamaEndpoint): boolean {
   return Boolean(
     settings && settings.mode === 'enforce' && allowedFor(settings, endpoint),
   );
@@ -111,11 +107,12 @@ export function system1EnforceAvailable(endpoint: OllamaEndpoint): boolean {
 
 /** Offer "Auto" in the thinking picker for this model and endpoint. */
 export function system1AutoFor(
+  settings: System1Settings | null,
   endpoint: OllamaEndpoint,
   config: OllamaModelConfig,
 ): boolean {
   return (
-    system1EnforceAvailable(endpoint) &&
+    system1EnforceAvailable(settings, endpoint) &&
     !modelOwnsAuto(config) &&
     buildEffortLadder(config) !== null
   );
@@ -125,8 +122,7 @@ export function system1AutoFor(
  * Boot: log the setup, warn when user text would leave this machine, and
  * load the scorer so the first real call is not a cold start.
  */
-export function initSystem1(): void {
-  const settings = system1Settings();
+export function initSystem1(settings: System1Settings | null): void {
   if (!settings) {
     console.log(
       '[system1] disabled (OLLAMA_SYSTEMONE_URL unset or SYSTEMONE_MODE=off)',

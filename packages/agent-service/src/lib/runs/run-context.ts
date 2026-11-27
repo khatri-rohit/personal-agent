@@ -34,7 +34,7 @@ import {
 } from '@agent/agent-core';
 
 import { resolveContextBudget } from '../models/model-runtime';
-import { getMemoryStore, getThreadStore, runManager } from '../platform/instances';
+import type { ServiceCore } from '../service';
 import type { ThreadStore } from '../threads/thread-store';
 
 export function endpointFromLocal(local: boolean | undefined): OllamaEndpoint {
@@ -134,7 +134,7 @@ export function resolveRequestedSkills(
   return out;
 }
 
-export async function prepareRun(input: {
+export async function prepareRun(service: Pick<ServiceCore, 'config' | 'memory' | 'threads' | 'runs'>, input: {
   threadId: string;
   thread?: Thread;
   webSearch?: boolean;
@@ -157,8 +157,8 @@ export async function prepareRun(input: {
   /** Resolved once here; the loop must run with the same switches the prompt was built with. */
   flags: HarnessFlags;
 }> {
-  const flags = parseHarnessFlags(process.env.AGENT_FLAGS);
-  const memory = getMemoryStore();
+  const flags = parseHarnessFlags(service.config.env.AGENT_FLAGS);
+  const memory = service.memory();
   const kind = normalizeThreadKind(input.thread?.kind);
   const mode = modeForKind(kind);
   const workspace = isWorkspaceKind(kind);
@@ -172,7 +172,7 @@ export async function prepareRun(input: {
     files.agentsMd = rules.agentsMd;
     files.project = rules.project;
   }
-  const store = await getThreadStore();
+  const store = await service.threads();
   const plan =
     input.threadId === 'draft' ? null : await store.readPlan(input.threadId);
   const planTools =
@@ -248,7 +248,7 @@ export async function prepareRun(input: {
 
   const skillNames = input.skillNames ?? [];
   const lastRun =
-    input.threadId === 'draft' ? null : await readSettledLastRun(store, input.threadId);
+    input.threadId === 'draft' ? null : await readSettledLastRun(service, store, input.threadId);
   const { messages, report } = assembleContext(
     {
       tools,
@@ -280,11 +280,12 @@ export async function prepareRun(input: {
  * "interrupted" marker written at start, so it is not reported.
  */
 export async function readSettledLastRun(
+  service: Pick<ServiceCore, 'runs'>,
   store: ThreadStore,
   threadId: string,
 ): Promise<ThreadLastRun | null> {
   const lastRun = await store.readLastRun(threadId);
-  return lastRun && !runManager.isActive(lastRun.runId) ? lastRun : null;
+  return lastRun && !service.runs.isActive(lastRun.runId) ? lastRun : null;
 }
 
 

@@ -29,8 +29,10 @@ export function createSubagentHost(deps: {
   store: ThreadStore;
   endpoint: OllamaEndpoint;
   modelSettings?: ResolvedModelSettings;
+  /** The cloud account's key (OLLAMA_API_KEY), for the capacity check. */
+  accountKey: string | undefined;
 }): SubagentHost {
-  const { store, endpoint, modelSettings } = deps;
+  const { store, endpoint, modelSettings, accountKey } = deps;
   return {
     async createThread(input) {
       const thread = await store.createThread(input.model, input.title, {
@@ -77,7 +79,7 @@ export function createSubagentHost(deps: {
     // strong one; explore already uses fast. Settings picks (file > env >
     // run's model) replace the env-only lookup when the host passed a snapshot.
     modelFor: (role, parentModel) => {
-      if (role === 'strong' && endpoint === 'cloud' && capacityState() === 'conserve') {
+      if (role === 'strong' && endpoint === 'cloud' && capacityState(accountKey) === 'conserve') {
         return parentModel;
       }
       if (role === 'main') return parentModel;

@@ -15,7 +15,12 @@ import { nativeOllamaBaseUrl, type CapacityGate } from '@agent/agent-core';
  * with the balance before and after (to learn % of the week per 1M tokens).
  *
  * Process-wide on purpose: every thread and sub-agent spends one account.
+ * The account's API key comes from the service config (`OLLAMA_API_KEY`) and
+ * is passed in; an unset key means capacity is off.
  */
+
+/** The cloud account's API key, or undefined (capacity off). */
+type AccountKey = string | undefined;
 
 /** 60s TTL keeps us under the balance API's 10 requests/minute. */
 const BALANCE_TTL_MS = 60_000;
@@ -97,14 +102,14 @@ let inflight: Promise<OllamaBalance> | null = null;
 /** Last request start, success or failure: failures back off like successes. */
 let lastAttemptAt = 0;
 
-export function capacityEnabled(): boolean {
-  return Boolean(process.env.OLLAMA_API_KEY);
+export function capacityEnabled(key: AccountKey): boolean {
+  return Boolean(key);
 }
 
-async function fetchBalance(): Promise<OllamaBalance> {
+async function fetchBalance(key: AccountKey): Promise<OllamaBalance> {
   const base = nativeOllamaBaseUrl('cloud');
   const response = await fetch(`${base}/api/balance`, {
-    headers: { Authorization: `Bearer ${process.env.OLLAMA_API_KEY}` },
+    headers: { Authorization: `Bearer ${key}` },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) {
@@ -124,6 +129,7 @@ async function fetchBalance(): Promise<OllamaBalance> {
  * often than BALANCE_MIN_REFRESH_MS. Concurrent callers share one request.
  */
 export async function getOllamaBalance(
+  key: AccountKey,
   maxAgeMs = BALANCE_TTL_MS,
 ): Promise<OllamaBalance> {
   const now = Date.now();
@@ -136,7 +142,7 @@ export async function getOllamaBalance(
   }
   if (!inflight) {
     lastAttemptAt = now;
-    inflight = fetchBalance().finally(() => {
+    inflight = fetchBalance(key).finally(() => {
       inflight = null;
     });
   }
@@ -148,15 +154,15 @@ export async function getOllamaBalance(
  * Refreshes wait BALANCE_TTL_MS after the last attempt, so a failing balance
  * API (no cache ever filled) is not retried on every model call.
  */
-function cachedBalance(): OllamaBalance | null {
+function cachedBalance(key: AccountKey): OllamaBalance | null {
   const now = Date.now();
   if (
-    capacityEnabled() &&
+    capacityEnabled(key) &&
     !inflight &&
     (!cache || now - cache.fetchedAt >= BALANCE_TTL_MS) &&
     now - lastAttemptAt >= BALANCE_TTL_MS
   ) {
-    void getOllamaBalance().catch(() => undefined);
+    void getOllamaBalance(key).catch(() => undefined);
   }
   return cache?.data ?? null;
 }
@@ -280,20 +286,20 @@ function usageLimitKind(error: unknown): string | null {
  * The loop's view of capacity. Reads only the cache (refreshes in the
  * background), so a run never waits on the balance API.
  */
-export function createCapacityGate(): CapacityGate {
+export function createCapacityGate(key: AccountKey): CapacityGate {
   return {
     pauseReason() {
-      const advice = capacityAdvice(cachedBalance());
+      const advice = capacityAdvice(cachedBalance(key));
       return advice.state === 'pause' ? (advice.reason ?? 'usage limit reached') : null;
     },
     conserve() {
-      return capacityAdvice(cachedBalance()).state === 'conserve';
+      return capacityAdvice(cachedBalance(key)).state === 'conserve';
     },
     limitReasonFor(error) {
       const kind = usageLimitKind(error);
       if (!kind) return null;
       // The cached balance predates the 429; fetch the reset time for next time.
-      void getOllamaBalance(0).catch(() => undefined);
+      void getOllamaBalance(key, 0).catch(() => undefined);
       const balance = cache?.data.legacy;
       const reset =
         kind === 'weekly'
@@ -310,15 +316,15 @@ export function createCapacityGate(): CapacityGate {
  * Why the account is paused (usage limit reached, with its reset time), or
  * null when it is not paused or capacity is off. Reads the cache only.
  */
-export function capacityPauseReason(): string | null {
-  if (!capacityEnabled()) return null;
-  const advice = capacityAdvice(cachedBalance());
+export function capacityPauseReason(key: AccountKey): string | null {
+  if (!capacityEnabled(key)) return null;
+  const advice = capacityAdvice(cachedBalance(key));
   return advice.state === 'pause' ? (advice.reason ?? 'usage limit reached') : null;
 }
 
 /** Current governor state from the cache (no network wait). Open when capacity is off. */
-export function capacityState(): CapacityState {
-  return capacityEnabled() ? capacityAdvice(cachedBalance()).state : 'open';
+export function capacityState(key: AccountKey): CapacityState {
+  return capacityEnabled(key) ? capacityAdvice(cachedBalance(key)).state : 'open';
 }
 
 /** Compact balance for the usage log. */
@@ -340,8 +346,8 @@ function balancePoint(balance: OllamaBalance | null) {
 }
 
 /** Balance at run start, for the usage log (no network). */
-export function capacitySnapshot() {
-  return balancePoint(cachedBalance());
+export function capacitySnapshot(key: AccountKey) {
+  return balancePoint(cachedBalance(key));
 }
 
 /**
@@ -351,6 +357,7 @@ export function capacitySnapshot() {
  * the rate comes from many rows. Best-effort: never fails a run.
  */
 export async function appendUsageLog(
+  key: AccountKey,
   home: string,
   entry: {
     runId: string;
@@ -365,8 +372,8 @@ export async function appendUsageLog(
 ): Promise<void> {
   try {
     let after: OllamaBalance | null = null;
-    if (entry.endpoint === 'cloud' && capacityEnabled()) {
-      after = await getOllamaBalance(0).catch(() => cache?.data ?? null);
+    if (entry.endpoint === 'cloud' && capacityEnabled(key)) {
+      after = await getOllamaBalance(key, 0).catch(() => cache?.data ?? null);
     }
     const dir = path.join(home, 'usage');
     await mkdir(dir, { recursive: true });
