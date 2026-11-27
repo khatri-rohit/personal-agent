@@ -14,14 +14,14 @@ import {
 } from '@agent/agent-models';
 import { extraSkillRoots, runWithSkillRoots } from '@agent/agent-core';
 
-import { getThreadStore, runManager } from '../platform/instances';
+import { getThreadStore, runManager } from '@agent/agent-service';
 import { asyncRoute } from '../platform/http-errors';
 import {
   endpointFromLocal,
   prepareRun,
   resolveRequestedSkills,
-} from './run-context';
-import { startThreadRun } from './start-run';
+} from '@agent/agent-service';
+import { startThreadRun } from '@agent/agent-service';
 
 const router = Router();
 

@@ -1,14 +1,14 @@
 import { Router, type Request, type Response } from 'express';
 import type { OllamaEndpoint } from '@agent/agent-models';
 import { getOllamaModelConfig, listOllamaModels } from '@agent/agent-core';
-import { BalanceError, capacityEnabled, getOllamaBalance } from './capacity';
+import { BalanceError, capacityEnabled, getOllamaBalance } from '@agent/agent-service';
 import {
   parseModelSettingsBody,
   readModelSettings,
   resolveModelSettings,
   writeModelSettings,
-} from './model-settings-store';
-import { system1AutoFor } from '../runs/system1-runtime';
+} from '@agent/agent-service';
+import { system1AutoFor } from '@agent/agent-service';
 import { asyncRoute } from '../platform/http-errors';
 
 const router = Router();

@@ -10,12 +10,12 @@ import {
   parseThreadKind,
 } from '@agent/agent-models';
 import type { ApiClientKind } from '../platform/access';
-import { getAgentHome, getThreadStore, runManager } from '../platform/instances';
-import { isAllowedWorkspace, rememberWorkspace, WORKSPACE_NOT_PICKED } from './workspace-allowlist';
-import { folderWriter, forgetCheckpoints, revertRuns, runChanges, runFileDiff } from './checkpoints';
+import { getAgentHome, getThreadStore, runManager } from '@agent/agent-service';
+import { isAllowedWorkspace, rememberWorkspace, WORKSPACE_NOT_PICKED } from '@agent/agent-service';
+import { folderWriter, forgetCheckpoints, revertRuns, runChanges, runFileDiff } from '@agent/agent-service';
 import { asyncRoute } from '../platform/http-errors';
-import { cancelLearningReview } from '../memory/learning-loop';
-import { readSettledLastRun } from '../runs/run-context';
+import { cancelLearningReview } from '@agent/agent-service';
+import { readSettledLastRun } from '@agent/agent-service';
 import { pickFolderDialog } from './pick-folder';
 
 const router = Router();

@@ -6,14 +6,14 @@ import {
   type SkillRoot,
 } from '@agent/agent-core';
 
-import { getAgentHome, getThreadStore } from '../platform/instances';
+import { getAgentHome, getThreadStore } from '@agent/agent-service';
 import { asyncRoute } from '../platform/http-errors';
 import {
   SkillError,
   createUserSkill,
   deleteUserSkill,
   readSkillDocument,
-} from './user-skills';
+} from '@agent/agent-service';
 
 const router = Router();
 

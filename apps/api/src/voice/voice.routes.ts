@@ -7,7 +7,7 @@ import {
   buildPrompt,
   gatedText,
   type VerboseTranscription,
-} from './transcript-gate';
+} from '@agent/agent-service';
 
 /**
  * Voice add-on: the API's one module for speech, and the single source of

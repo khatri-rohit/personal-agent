@@ -18,6 +18,7 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
+import { getThreadStore } from '@agent/agent-service';
 import type { Express } from 'express';
 import { vi } from 'vitest';
 
@@ -78,7 +79,6 @@ export async function bootContractApp(env: Record<string, string> = {}): Promise
     token,
     auth: { Authorization: `Bearer ${token}` },
     close: async () => {
-      const { getThreadStore } = await import('../platform/instances.js');
       (await getThreadStore()).close();
       vi.unstubAllGlobals();
       vi.unstubAllEnvs();

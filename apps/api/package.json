@@ -127,6 +127,7 @@
   "dependencies": {
     "@agent/agent-core": "*",
     "@agent/agent-models": "*",
+    "@agent/agent-service": "*",
     "cors": "^2.8.6",
     "express": "^4.21.2",
     "pino": "^9.5.0",

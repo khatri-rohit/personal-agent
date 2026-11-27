@@ -1,10 +1,10 @@
 import { createApp } from './app';
-import { warnRoleModelsWithoutTools } from './models/model-runtime';
+import { warnRoleModelsWithoutTools } from '@agent/agent-service';
 import { API_TOKEN_FILE } from './platform/access';
-import { harnessVersion } from './platform/harness-version';
-import { getAgentHome } from './platform/instances';
+import { harnessVersion } from '@agent/agent-service';
+import { getAgentHome } from '@agent/agent-service';
 import { createLogger } from './platform/logger';
-import { initSystem1 } from './runs/system1-runtime';
+import { initSystem1 } from '@agent/agent-service';
 import { voiceProviders } from './voice/voice.routes';
 
 const host = process.env.HOST ?? 'localhost';

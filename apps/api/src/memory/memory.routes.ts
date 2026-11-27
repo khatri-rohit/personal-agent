@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { DEFAULT_MEMORY_CAPS, isWorkspaceKind, revertedOpId } from '@agent/agent-models';
-import { getMemoryStore, getThreadStore } from '../platform/instances';
+import { getMemoryStore, getThreadStore } from '@agent/agent-service';
 import { asyncRoute } from '../platform/http-errors';
 
 const router = Router();
