@@ -12,7 +12,7 @@ import { createHttpLogger } from './platform/logger';
 import { staticUi } from './platform/static-ui';
 import { runsRouter } from './runs/runs.routes';
 import { skillsRouter } from './skills/skills.routes';
-import { threadsRouter } from './threads/threads.routes';
+import { threadsRouter, type PickFolder } from './threads/threads.routes';
 import { voiceRouter } from './voice/voice.routes';
 
 export type AppOptions = {
@@ -20,6 +20,8 @@ export type AppOptions = {
   uiDir?: string | null;
   /** Admit a same-origin browser page without the token (off when bound beyond loopback). */
   browser?: boolean;
+  /** The native folder dialog behind POST /workspace/pick (an OS port of the app). */
+  pickFolder?: PickFolder;
 };
 
 /**
@@ -57,7 +59,7 @@ export function createApp(service: AgentService, logger: Logger, options: AppOpt
     API_MOUNTS.agent,
     skillsRouter(service),
     modelsRouter(service),
-    threadsRouter(service),
+    threadsRouter(service, options.pickFolder),
     runsRouter(service),
     memoryRouter(service),
   );

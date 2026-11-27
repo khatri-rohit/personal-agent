@@ -14,7 +14,7 @@ import { setContextAnchor } from './context-anchor';
 
 /**
  * Ephemeral UI state derived from the event stream.
- * Durable chat state lives in the host ledger (apps/api); this reducer
+ * Durable chat state lives in the host ledger (agent-service); this reducer
  * exists only for the live run view. `persistChatEffects` keeps the
  * localStorage context anchor in sync with provider usage.
  */

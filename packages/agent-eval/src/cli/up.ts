@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -14,8 +14,8 @@ export function evalApiBase(port: number = EVAL_API_PORT): string {
 }
 
 export const UP_HELP = `up [--port ${EVAL_API_PORT}] [--eval-home <dir>]
-  Start an API for evals: AGENT_HOME = the eval home, its own port, no watch (the code under
-  test never reloads mid-suite). Stays in the foreground; Ctrl+C stops it. Your chat API on 3333
+  Start an API for evals: \`agent serve --home <eval home> --port <port> --no-ui\`, built first,
+  no watch (the code under test never reloads mid-suite). Stays in the foreground; Ctrl+C stops it. Your chat API on 3333
   keeps running. Then in another terminal: run --suite matrix (its --api defaults to this port).`;
 
 async function waitReady(base: string, home: string, child: ReturnType<typeof spawn>): Promise<void> {
@@ -47,13 +47,20 @@ export async function upCommand(args: Args): Promise<number> {
   const home = evalHome(args);
   const port = intFlag(args, 'port', EVAL_API_PORT);
   const base = evalApiBase(port);
-  console.log(`Starting the eval API on port ${port} with AGENT_HOME=${home} …`);
-  const child = spawn('npx', ['nx', 'run', '@agent/api:serve', '--watch=false'], {
-    cwd: path.resolve(flag(args, 'repo') ?? process.cwd()),
-    env: { ...process.env, PORT: String(port), AGENT_HOME: home },
+  const repo = path.resolve(flag(args, 'repo') ?? process.cwd());
+  console.log(`Building the agent app, then starting the eval API on port ${port} with AGENT_HOME=${home} …`);
+  // Build once, then run the bundle: the agent loads the repo's .env itself.
+  const built = spawnSync('npx', ['nx', 'run', '@agent/agent:build'], {
+    cwd: repo,
     stdio: 'inherit',
     shell: process.platform === 'win32',
   });
+  if (built.status !== 0) return built.status ?? 1;
+  const child = spawn(
+    process.execPath,
+    [path.join(repo, 'apps/agent/dist/main.js'), 'serve', '--home', home, '--port', String(port), '--no-ui'],
+    { cwd: repo, env: process.env, stdio: 'inherit' },
+  );
   void waitReady(base, home, child);
   return new Promise((resolve) => {
     child.on('exit', (code) => resolve(code ?? 0));

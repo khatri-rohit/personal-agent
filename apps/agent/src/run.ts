@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import path from 'node:path';
 
 import type { ModeName, RunPosture } from '@agent/agent-models';
@@ -13,9 +12,9 @@ import {
   teeTrace,
   type ModelCallFn,
 } from '@agent/agent-core';
-import { runLocally } from './local-run.js';
 import { createJsonlTraceSink } from '@agent/agent-service';
 
+import { runLocally } from './local-run';
 
 function parseHarnessArgs(argv: string[]): {
   mode: ModeName;
@@ -55,9 +54,10 @@ function parseHarnessArgs(argv: string[]): {
   return { mode, workspace, posture, query: rest.join(' ').trim() };
 }
 
-async function main() {
+/** `agent run`: the CLI's isolated in-process run, unchanged (ADR-0003 §9 C7). */
+export async function runCommand(argv: string[]): Promise<number> {
   try {
-    const parsed = parseHarnessArgs(process.argv.slice(2));
+    const parsed = parseHarnessArgs(argv);
     const kind = normalizeThreadKind(parsed.mode);
     const mode = modeForKind(kind);
     const workspaceRoot = parsed.workspace
@@ -102,10 +102,9 @@ async function main() {
     console.log('');
     console.log('================================================');
     console.log('Status:', outcome, '| iterations:', result.iterations);
+    return 0;
   } catch (err) {
     console.error(err);
-    process.exitCode = 1;
+    return 1;
   }
 }
-
-void main();

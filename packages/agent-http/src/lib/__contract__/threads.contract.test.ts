@@ -8,25 +8,21 @@ import path from 'node:path';
 
 import { CHECKPOINT_NOT_COVERED, HOME_MODE } from '@agent/agent-models';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { bootContractApp, sameOriginBrowser, type ContractApp } from './harness';
 
-const picker = vi.hoisted(() => ({
-  next: { ok: false, reason: 'cancelled' } as
-    | { ok: true; path: string }
-    | { ok: false; reason: 'cancelled' | 'failed'; message?: string },
-}));
-vi.mock('../threads/pick-folder', () => ({
-  pickFolderDialog: async () => picker.next,
-}));
+import type { PickFolderResult } from '../threads/threads.routes';
+
+// The folder dialog is an OS port of the app; the test drives a fake one.
+const picker: { next: PickFolderResult } = { next: { ok: false, reason: 'cancelled' } };
 
 let api: ContractApp;
 let folder: string;
 const browser = sameOriginBrowser;
 
 beforeAll(async () => {
-  api = await bootContractApp();
+  api = await bootContractApp({}, { pickFolder: async () => picker.next });
   folder = await mkdtemp(path.join(os.tmpdir(), 'agent-contract-ws-'));
   await writeFile(path.join(folder, 'a.txt'), 'a\n');
 });
@@ -88,7 +84,7 @@ describe('POST /workspace/pick', () => {
   });
 
   it('500 with the message when the dialog fails', async () => {
-    picker.next = { ok: false, reason: 'failed', message: 'no display' };
+    picker.next = { ok: false, reason: 'error', message: 'no display' };
     const res = await post('/api/agent/workspace/pick', {});
     expect(res.status).toBe(500);
     expect(res.body.error).toBe('no display');

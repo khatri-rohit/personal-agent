@@ -4,9 +4,10 @@
   "license": "MIT",
   "scripts": {
     "dev": "npx nx run @agent/web:dev",
-    "dev:api": "npx nx run @agent/api:serve",
+    "start": "npx nx run @agent/agent:build && node apps/agent/dist/main.js web",
+    "serve": "npx nx run @agent/agent:build && node apps/agent/dist/main.js serve",
+    "agent": "node apps/agent/dist/main.js",
     "dev:eval": "npx nx run @agent/eval:dev",
-    "prod:api": "npx nx run @agent/web:build && npx nx serve @agent/api --configuration=production --watch=false",
     "prod:eval": "npx nx run @agent/eval:start --port=3210",
     "typecheck": "npx nx run-many -t typecheck",
     "build": "npx nx run-many -t build"
@@ -22,7 +23,6 @@
     "@babel/core": "^7.14.5",
     "@babel/preset-react": "^7.14.5",
     "@eslint/js": "^9.8.0",
-    "@next/eslint-plugin-next": "^16.1.6",
     "@nx/devkit": "23.2.0",
     "@nx/docker": "23.2.0",
     "@nx/esbuild": "23.2.0",
@@ -55,7 +55,6 @@
     "@vitest/ui": "~4.1.0",
     "esbuild": "^0.27.0",
     "eslint": "^9.8.0",
-    "eslint-config-next": "^16.1.6",
     "eslint-config-prettier": "^10.0.0",
     "eslint-plugin-import": "2.31.0",
     "eslint-plugin-jsx-a11y": "6.10.1",
@@ -78,5 +77,8 @@
   "workspaces": [
     "apps/*",
     "packages/*"
-  ]
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  }
 }

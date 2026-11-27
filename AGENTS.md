@@ -24,7 +24,7 @@
 
 # Personal Assistant
 
-Nx monorepo for a personal agent harness. One runtime (`agent-core`), two bindings: **Home** (chat, optional web) and **Workspace** (folder-bound coding tools). Setup, env, and the HTTP surface are in [README.md](./README.md).
+Nx monorepo for a personal agent harness: **one app** (`apps/agent`), one process and one port (3333) serving the API and the chat UI, built from libraries. One runtime (`agent-core`), two bindings: **Home** (chat, optional web) and **Workspace** (folder-bound coding tools). Setup, env, and the HTTP surface are in [README.md](./README.md).
 
 `apps/web` is the chat product. `apps/eval` is the measurement viewer. They are not the same UI.
 
@@ -34,22 +34,25 @@ Nx monorepo for a personal agent harness. One runtime (`agent-core`), two bindin
 | ------- | ---- | --- |
 | `packages/agent-models` | Shared shapes. Imports nothing. | Events, ledger, trace, threads, plans, modes (`HOME_MODE` / `WORKSPACE_MODE`), review artifact. One file per family under `src/lib/` (`event.ts`, `ledger.ts`, `trace.ts`, `run.ts`, `thread.ts`, `mode.ts`, `review.ts`, …). |
 | `packages/agent-core` | Host-agnostic runtime. No HTTP, DOM, or database. | Loop, tools, context, model calls, sub-agents, System 1. Public surface is `src/index.ts`; the rest stays internal. |
-| `apps/api` | Express host on disk. | `/api/agent/*`: threads, runs, memory, skills, models. Optional `/api/voice`. Wires env, stores, System 1, traces. |
-| `apps/web` | Next.js chat. Imports `agent-models` only, never `agent-core`. | Composer, thread view, sidebar, usage meters. Rebuilds from the ledger; SSE is the live path. |
-| `apps/cli` | Terminal host. | Runs core directly (no HTTP). Leftover `src/eval/` is not the eval product. |
+| `packages/agent-service` | The one owner of host state (`type:service`). No HTTP. | `createAgentService({ config })` + `loadConfig(env)`: thread store, ledger, runs (`start-run`, `run-context`, compaction, titles), memory, skills, models/capacity, System 1, checkpoints, traces. One instance per process. |
+| `packages/agent-http` | HTTP adapter (`type:adapter`). | `createApp(service, logger, { uiDir, browser, pickFolder })`: routes from `API_ROUTES`, access (same-origin browser or token), logging, errors, the voice (Speaches) proxy, the static chat UI. |
+| `packages/agent-client` | The only HTTP client (`type:client`). | Route table methods/URLs, bearer token for processes. Used by web and the eval runner. |
+| `apps/agent` | **The** deployable (`type:app`, bin `agent`). | `serve [--home --port --host --no-ui]`, `web`, `run` (the isolated in-process CLI run, unchanged), `eval` (forwards to the agent-eval CLI). Loads the root `.env` itself, runs from the repo root, owns the OS folder picker. The build embeds the web dist as `dist/ui`. |
+| `apps/web` | Vite SPA chat (react-router). Imports `agent-models` and `agent-client` only, never `agent-core`. | Composer, thread view, sidebar, usage meters. Rebuilds from the ledger; SSE is the live path. Served by `apps/agent` on the same origin; produces assets, not a process. |
 | `packages/agent-eval` | Read-only measurement. Imports `agent-models` only, never `agent-core`. | Readers, metrics, trial runner, gate. Trials talk to the HTTP API; they do not run a second loop. |
 | `apps/eval` | Next.js viewer over `agent-eval`. Does not import `agent-core`. | Suite results, run traces, usage, thread/run **Review**. Not the chat UI. |
 | `evals/` | Task corpus (not an Nx project). | `evals/tasks`, `evals/baselines`, plan of record in `evals/ROADMAP.md`. |
 
-Lint (`@nx/enforce-module-boundaries` in `eslint.config.mjs`) matches this, using the tiers from `docs/adr/0003` §8: `type:data` (agent-models) ← `type:engine` (agent-core, agent-eval) ← `type:service` ← `type:adapter` ← `type:app`; `type:client` and `type:ui` (web) see only data and client. `apps/eval` is `scope:eval` and may not import anything tagged `runtime:core` (agent-core). Every project has an explicit `lint` target (Nx's inferred one only covered `apps/api`), so `nx run-many -t lint` enforces these rules everywhere.
+Lint (`@nx/enforce-module-boundaries` in `eslint.config.mjs`) matches this, using the tiers from `docs/adr/0003` §8: `type:data` (agent-models) ← `type:engine` (agent-core, agent-eval) ← `type:service` ← `type:adapter` ← `type:app`; `type:client` and `type:ui` (web) see only data and client. `apps/eval` is `scope:eval` and may not import anything tagged `runtime:core` (agent-core). Every project has an explicit `lint` target, so `nx run-many -t lint` enforces these rules everywhere.
 
-**Behaviour guards** (keep green; `docs/plans/one-binary-host-plan.md`): `apps/api/src/__contract__/` pins every HTTP route, the access rules and SSE, plus one golden Workspace run with a scripted model (`__golden__/workspace-run.json`); `agent-core` `loop/__replay__/` pins event and trace order. A deliberate behaviour change re-records them (`vitest -u`) and says why in the commit.
+**Behaviour guards** (keep green; `docs/plans/one-binary-host-plan.md`): `packages/agent-http/src/lib/__contract__/` pins every HTTP route, the access rules, the static UI and SSE, plus one golden Workspace run with a scripted model (`__golden__/workspace-run.json`); `apps/agent/src/local-run.contract.test.ts` pins the isolated CLI run (`__golden__/local-run.json`); `agent-core` `loop/__replay__/` pins event and trace order. A deliberate behaviour change re-records them (`vitest -u`) and says why in the commit.
 
 ## Chat flow
 
 ```
-apps/web composer (features/composer)
-  → POST /api/agent/run          apps/api/src/runs/runs.routes.ts → start-run.ts
+apps/web composer (features/composer), same origin as the API (agent serve, :3333)
+  → POST /api/agent/run          packages/agent-http/src/lib/runs/runs.routes.ts
+  → start the run                packages/agent-service/src/lib/runs/start-run.ts
   → assemble run context         runs/run-context.ts (ledger, memory, skills, workspace, compaction)
   → RunManager.start             packages/agent-core/src/lib/run/run-manager.ts
   → runLoop                      packages/agent-core/src/lib/loop/loop.ts
@@ -91,7 +94,7 @@ Eval reads these files. It does not re-derive what core already put in the trace
 
 - `assemble-context.ts` — builds the prompt. Old tool results stub first, then attachments; large bodies spill to blobs; tape compact last.
 - `residency.ts` — in-run residency: one pass at the high mark on the whole prompt (`inRunMarks` in `agent-models/src/lib/context.ts`), removing by value down to the low mark (`(evicted)` cards with a sha), then the extractive recap; nothing leaves below the mark. The boundary that runs it is `loop/residency-pass.ts`. Compaction is not an LLM call.
-- Host-side between-run compact: `apps/api/src/runs/compaction.ts`. Window size: `apps/api/src/models/model-runtime.ts` + `agent-models/src/lib/context.ts`.
+- Host-side between-run compact: `packages/agent-service/src/lib/runs/compaction.ts`. Window size: `packages/agent-service/src/lib/models/model-runtime.ts` + `agent-models/src/lib/context.ts`.
 
 **Tools** — `packages/agent-core/src/lib/tools/`
 
@@ -104,33 +107,42 @@ Eval reads these files. It does not re-derive what core already put in the trace
 **Model and System 1**
 
 - `model/client.ts`, `model/stream.ts` — Ollama (cloud or local).
-- `system1/port.ts` — classifier: state + questions → scores (`ask` / `report`). Not a writer. Host wires it in `apps/api/src/runs/system1-runtime.ts`.
+- `system1/port.ts` — classifier: state + questions → scores (`ask` / `report`). Not a writer. Host wires it in `packages/agent-service/src/lib/runs/system1-runtime.ts`.
 
-**Sub-agents** — `packages/agent-core/src/lib/subagent/` (`delegate.ts`, `profiles.ts`, `runner.ts`). Host: `apps/api/src/runs/subagent-host.ts`. Profiles: explore, review, advisor, user agents under `$AGENT_HOME/agents/`. Children cannot nest; cancelled with the parent.
+**Sub-agents** — `packages/agent-core/src/lib/subagent/` (`delegate.ts`, `profiles.ts`, `runner.ts`). Host: `packages/agent-service/src/lib/runs/subagent-host.ts`. Profiles: explore, review, advisor, user agents under `$AGENT_HOME/agents/`. Children cannot nest; cancelled with the parent.
 
 **Events** — `packages/agent-models/src/lib/event.ts` is the live API shape. Core emits (`events/emitter.ts`, `events/trace.ts`); API streams; web reduces; eval reads the on-disk trace/ledger.
 
 ## Hosts (major files)
 
-**API** — `apps/api/src/`
+**App** — `apps/agent/src/`
 
-- `main.ts` — mounts routers under `/api/agent`.
-- `threads/thread-store.ts` — catalog + ledger + plans on disk.
-- `threads/threads.routes.ts` — thread CRUD, ledger GET, workspace pick.
-- `runs/start-run.ts`, `runs.routes.ts` — start, cancel, choice, SSE, events.
-- `platform/agent-home.ts`, `platform/instances.ts`, `platform/trace-sink.ts`.
-- `memory/`, `skills/`, `models/`, `voice/` — each topic’s route next to its store.
+- `main.ts` — the `agent` commands; `load-env.ts` is imported first (root `.env.local`, `.env`).
+- `serve.ts` — `createAgentService` + `createApp` + `listen`, then start-up work (harness version, System 1 warm-up, role-model check).
+- `run.ts`, `local-run.ts` — the isolated CLI run (no home, memory, user skills or System 1; traces to `apps/agent/traces/`).
+- `pick-folder.ts` — the native folder dialog (an OS port passed to `createApp`).
+
+**Service** — `packages/agent-service/src/lib/`
+
+- `service.ts` — `createAgentService`, `loadConfig`; `errors.ts` — `ServiceError`.
+- `threads/thread-store.ts` — catalog + ledger + plans on disk; `threads/workspace.ts`, `checkpoints.ts`.
+- `runs/start-run.ts`, `run-context.ts`, `compaction.ts`, `thread-title.ts`, `subagent-host.ts`, `system1-runtime.ts`.
+- `platform/agent-home.ts`, `platform/trace-sink.ts`, `platform/harness-version.ts`; `memory/`, `skills/`, `models/`, `voice/`.
+
+**HTTP** — `packages/agent-http/src/lib/`
+
+- `app.ts` — `createApp`: Host guard, `/api` access guard, routers from `API_ROUTES`, voice, static UI.
+- `platform/access.ts` (same-origin browser via Fetch Metadata + exact Origin, or the api-token), `static-ui.ts`, `logger.ts`, `http-errors.ts`.
+- `<topic>/<topic>.routes.ts` — threads (CRUD, ledger, workspace pick), runs (start, cancel, choice, SSE), memory, skills, models; `voice/voice.routes.ts`.
 
 **Web** — `apps/web/src/`
 
-- `app/chat/[threadId]/page.tsx` — thread page.
+- `main.tsx` — router (`/`, `/chat/:threadId`); `app/home-page.tsx`, `app/chat-page.tsx`; `vite.config.mts` (dev proxy `/api` → :3333).
 - `features/conversation/` — `use-agent-run`, `chat-store`, message list, cards (`thread-session` is the SSE/ledger client).
 - `features/composer/` — input, model/thinking/web/skills/voice.
 - `features/threads/` — sidebar, spaces, workspace picker.
 - `features/usage/` — context and account meters.
-- `api/` — HTTP clients, one per topic.
-
-**CLI** — `apps/cli/src/` — `local-run.ts` drives core in-process.
+- `api/` — HTTP clients, one per topic (over `agent-client`; `API_BASE` is `''`, same origin).
 
 ## Eval flow
 

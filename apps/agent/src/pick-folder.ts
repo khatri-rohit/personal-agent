@@ -5,12 +5,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-const execFileAsync = promisify(execFile);
+import type { PickFolderResult } from '@agent/agent-http';
 
-export type PickFolderResult =
-  | { ok: true; path: string }
-  | { ok: false; reason: 'cancelled' }
-  | { ok: false; reason: 'error'; message: string };
+const execFileAsync = promisify(execFile);
 
 let picking: Promise<PickFolderResult> | null = null;
 

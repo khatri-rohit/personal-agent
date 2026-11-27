@@ -2,9 +2,9 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig(() => ({
   root: import.meta.dirname,
-  cacheDir: '../../node_modules/.vite/apps/cli',
+  cacheDir: '../../node_modules/.vite/apps/agent',
   test: {
-    name: '@agent/cli',
+    name: '@agent/agent',
     watch: false,
     globals: true,
     environment: 'node',

@@ -1,6 +1,6 @@
 /**
  * Why the service refused a request. Transports map the code to their own
- * vocabulary in one place (HTTP: apps/api/src/platform/http-errors.ts);
+ * vocabulary in one place (HTTP: packages/agent-http/src/lib/platform/http-errors.ts);
  * the message is shown to the user as is.
  */
 export type ServiceErrorCode = 'invalid' | 'not_found' | 'forbidden' | 'conflict';

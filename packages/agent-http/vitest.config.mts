@@ -8,11 +8,11 @@ const conditions = ['@agent/source', ...defaultServerConditions];
 
 export default defineConfig({
   root: import.meta.dirname,
-  cacheDir: '../../node_modules/.vite/apps/api',
+  cacheDir: '../../node_modules/.vite/packages/agent-http',
   resolve: { conditions },
   ssr: { resolve: { conditions } },
   test: {
-    name: '@agent/api',
+    name: '@agent/agent-http',
     watch: false,
     globals: true,
     environment: 'node',

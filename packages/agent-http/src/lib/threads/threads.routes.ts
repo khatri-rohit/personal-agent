@@ -23,14 +23,27 @@ import { folderWriter, forgetCheckpoints, revertRuns, runChanges, runFileDiff } 
 import { asyncRoute } from '../platform/http-errors';
 
 import { readSettledLastRun } from '@agent/agent-service';
-import { pickFolderDialog } from './pick-folder';
+
+export type PickFolderResult =
+  | { ok: true; path: string }
+  | { ok: false; reason: 'cancelled' }
+  | { ok: false; reason: 'error'; message: string };
+
+/** A native folder dialog on the machine that runs the tools (an OS port; `apps/agent` provides it). */
+export type PickFolder = (initialDir?: string) => Promise<PickFolderResult>;
+
+const noFolderPicker: PickFolder = async () => ({
+  ok: false,
+  reason: 'error',
+  message: 'This host has no folder picker.',
+});
 
 /** A local process that presented the API token (platform/access.ts), not a browser page. */
 function isTokenClient(res: Response): boolean {
   return (res.locals.client as ApiClientKind | undefined) === 'token';
 }
 
-export function threadsRouter(service: AgentService): Router {
+export function threadsRouter(service: AgentService, pickFolder: PickFolder = noFolderPicker): Router {
   const router = Router();
 
   /**
@@ -43,7 +56,7 @@ export function threadsRouter(service: AgentService): Router {
       typeof req.body?.initialDir === 'string' && req.body.initialDir.trim()
         ? path.resolve(req.body.initialDir.trim())
         : undefined;
-    const picked = await pickFolderDialog(initial);
+    const picked = await pickFolder(initial);
     if (!picked.ok && picked.reason === 'cancelled') {
       return res.status(204).send();
     }

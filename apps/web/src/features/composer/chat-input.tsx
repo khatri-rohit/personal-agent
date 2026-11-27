@@ -982,7 +982,7 @@ export function ChatInput({
         emptyMessage={
           localMode
             ? (localModelsError ??
-              'No models on the API host. Run `ollama pull <model>` where apps/api runs, then toggle Local again.')
+              'No models on the API host. Run `ollama pull <model>` where the agent harness runs, then toggle Local again.')
             : undefined
         }
         open={modelPickerOpen}

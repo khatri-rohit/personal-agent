@@ -1,0 +1,128 @@
+{
+  "name": "@agent/agent",
+  "version": "0.0.1",
+  "private": true,
+  "description": "The agent harness: one process, one port, the API and the chat UI.",
+  "bin": {
+    "agent": "./dist/main.js"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "nx": {
+    "projectType": "application",
+    "implicitDependencies": [
+      "@agent/web"
+    ],
+    "targets": {
+      "lint": {
+        "executor": "@nx/eslint:lint",
+        "options": {}
+      },
+      "bundle": {
+        "executor": "@nx/esbuild:esbuild",
+        "outputs": [
+          "{options.outputPath}"
+        ],
+        "dependsOn": [
+          "^build"
+        ],
+        "defaultConfiguration": "production",
+        "options": {
+          "platform": "node",
+          "outputPath": "apps/agent/dist",
+          "format": [
+            "cjs"
+          ],
+          "bundle": true,
+          "main": "apps/agent/src/main.ts",
+          "tsConfig": "apps/agent/tsconfig.app.json",
+          "esbuildOptions": {
+            "sourcemap": true,
+            "banner": {
+              "js": "#!/usr/bin/env node"
+            },
+            "outExtension": {
+              ".js": ".js"
+            }
+          }
+        },
+        "configurations": {
+          "development": {},
+          "production": {
+            "esbuildOptions": {
+              "sourcemap": false,
+              "banner": {
+                "js": "#!/usr/bin/env node"
+              },
+              "outExtension": {
+                ".js": ".js"
+              }
+            }
+          }
+        }
+      },
+      "build": {
+        "executor": "nx:run-commands",
+        "dependsOn": [
+          "bundle",
+          "^build"
+        ],
+        "cache": true,
+        "inputs": [
+          "{projectRoot}/scripts/embed-ui.mjs",
+          {
+            "dependentTasksOutputFiles": "**/*"
+          }
+        ],
+        "outputs": [
+          "{projectRoot}/dist/ui"
+        ],
+        "options": {
+          "command": "node apps/agent/scripts/embed-ui.mjs",
+          "cwd": "{workspaceRoot}"
+        }
+      },
+      "serve": {
+        "continuous": true,
+        "executor": "@nx/js:node",
+        "defaultConfiguration": "development",
+        "dependsOn": [
+          "build"
+        ],
+        "options": {
+          "buildTarget": "@agent/agent:bundle",
+          "runBuildTargetDependencies": false,
+          "args": [
+            "serve"
+          ]
+        },
+        "configurations": {
+          "development": {
+            "buildTarget": "@agent/agent:bundle:development"
+          },
+          "production": {
+            "buildTarget": "@agent/agent:bundle:production"
+          }
+        }
+      },
+      "test": {
+        "options": {
+          "command": "node scripts/run-vitest.mjs run",
+          "passWithNoTests": true
+        }
+      }
+    },
+    "tags": [
+      "scope:agent",
+      "type:app"
+    ]
+  },
+  "dependencies": {
+    "@agent/agent-core": "*",
+    "@agent/agent-http": "*",
+    "@agent/agent-models": "*",
+    "@agent/agent-service": "*",
+    "dotenv": "^16.4.7"
+  }
+}

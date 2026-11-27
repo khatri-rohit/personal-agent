@@ -15,7 +15,7 @@ export async function fetchVoiceCapabilities(): Promise<VoiceCapabilities> {
 }
 
 /**
- * Transcribe a recorded audio blob via apps/api → Speaches.
+ * Transcribe a recorded audio blob via the agent host → Speaches.
  * `context` is text already dictated this session; the server uses its tail
  * as the Whisper prompt so each utterance continues the last one.
  */
@@ -44,7 +44,7 @@ export async function transcribeAudio(
   return (data.text ?? '').trim();
 }
 
-/** Synthesise one chunk of plain speech text via apps/api → Speaches (Kokoro). */
+/** Synthesise one chunk of plain speech text via the agent host → Speaches (Kokoro). */
 export async function synthesizeSpeech(
   text: string,
   signal: AbortSignal,

@@ -19,7 +19,7 @@
         "dependsOn": [
           {
             "projects": [
-              "@agent/api"
+              "@agent/agent"
             ],
             "target": "serve"
           }

@@ -2,7 +2,7 @@
 
 Compose stack for optional **Speaches** (STT: **faster-distil-whisper-large-v3**). Chat titles no longer use Redis.
 
-Voice defaults to the **browser** Web Speech API (`VOICE_STT_PROVIDER=browser`) — no Speaches required. Start this Speaches service only when you set `VOICE_STT_PROVIDER=speaches` in the host `.env` (the web reads providers from the API; no `NEXT_PUBLIC_` copy). Read-aloud (Kokoro) is the same with `VOICE_TTS_PROVIDER=speaches`.
+Voice defaults to the **browser** Web Speech API (`VOICE_STT_PROVIDER=browser`) — no Speaches required. Start this Speaches service only when you set `VOICE_STT_PROVIDER=speaches` in the host `.env` (the web reads providers from the API; no `VITE_` copy). Read-aloud (Kokoro) is the same with `VOICE_TTS_PROVIDER=speaches`.
 
 **Ollama is not part of this compose file.** Chat stays on cloud via host `.env` (`OLLAMA_BASE_URL=https://ollama.com/v1`). Your existing Ollama container and model directory (e.g. `D:\ollama\models`) are never mounted, created, replaced, or deleted by `docker compose up` / `down` / `down -v`.
 
@@ -13,7 +13,7 @@ Voice defaults to the **browser** Web Speech API (`VOICE_STT_PROVIDER=browser`) 
 | Speaches HF cache (`speaches-hf-cache` or Speaches bind) | Yes — speech models only      |
 | Ollama models (e.g. `D:\ollama\models`)                  | **No — never referenced**     |
 | Standalone `ollama` container on `:11434`                | **No — leave running as-is**  |
-| Host `.env` `OLLAMA_*` for apps/api                      | **No — cloud chat unchanged** |
+| Host `.env` `OLLAMA_*` for apps/agent                    | **No — cloud chat unchanged** |
 
 ## Portability (open source)
 

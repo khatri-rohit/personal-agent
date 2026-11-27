@@ -205,7 +205,7 @@ export function Sidebar({ collapsed, onCollapse, onExpand }: SidebarProps) {
       toastError(
         error instanceof Error
           ? error.message
-          : 'Could not open the folder picker. The dialog runs on the API host — start @agent/api on this machine and try again.',
+          : 'Could not open the folder picker. The dialog runs on the agent host — start it on this machine (npm start) and try again.',
         'Folder picker failed',
       );
     } finally {

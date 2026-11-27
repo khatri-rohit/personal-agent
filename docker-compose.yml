@@ -1,7 +1,7 @@
 # Agent local infrastructure: Speaches (STT: Whisper, TTS: Kokoro).
 #
 # This stack does NOT run Ollama and never mounts Ollama model directories.
-# Chat uses cloud Ollama via host apps/api .env (OLLAMA_BASE_URL=https://ollama.com/v1).
+# Chat uses cloud Ollama via the host agent app .env (OLLAMA_BASE_URL=https://ollama.com/v1).
 # Your existing local Ollama container / D:\ollama\models (or any host path) is untouched
 # by `up` / `down` / `down -v` for this project.
 #

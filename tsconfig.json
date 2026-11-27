@@ -4,13 +4,10 @@
   "files": [],
   "references": [
     {
-      "path": "./apps/api"
+      "path": "./apps/agent"
     },
     {
       "path": "./apps/web"
-    },
-    {
-      "path": "./apps/cli"
     },
     {
       "path": "./packages/agent-models"
@@ -29,6 +26,9 @@
     },
     {
       "path": "./apps/eval"
+    },
+    {
+      "path": "./packages/agent-http"
     }
   ]
 }
