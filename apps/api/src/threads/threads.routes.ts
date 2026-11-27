@@ -1,6 +1,5 @@
 import { Router, type Request, type Response } from 'express';
 import type { AgentService } from '@agent/agent-service';
-import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { LedgerResponse, RevertResult, RunChanges, ThreadDetail, ThreadKind } from '@agent/agent-models';
 import {
@@ -12,45 +11,26 @@ import {
 } from '@agent/agent-models';
 import type { ApiClientKind } from '../platform/access';
 
-import { isAllowedWorkspace, rememberWorkspace, WORKSPACE_NOT_PICKED } from '@agent/agent-service';
+import {
+  rememberWorkspace,
+  resolveWorkspaceDir,
+  threadRunIds,
+  workspaceAllowed,
+  WORKSPACE_NOT_PICKED,
+} from '@agent/agent-service';
 import { folderWriter, forgetCheckpoints, revertRuns, runChanges, runFileDiff } from '@agent/agent-service';
 import { asyncRoute } from '../platform/http-errors';
 
 import { readSettledLastRun } from '@agent/agent-service';
 import { pickFolderDialog } from './pick-folder';
 
+/** A local process that presented the API token (platform/access.ts), not a browser page. */
+function isTokenClient(res: Response): boolean {
+  return (res.locals.client as ApiClientKind | undefined) === 'token';
+}
+
 export function threadsRouter(service: AgentService): Router {
   const router = Router();
-
-  async function resolveWorkspaceDir(
-    raw: string,
-  ): Promise<{ ok: true; root: string } | { ok: false; error: string }> {
-    const root = path.resolve(raw.trim());
-    try {
-      const info = await stat(root);
-      if (!info.isDirectory()) {
-        return { ok: false, error: 'workspaceRoot must be a directory' };
-      }
-    } catch {
-      return { ok: false, error: `workspaceRoot does not exist: ${root}` };
-    }
-    return { ok: true, root: path.normalize(root) };
-  }
-
-  /**
-   * A browser request may open only a folder a person chose (B1,
-   * workspace-allowlist.ts); a token client may open any existing folder.
-   */
-  async function workspaceAllowed(res: Response, root: string): Promise<boolean> {
-    if ((res.locals.client as ApiClientKind | undefined) === 'token') return true;
-    const store = await service.threads();
-    return isAllowedWorkspace({
-      agentHome: service.home(),
-      root,
-      threadRoots: store.listThreads({ includeSubagents: true }).map((thread) => thread.workspaceRoot),
-      env: service.config.env,
-    });
-  }
 
   /**
    * POST /api/agent/workspace/pick
@@ -121,7 +101,7 @@ export function threadsRouter(service: AgentService): Router {
       }
       const resolved = await resolveWorkspaceDir(raw);
       if (!resolved.ok) return res.status(400).json({ error: resolved.error });
-      if (!(await workspaceAllowed(res, resolved.root))) return res.status(403).json({ error: WORKSPACE_NOT_PICKED });
+      if (!(await workspaceAllowed(service, resolved.root, isTokenClient(res)))) return res.status(403).json({ error: WORKSPACE_NOT_PICKED });
       workspaceRoot = resolved.root;
     }
     const store = await service.threads();
@@ -169,7 +149,7 @@ export function threadsRouter(service: AgentService): Router {
     if (typeof workspaceRoot === 'string' && workspaceRoot.trim()) {
       const resolved = await resolveWorkspaceDir(workspaceRoot);
       if (!resolved.ok) return res.status(400).json({ error: resolved.error });
-      if (!(await workspaceAllowed(res, resolved.root))) return res.status(403).json({ error: WORKSPACE_NOT_PICKED });
+      if (!(await workspaceAllowed(service, resolved.root, isTokenClient(res)))) return res.status(403).json({ error: WORKSPACE_NOT_PICKED });
       workspaceRoot = resolved.root;
     }
     const kind = parseThreadKind(body.kind);
@@ -222,32 +202,13 @@ export function threadsRouter(service: AgentService): Router {
     return res.json(ledger);
   }));
 
-  /**
-   * The runs a checkpoint request names, kept only when they are this
-   * thread's runs, in ledger order (a run id becomes a git ref name, so
-   * nothing else gets through).
-   */
-  async function threadRunIds(threadId: string, raw: unknown): Promise<string[]> {
-    const wanted = new Set(
-      (Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(',') : []).filter(
-        (id): id is string => typeof id === 'string' && id.length > 0,
-      ),
-    );
-    if (wanted.size === 0) return [];
-    const store = await service.threads();
-    const ordered: string[] = [];
-    for (const envelope of await store.readLedger(threadId, 0)) {
-      if (envelope.runId && wanted.has(envelope.runId) && !ordered.includes(envelope.runId)) ordered.push(envelope.runId);
-    }
-    return ordered;
-  }
 
   /** GET /threads/:id/changes?runIds=a,b — what those runs changed in the folder (B3). */
   router.get('/threads/:id/changes', asyncRoute(async (req: Request, res: Response) => {
     const store = await service.threads();
     const thread = store.getThread(req.params.id);
     if (!thread) return res.status(404).json({ error: 'Thread not found' });
-    const runIds = await threadRunIds(req.params.id, req.query.runIds);
+    const runIds = await threadRunIds(service, req.params.id, req.query.runIds);
     if (!thread.workspaceRoot || runIds.length === 0) {
       return res.json({ available: false, files: [], notCovered: CHECKPOINT_NOT_COVERED } satisfies RunChanges);
     }
@@ -260,7 +221,7 @@ export function threadsRouter(service: AgentService): Router {
     const thread = store.getThread(req.params.id);
     if (!thread?.workspaceRoot) return res.status(404).json({ error: 'Thread not found' });
     const file = typeof req.query.path === 'string' ? req.query.path : '';
-    const runIds = await threadRunIds(req.params.id, req.query.runIds);
+    const runIds = await threadRunIds(service, req.params.id, req.query.runIds);
     if (!file || runIds.length === 0) return res.status(400).json({ error: 'runIds and path are required' });
     const diff = await runFileDiff({ agentHome: service.home(), root: thread.workspaceRoot, runIds, file });
     if (!diff) return res.status(404).json({ error: 'No snapshot exists for these runs' });
@@ -278,7 +239,7 @@ export function threadsRouter(service: AgentService): Router {
     if (folderWriter(thread.workspaceRoot)) {
       return res.status(409).json({ error: 'Another thread is running in this folder. Undo once it finishes.' });
     }
-    const runIds = await threadRunIds(req.params.id, (req.body as { runIds?: unknown } | undefined)?.runIds);
+    const runIds = await threadRunIds(service, req.params.id, (req.body as { runIds?: unknown } | undefined)?.runIds);
     if (runIds.length === 0) return res.status(400).json({ error: 'runIds is required' });
     try {
       const result: RevertResult = await revertRuns({ agentHome: service.home(), root: thread.workspaceRoot, runIds });

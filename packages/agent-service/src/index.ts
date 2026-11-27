@@ -14,15 +14,18 @@ export {
   type HostEnv,
   type HostEnvKey,
 } from './lib/service';
+export { ServiceError, type ServiceErrorCode } from './lib/errors';
 export { harnessVersion } from './lib/platform/harness-version';
 
 // Runs
 export { startThreadRun } from './lib/runs/start-run';
+export { estimateContext, type ContextEstimate } from './lib/runs/estimate-context';
 export { endpointFromLocal, prepareRun, readSettledLastRun, resolveRequestedSkills } from './lib/runs/run-context';
 export { initSystem1, system1AutoFor } from './lib/runs/system1-runtime';
 
 // Threads: workspace access and file checkpoints
 export { isAllowedWorkspace, rememberWorkspace, WORKSPACE_NOT_PICKED } from './lib/threads/workspace-allowlist';
+export { resolveWorkspaceDir, threadRunIds, workspaceAllowed } from './lib/threads/workspace';
 export { folderWriter, forgetCheckpoints, revertRuns, runChanges, runFileDiff } from './lib/threads/checkpoints';
 
 // Models and capacity

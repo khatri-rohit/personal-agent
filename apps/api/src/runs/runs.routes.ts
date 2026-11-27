@@ -1,24 +1,11 @@
 import { Router, type Request, type Response } from 'express';
 import type { AgentService } from '@agent/agent-service';
-import type {
-  AgentEvent,
-  LedgerEnvelope,
-  StartRunRequest,
-} from '@agent/agent-models';
-import {
-  HOME_MODE,
-  normalizeRunPosture,
-  parseContextWindowMode,
-  parseMessageAttachments,
-  parseStartRunRequest,
-  type RunPosture,
-} from '@agent/agent-models';
-import { extraSkillRoots, runWithSkillRoots } from '@agent/agent-core';
+import type { AgentEvent } from '@agent/agent-models';
+import { parseStartRunRequest } from '@agent/agent-models';
 
 
 import { asyncRoute } from '../platform/http-errors';
-import { endpointFromLocal, prepareRun, resolveRequestedSkills } from '@agent/agent-service';
-import { startThreadRun } from '@agent/agent-service';
+import { estimateContext, startThreadRun } from '@agent/agent-service';
 
 export function runsRouter(service: AgentService): Router {
   const router = Router();
@@ -45,88 +32,7 @@ export function runsRouter(service: AgentService): Router {
    * Same assembler as /run: host ledger + memory files + optional draft.
    */
   router.post('/context/estimate', asyncRoute(async (req: Request, res: Response) => {
-    const {
-      threadId,
-      draft,
-      attachments,
-      model,
-      webSearch,
-      local,
-      posture,
-      skills: rawSkills,
-      contextWindowMode,
-    } = req.body as {
-      threadId?: string;
-      draft?: string;
-      attachments?: unknown;
-      model?: string;
-      webSearch?: boolean;
-      local?: boolean;
-      posture?: RunPosture;
-      skills?: StartRunRequest['skills'];
-      contextWindowMode?: unknown;
-    };
-    const previewWindowMode = parseContextWindowMode(contextWindowMode);
-    const parsedAttachments = parseMessageAttachments(attachments);
-    if (typeof parsedAttachments === 'string') {
-      return res.status(400).json({ error: parsedAttachments });
-    }
-
-    const store = await service.threads();
-    let envelopes: LedgerEnvelope[] = [];
-    const id =
-      typeof threadId === 'string' && threadId.trim() ? threadId.trim() : 'draft';
-
-    if (id !== 'draft') {
-      const thread = store.getThread(id);
-      if (!thread) return res.status(404).json({ error: 'Thread not found' });
-      envelopes = await store.hydrateEnvelopes(id);
-    }
-
-    const trimmed = typeof draft === 'string' ? draft.trim() : '';
-    if (trimmed || parsedAttachments.length > 0) {
-      const seq = (envelopes.at(-1)?.seq ?? 0) + 1;
-      envelopes = [
-        ...envelopes,
-        {
-          v: 1,
-          seq,
-          ts: new Date().toISOString(),
-          threadId: id,
-          runId: null,
-          record: { role: 'user', content: trimmed },
-          ...(parsedAttachments.length > 0
-            ? { attachments: parsedAttachments }
-            : {}),
-        },
-      ];
-    }
-
-    const estimateThread = id === 'draft' ? undefined : store.getThread(id);
-    const useModel = model ?? estimateThread?.model ?? HOME_MODE.model;
-    // Same skill roots a run in this thread sees (its workspace's packs).
-    const skillRoots = extraSkillRoots(estimateThread?.workspaceRoot);
-    const { report } = await runWithSkillRoots(skillRoots, () =>
-      prepareRun(service, {
-        threadId: id,
-        thread: estimateThread,
-        webSearch,
-        posture: normalizeRunPosture(posture),
-        lastUserSeq: store.lastUserSeq(envelopes) ?? 0,
-        envelopes,
-        model: useModel,
-        endpoint: endpointFromLocal(local),
-        skillNames: resolveRequestedSkills(rawSkills),
-        ...(previewWindowMode ? { contextWindowMode: previewWindowMode } : {}),
-      }),
-    );
-
-    return res.json({
-      estimatedPromptTokens: report.occupiedTokens,
-      contextLength: report.budget.windowTokens,
-      source: 'estimate' as const,
-      contextReport: report,
-    });
+    return res.json(await estimateContext(service, req.body));
   }));
 
   /**
