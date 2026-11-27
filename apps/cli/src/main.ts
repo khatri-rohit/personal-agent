@@ -14,7 +14,7 @@ import {
   type ModelCallFn,
 } from '@agent/agent-core';
 import { runLocally } from './local-run.js';
-import { createJsonlTraceSink } from './trace-sink.js';
+import { createJsonlTraceSink } from '@agent/agent-service';
 
 
 function parseHarnessArgs(argv: string[]): {

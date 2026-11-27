@@ -152,6 +152,7 @@
   "dependencies": {
     "@agent/agent-core": "*",
     "@agent/agent-models": "*",
+    "@agent/agent-service": "*",
     "dotenv": "^16.4.7",
     "openai": "^7.27.0"
   },

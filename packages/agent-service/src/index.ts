@@ -16,6 +16,7 @@ export {
 } from './lib/service';
 export { ServiceError, type ServiceErrorCode } from './lib/errors';
 export { harnessVersion } from './lib/platform/harness-version';
+export { createJsonlTraceSink } from './lib/platform/trace-sink';
 
 // Runs
 export { startThreadRun } from './lib/runs/start-run';
@@ -30,7 +31,7 @@ export { folderWriter, forgetCheckpoints, revertRuns, runChanges, runFileDiff } 
 
 // Models and capacity
 export { BalanceError, capacityEnabled, getOllamaBalance } from './lib/models/capacity';
-export { warnRoleModelsWithoutTools } from './lib/models/model-runtime';
+export { resolveContextBudget, warnRoleModelsWithoutTools } from './lib/models/model-runtime';
 export {
   parseModelSettingsBody,
   readModelSettings,
