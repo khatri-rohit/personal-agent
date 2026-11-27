@@ -1,4 +1,5 @@
-import type { LedgerResponse, StartRunRequest, ThinkingValue, ThreadLastRun } from '@agent/agent-models';
+import { createAgentClient, type AgentClient } from '@agent/agent-client';
+import { API_ROUTES, type ApiRouteName, type LedgerResponse, type StartRunRequest, type ThinkingValue, type ThreadLastRun } from '@agent/agent-models';
 
 /** How often a trial reads the ledger while it waits for its run. */
 const POLL_MS = 2_000;
@@ -8,22 +9,28 @@ const POLL_MS = 2_000;
  * Trials go through the real entry point (G2); nothing here calls the loop.
  */
 export class ApiClient {
+  private readonly client: AgentClient;
+
   constructor(
+    /** The agent routes' base, mount included (`http://localhost:<port>/api/agent`). */
     private readonly base: string,
     private readonly pollMs = POLL_MS,
     /** The API's token (`<eval home>/api-token`): requests without an Origin need it. */
-    private readonly token?: string,
-  ) {}
+    token?: string,
+  ) {
+    this.client = createAgentClient({ baseUrl: base, token, mounts: { agent: '' } });
+  }
 
-  private async json<T>(method: string, route: string, body?: unknown): Promise<T> {
-    const response = await fetch(`${this.base}${route}`, {
-      method,
-      headers: {
-        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+  private async json<T>(name: ApiRouteName, params?: Record<string, string>, body?: unknown): Promise<T> {
+    const { method } = API_ROUTES[name];
+    const route = this.client.url(name, params).slice(this.base.replace(/\/+$/, '').length);
+    const response = await this.client.request(name, {
+      ...(params ? { params } : {}),
+      init: {
+        headers: body === undefined ? {} : { 'content-type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(60_000),
       },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(60_000),
     });
     const text = await response.text();
     if (!response.ok) throw new Error(`${method} ${route} → ${response.status}: ${text.slice(0, 300)}`);
@@ -32,13 +39,13 @@ export class ApiClient {
 
   /** A workspace thread when `workspaceRoot` is given, else a home (chat) thread. */
   createThread(input: { workspaceRoot?: string; model: string; title: string }): Promise<{ id: string }> {
-    return this.json('POST', '/threads', { kind: input.workspaceRoot ? 'workspace' : 'home', ...input });
+    return this.json('threads.create', undefined, { kind: input.workspaceRoot ? 'workspace' : 'home', ...input });
   }
 
   /** What the API runs and which home it writes (`GET /version`); null on an API from before the route. */
   async version(): Promise<{ harnessVersion: { sha: string; dirty: string | null } | null; agentHome: string } | null> {
     try {
-      return await this.json('GET', '/version');
+      return await this.json('version');
     } catch (error) {
       if (error instanceof Error && error.message.includes('→ 404')) return null;
       throw error;
@@ -46,7 +53,7 @@ export class ApiClient {
   }
 
   deleteThread(id: string): Promise<unknown> {
-    return this.json('DELETE', `/threads/${id}`);
+    return this.json('threads.delete', { id });
   }
 
   startRun(input: {
@@ -66,22 +73,22 @@ export class ApiClient {
       webSearch: true,
       contextWindowMode: 'default',
     };
-    return this.json('POST', '/run', body);
+    return this.json('runs.start', undefined, body);
   }
 
   /** A run that already settled answers 404: that is fine, there is nothing left to stop. */
   async cancelRun(runId: string): Promise<void> {
-    await this.json('POST', `/run/${runId}/cancel`).catch(() => undefined);
+    await this.json('runs.cancel', { runId }).catch(() => undefined);
   }
 
   ledger(threadId: string): Promise<LedgerResponse> {
-    return this.json('GET', `/threads/${threadId}/ledger`);
+    return this.json('threads.ledger', { id: threadId });
   }
 
   /** `null` when the API has no OLLAMA_API_KEY (local models: no capacity gate). */
   async balance(): Promise<unknown | null> {
     try {
-      return await this.json('GET', '/usage/balance');
+      return await this.json('usage.balance');
     } catch (error) {
       if (error instanceof Error && error.message.includes('→ 404')) return null;
       throw error;
@@ -104,7 +111,7 @@ export class ApiClient {
       if (ledger.activeRun?.runId === runId) {
         for (const choice of ledger.activeRun.pendingChoices) {
           // 404: answered or gone meanwhile.
-          await this.json('POST', `/run/${runId}/choice`, { choiceId: choice.choiceId, skipped: true }).catch(
+          await this.json('runs.choice', { runId }, { choiceId: choice.choiceId, skipped: true }).catch(
             () => undefined,
           );
         }

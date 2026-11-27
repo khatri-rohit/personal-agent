@@ -370,3 +370,13 @@ export {
   parseVoiceCapabilities,
   parseVoiceProvider,
 } from './lib/voice.js';
+
+export {
+  API_MOUNTS,
+  API_ROUTES,
+  PROTOCOL_VERSION,
+  type ApiMount,
+  type ApiRoute,
+  type ApiRouteName,
+  type HttpMethod,
+} from './lib/protocol.js';

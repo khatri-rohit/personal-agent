@@ -14,7 +14,7 @@
     }
   },
   "nx": {
-    "tags": ["scope:agent", "type:engine"],
+    "tags": ["scope:agent", "type:measure"],
     "targets": {
       "lint": { "executor": "@nx/eslint:lint", "options": {} },
       "test": {
@@ -62,6 +62,7 @@
     }
   },
   "dependencies": {
+    "@agent/agent-client": "*",
     "tslib": "^2.3.0",
     "@agent/agent-models": "*"
   }

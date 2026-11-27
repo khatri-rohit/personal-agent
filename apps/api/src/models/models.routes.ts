@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { API_ROUTES } from '@agent/agent-models';
 import type { AgentService } from '@agent/agent-service';
 import type { OllamaEndpoint } from '@agent/agent-models';
 import { getOllamaModelConfig, listOllamaModels } from '@agent/agent-core';
@@ -10,7 +11,7 @@ import { asyncRoute } from '../platform/http-errors';
 export function modelsRouter(service: AgentService): Router {
   const router = Router();
 
-  router.get('/usage/balance', asyncRoute(async (_req: Request, res: Response) => {
+  router.get(API_ROUTES['usage.balance'].path, asyncRoute(async (_req: Request, res: Response) => {
     if (!capacityEnabled(service.config.env.OLLAMA_API_KEY)) {
       res.status(404).json({ error: 'No OLLAMA_API_KEY configured' });
       return;
@@ -44,7 +45,7 @@ export function modelsRouter(service: AgentService): Router {
    * Proxy for Ollama /api/show (context length, thinking values).
    * Registered before /models so a future /models/:id never shadows this path.
    */
-  router.get('/models/config', asyncRoute(async (req: Request, res: Response) => {
+  router.get(API_ROUTES['models.config'].path, asyncRoute(async (req: Request, res: Response) => {
     const model =
       typeof req.query.model === 'string' ? req.query.model.trim() : '';
     if (!model) {
@@ -75,7 +76,7 @@ export function modelsRouter(service: AgentService): Router {
    * Merged view for the Settings → Models tab: stored picks, the resolved
    * model per role with its source, and thinking preferences.
    */
-  router.get('/models/settings', asyncRoute(async (_req: Request, res: Response) => {
+  router.get(API_ROUTES['models.getSettings'].path, asyncRoute(async (_req: Request, res: Response) => {
     const settings = await readModelSettings(service);
     // Resolution preview against the home-mode default model; the dialog shows
     // sources, and runs resolve against their own model.
@@ -88,7 +89,7 @@ export function modelsRouter(service: AgentService): Router {
    * Validate and persist. Unknown fields and bad enums are a 400 with the
    * problem list; a valid body replaces the whole settings object.
    */
-  router.put('/models/settings', asyncRoute(async (req: Request, res: Response) => {
+  router.put(API_ROUTES['models.putSettings'].path, asyncRoute(async (req: Request, res: Response) => {
     const parsed = parseModelSettingsBody(req.body);
     if (!parsed.ok) {
       return res.status(400).json({ error: 'Invalid model settings', problems: parsed.problems });
@@ -102,7 +103,7 @@ export function modelsRouter(service: AgentService): Router {
    * GET /api/agent/models?endpoint=local|cloud
    * Proxy for Ollama GET /api/tags (installed models). Defaults to local.
    */
-  router.get('/models', asyncRoute(async (req: Request, res: Response) => {
+  router.get(API_ROUTES['models.list'].path, asyncRoute(async (req: Request, res: Response) => {
     const endpoint = parseEndpointQuery(req.query.endpoint, 'local');
     if (!endpoint) {
       return res

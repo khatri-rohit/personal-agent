@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { API_ROUTES } from '@agent/agent-models';
 import type { AgentService } from '@agent/agent-service';
 import type { AgentEvent } from '@agent/agent-models';
 import { parseStartRunRequest } from '@agent/agent-models';
@@ -14,7 +15,7 @@ export function runsRouter(service: AgentService): Router {
    * POST /api/agent/run
    * Append optional user turn to the host ledger, then start a run.
    */
-  router.post('/run', asyncRoute(async (req: Request, res: Response) => {
+  router.post(API_ROUTES['runs.start'].path, asyncRoute(async (req: Request, res: Response) => {
     const request = parseStartRunRequest(req.body);
     if (typeof request === 'string') return res.status(400).json({ error: request });
     const result = await startThreadRun(service, request);
@@ -31,7 +32,7 @@ export function runsRouter(service: AgentService): Router {
    * POST /api/agent/context/estimate
    * Same assembler as /run: host ledger + memory files + optional draft.
    */
-  router.post('/context/estimate', asyncRoute(async (req: Request, res: Response) => {
+  router.post(API_ROUTES['runs.estimate'].path, asyncRoute(async (req: Request, res: Response) => {
     return res.json(await estimateContext(service, req.body));
   }));
 
@@ -40,7 +41,7 @@ export function runsRouter(service: AgentService): Router {
    * Stop an in-flight run. `finishing`: the answer is already saved and only
    * post-run work is left, so nothing is cancelled; wait for run.settled.
    */
-  router.post('/run/:runId/cancel', (req: Request, res: Response) => {
+  router.post(API_ROUTES['runs.cancel'].path, (req: Request, res: Response) => {
     const result = service.runs.cancel(req.params.runId);
     if (result === 'not_found') {
       return res.status(404).json({ error: 'Run not found or not active' });
@@ -63,7 +64,7 @@ export function runsRouter(service: AgentService): Router {
    * POST /api/agent/run/:runId/choice
    * Continue with selected options + extra text, or skip (the run ends with a summary of the options).
    */
-  router.post('/run/:runId/choice', (req: Request, res: Response) => {
+  router.post(API_ROUTES['runs.choice'].path, (req: Request, res: Response) => {
     const { runId } = req.params;
     const body = req.body as {
       choiceId?: unknown;
@@ -118,7 +119,7 @@ export function runsRouter(service: AgentService): Router {
    * then streams live ones. The response ends with run.settled, or with
    * `event: done` for a run already settled.
    */
-  router.get('/run/:runId/events', (req: Request, res: Response) => {
+  router.get(API_ROUTES['runs.events'].path, (req: Request, res: Response) => {
     const fromSeq = Number(req.query.fromSeq ?? 0);
     let ended = false;
     const send = (event: AgentEvent) => {

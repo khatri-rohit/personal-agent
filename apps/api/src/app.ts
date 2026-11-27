@@ -1,5 +1,6 @@
 import express, { type Express } from 'express';
 import cors from 'cors';
+import { API_MOUNTS, API_ROUTES, PROTOCOL_VERSION } from '@agent/agent-models';
 
 import { memoryRouter } from './memory/memory.routes';
 import { modelsRouter } from './models/models.routes';
@@ -50,15 +51,15 @@ export function createApp(service: AgentService, logger: Logger): Express {
 
   // What this process runs and where it writes: the eval runner checks both
   // before a suite (a stale API, or one on the wrong home, measures the wrong thing).
-  app.get('/api/agent/version', (_req, res, next) => {
+  app.get(`${API_MOUNTS.agent}${API_ROUTES.version.path}`, (_req, res, next) => {
     harnessVersion()
-      .then((version) => res.json({ harnessVersion: version, agentHome: service.home() }))
+      .then((version) => res.json({ harnessVersion: version, agentHome: service.home(), protocolVersion: PROTOCOL_VERSION }))
       .catch(next);
   });
 
   // Agent endpoints (no two routers share a path, so order does not matter)
   app.use(
-    '/api/agent',
+    API_MOUNTS.agent,
     skillsRouter(service),
     modelsRouter(service),
     threadsRouter(service),
@@ -68,7 +69,7 @@ export function createApp(service: AgentService, logger: Logger): Express {
 
   // Voice add-on (Speaches, not Ollama). The voice module decides which routes
   // exist; nothing on the run path depends on them.
-  app.use('/api/voice', voiceRouter);
+  app.use(API_MOUNTS.voice, voiceRouter);
 
   app.use(errorHandler);
   return app;

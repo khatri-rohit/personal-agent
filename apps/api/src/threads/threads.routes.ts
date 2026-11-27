@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { API_ROUTES } from '@agent/agent-models';
 import type { AgentService } from '@agent/agent-service';
 import path from 'node:path';
 import type { LedgerResponse, RevertResult, RunChanges, ThreadDetail, ThreadKind } from '@agent/agent-models';
@@ -37,7 +38,7 @@ export function threadsRouter(service: AgentService): Router {
    * Opens a native folder dialog on the API host and returns the absolute path.
    * 204 = cancelled, 500 = dialog failed, 200 = { workspaceRoot }.
    */
-  router.post('/workspace/pick', asyncRoute(async (req: Request, res: Response) => {
+  router.post(API_ROUTES['workspace.pick'].path, asyncRoute(async (req: Request, res: Response) => {
     const initial =
       typeof req.body?.initialDir === 'string' && req.body.initialDir.trim()
         ? path.resolve(req.body.initialDir.trim())
@@ -62,7 +63,7 @@ export function threadsRouter(service: AgentService): Router {
     return res.json({ workspaceRoot: resolved.root });
   }));
 
-  router.get('/threads', asyncRoute(async (req: Request, res: Response) => {
+  router.get(API_ROUTES['threads.list'].path, asyncRoute(async (req: Request, res: Response) => {
     const store = await service.threads();
     const kind = parseThreadKind(req.query.kind);
     const workspaceRoot =
@@ -80,7 +81,7 @@ export function threadsRouter(service: AgentService): Router {
     });
   }));
 
-  router.post('/threads', asyncRoute(async (req: Request, res: Response) => {
+  router.post(API_ROUTES['threads.create'].path, asyncRoute(async (req: Request, res: Response) => {
     const model =
       typeof req.body?.model === 'string' && req.body.model.trim()
         ? req.body.model.trim()
@@ -112,7 +113,7 @@ export function threadsRouter(service: AgentService): Router {
     return res.status(201).json(thread);
   }));
 
-  router.get('/threads/:id', asyncRoute(async (req: Request, res: Response) => {
+  router.get(API_ROUTES['threads.get'].path, asyncRoute(async (req: Request, res: Response) => {
     const store = await service.threads();
     const thread = store.getThread(req.params.id);
     if (!thread) return res.status(404).json({ error: 'Thread not found' });
@@ -127,7 +128,7 @@ export function threadsRouter(service: AgentService): Router {
     return res.json(detail);
   }));
 
-  router.patch('/threads/:id', asyncRoute(async (req: Request, res: Response) => {
+  router.patch(API_ROUTES['threads.update'].path, asyncRoute(async (req: Request, res: Response) => {
     const store = await service.threads();
     const body = req.body as {
       title?: string;
@@ -165,7 +166,7 @@ export function threadsRouter(service: AgentService): Router {
     return res.json(thread);
   }));
 
-  router.delete('/threads/:id', asyncRoute(async (req: Request, res: Response) => {
+  router.delete(API_ROUTES['threads.delete'].path, asyncRoute(async (req: Request, res: Response) => {
     const store = await service.threads();
     const root = store.getThread(req.params.id)?.workspaceRoot;
     const ok = await store.deleteThread(req.params.id);
@@ -178,7 +179,7 @@ export function threadsRouter(service: AgentService): Router {
     return res.json({ ok: true });
   }));
 
-  router.get('/threads/:id/ledger', asyncRoute(async (req: Request, res: Response) => {
+  router.get(API_ROUTES['threads.ledger'].path, asyncRoute(async (req: Request, res: Response) => {
     const store = await service.threads();
     const thread = store.getThread(req.params.id);
     if (!thread) return res.status(404).json({ error: 'Thread not found' });
@@ -204,7 +205,7 @@ export function threadsRouter(service: AgentService): Router {
 
 
   /** GET /threads/:id/changes?runIds=a,b — what those runs changed in the folder (B3). */
-  router.get('/threads/:id/changes', asyncRoute(async (req: Request, res: Response) => {
+  router.get(API_ROUTES['threads.changes'].path, asyncRoute(async (req: Request, res: Response) => {
     const store = await service.threads();
     const thread = store.getThread(req.params.id);
     if (!thread) return res.status(404).json({ error: 'Thread not found' });
@@ -216,7 +217,7 @@ export function threadsRouter(service: AgentService): Router {
   }));
 
   /** GET /threads/:id/changes/diff?runIds=a,b&path=src/x.ts — one file's diff across those runs. */
-  router.get('/threads/:id/changes/diff', asyncRoute(async (req: Request, res: Response) => {
+  router.get(API_ROUTES['threads.changeDiff'].path, asyncRoute(async (req: Request, res: Response) => {
     const store = await service.threads();
     const thread = store.getThread(req.params.id);
     if (!thread?.workspaceRoot) return res.status(404).json({ error: 'Thread not found' });
@@ -229,7 +230,7 @@ export function threadsRouter(service: AgentService): Router {
   }));
 
   /** POST /threads/:id/changes/undo { runIds } — put back what those runs changed. */
-  router.post('/threads/:id/changes/undo', asyncRoute(async (req: Request, res: Response) => {
+  router.post(API_ROUTES['threads.undoChanges'].path, asyncRoute(async (req: Request, res: Response) => {
     const store = await service.threads();
     const thread = store.getThread(req.params.id);
     if (!thread?.workspaceRoot) return res.status(404).json({ error: 'Thread not found' });

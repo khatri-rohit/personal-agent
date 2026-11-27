@@ -19,7 +19,7 @@ import type {
 } from '@agent/agent-models';
 import { normalizeRunPosture } from '@agent/agent-models';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3333';
+import { api } from './client';
 
 /* ---------- Pending message (cross-route handoff) ---------- */
 
@@ -112,11 +112,10 @@ export async function startRun(
       : {}),
   };
 
-  const res = await fetch(`${API_BASE}/api/agent/run`, {
-    method: 'POST',
+  const res = await api.request('runs.start', { init: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  });
+  } });
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -147,7 +146,7 @@ export function subscribeRun(
 
   const connect = () => {
     if (closed) return;
-    const url = `${API_BASE}/api/agent/run/${runId}/events?fromSeq=${cursor}`;
+    const url = api.url('runs.events', { runId }, `fromSeq=${cursor}`);
     const es = new EventSource(url);
     source = es;
 
@@ -200,9 +199,7 @@ export async function fetchOllamaModelConfig(
   endpoint: OllamaEndpoint = 'cloud',
 ): Promise<OllamaModelConfig> {
   const params = new URLSearchParams({ model, endpoint });
-  const res = await fetch(
-    `${API_BASE}/api/agent/models/config?${params.toString()}`,
-  );
+  const res = await api.request('models.config', { query: params.toString() });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Failed to load model config: ${res.status}`);
@@ -217,7 +214,7 @@ export type LocalOllamaModelsResponse = {
 
 /** Discover models installed on the API host's local Ollama (`/api/tags`). */
 export async function fetchLocalOllamaModels(): Promise<LocalOllamaModelsResponse> {
-  const res = await fetch(`${API_BASE}/api/agent/models?endpoint=local`);
+  const res = await api.request('models.list', { query: 'endpoint=local' });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Failed to list local models: ${res.status}`);
@@ -227,7 +224,7 @@ export async function fetchLocalOllamaModels(): Promise<LocalOllamaModelsRespons
 
 /** Discover cloud models from Ollama Cloud (`/api/tags` at ollama.com). */
 export async function fetchCloudOllamaModels(): Promise<LocalOllamaModelsResponse> {
-  const res = await fetch(`${API_BASE}/api/agent/models?endpoint=cloud`);
+  const res = await api.request('models.list', { query: 'endpoint=cloud' });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Failed to list cloud models: ${res.status}`);
@@ -242,7 +239,7 @@ export type ModelSettingsView = {
 
 /** Stored model-role picks and their resolution, for Settings → Models. */
 export async function getModelSettings(): Promise<ModelSettingsView> {
-  const res = await fetch(`${API_BASE}/api/agent/models/settings`);
+  const res = await api.request('models.getSettings');
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Failed to load model settings: ${res.status}`);
@@ -254,11 +251,10 @@ export async function getModelSettings(): Promise<ModelSettingsView> {
 export async function putModelSettings(
   settings: ModelSettings,
 ): Promise<ModelSettingsView> {
-  const res = await fetch(`${API_BASE}/api/agent/models/settings`, {
-    method: 'PUT',
+  const res = await api.request('models.putSettings', { init: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
-  });
+  } });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     const problems = Array.isArray((body as { problems?: unknown }).problems)
@@ -273,7 +269,7 @@ export async function putModelSettings(
 
 /** Fetch Ollama Cloud balance (session/weekly limits or USD credits). */
 export async function fetchOllamaBalance(): Promise<OllamaBalance> {
-  const res = await fetch(`${API_BASE}/api/agent/usage/balance`);
+  const res = await api.request('usage.balance');
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Failed to load balance: ${res.status}`);
@@ -300,8 +296,7 @@ export async function fetchContextEstimate(options: {
   skills?: ComposerSkillHints;
   contextWindowMode?: ContextWindowMode;
 }): Promise<ContextEstimateResponse> {
-  const res = await fetch(`${API_BASE}/api/agent/context/estimate`, {
-    method: 'POST',
+  const res = await api.request('runs.estimate', { init: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       threadId: options.threadId,
@@ -316,7 +311,7 @@ export async function fetchContextEstimate(options: {
         ? { contextWindowMode: options.contextWindowMode }
         : {}),
     }),
-  });
+  } });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Failed to estimate context: ${res.status}`);
@@ -331,7 +326,7 @@ export type MemoryResponse = {
 };
 
 export async function fetchMemory(): Promise<MemoryResponse> {
-  const res = await fetch(`${API_BASE}/api/agent/memory`);
+  const res = await api.request('memory.get');
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Failed to load memory: ${res.status}`);
@@ -343,11 +338,10 @@ export async function saveUserMemory(
   user: string,
   threadId?: string,
 ): Promise<MemoryOp> {
-  const res = await fetch(`${API_BASE}/api/agent/memory`, {
-    method: 'PATCH',
+  const res = await api.request('memory.update', { init: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user, threadId }),
-  });
+  } });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Failed to save profile: ${res.status}`);
@@ -358,7 +352,7 @@ export async function saveUserMemory(
 
 /** Memory suggestions waiting for approval (learning loop and staged writes). */
 export async function fetchPendingMemory(): Promise<MemoryOp[]> {
-  const res = await fetch(`${API_BASE}/api/agent/memory/pending`);
+  const res = await api.request('memory.pending');
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Failed to load suggestions: ${res.status}`);
@@ -371,11 +365,10 @@ export async function resolvePendingMemory(
   opId: string,
   decision: 'approve' | 'reject',
 ): Promise<MemoryOp> {
-  const res = await fetch(`${API_BASE}/api/agent/memory/pending/${encodeURIComponent(opId)}`, {
-    method: 'POST',
+  const res = await api.request('memory.resolvePending', { params: { opId }, init: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ decision }),
-  });
+  } });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Failed to ${decision} suggestion: ${res.status}`);
@@ -385,11 +378,10 @@ export async function resolvePendingMemory(
 }
 
 export async function revertMemoryOp(opId: string): Promise<MemoryOp> {
-  const res = await fetch(`${API_BASE}/api/agent/memory/revert`, {
-    method: 'POST',
+  const res = await api.request('memory.revert', { init: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ opId }),
-  });
+  } });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Failed to revert memory: ${res.status}`);
@@ -400,9 +392,7 @@ export async function revertMemoryOp(opId: string): Promise<MemoryOp> {
 
 /** False when the run is no longer active (it already ended). */
 export async function cancelRun(runId: string): Promise<boolean> {
-  const res = await fetch(`${API_BASE}/api/agent/run/${runId}/cancel`, {
-    method: 'POST',
-  });
+  const res = await api.request('runs.cancel', { params: { runId } });
   if (res.status === 404) return false;
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -417,11 +407,10 @@ export async function resolveChoice(
     | { choiceId: string; skipped: true }
     | { choiceId: string; optionIds: string[]; text?: string },
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/agent/run/${runId}/choice`, {
-    method: 'POST',
+  const res = await api.request('runs.choice', { params: { runId }, init: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  });
+  } });
   if (!res.ok) {
     const payload = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(

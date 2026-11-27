@@ -41,6 +41,11 @@ export default [
               onlyDependOnLibsWithTags: ['type:data'],
             },
             {
+              // agent-eval: reads the home's files and drives trials through the API as a client.
+              sourceTag: 'type:measure',
+              onlyDependOnLibsWithTags: ['type:data', 'type:client'],
+            },
+            {
               sourceTag: 'type:service',
               onlyDependOnLibsWithTags: ['type:data', 'type:engine'],
             },
@@ -54,7 +59,7 @@ export default [
             },
             {
               sourceTag: 'type:app',
-              onlyDependOnLibsWithTags: ['type:data', 'type:client', 'type:engine', 'type:service', 'type:adapter'],
+              onlyDependOnLibsWithTags: ['type:data', 'type:client', 'type:engine', 'type:measure', 'type:service', 'type:adapter'],
             },
             {
               sourceTag: 'scope:web',

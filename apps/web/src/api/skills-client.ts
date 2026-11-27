@@ -1,4 +1,4 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3333';
+import { api } from './client';
 
 /** Root ids the API reports: `builtin`, `agents` (~/.agents/skills), `agent-home`, `workspace`. */
 export type SkillRootId = 'builtin' | 'agents' | 'agent-home' | 'workspace';
@@ -49,22 +49,19 @@ function asCatalogs(raw: SkillCatalogs): SkillCatalogs {
   };
 }
 
-/** `?threadId=` so the API answers with that thread's workspace packs too. */
+/** `threadId=` so the API answers with that thread's workspace packs too (no leading `?`). */
 function query(params: Record<string, string | undefined>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value) search.set(key, value);
   }
-  const text = search.toString();
-  return text ? `?${text}` : '';
+  return search.toString();
 }
 
 export async function fetchSkillCatalogs(
   threadId?: string,
 ): Promise<SkillCatalogs> {
-  const res = await fetch(
-    `${API_BASE}/api/agent/skills${query({ threadId })}`,
-  );
+  const res = await api.request('skills.list', { query: query({ threadId }) });
   return asCatalogs(await readJson<SkillCatalogs>(res));
 }
 
@@ -74,12 +71,10 @@ export async function fetchSkillDocument(input: {
   root?: string;
   threadId?: string;
 }): Promise<SkillDocument> {
-  const res = await fetch(
-    `${API_BASE}/api/agent/skills/${encodeURIComponent(input.folder)}${query({
-      root: input.root,
-      threadId: input.threadId,
-    })}`,
-  );
+  const res = await api.request('skills.get', {
+    params: { folder: input.folder },
+    query: query({ root: input.root, threadId: input.threadId }),
+  });
   return readJson<SkillDocument>(res);
 }
 
@@ -89,14 +84,13 @@ export async function createUserSkill(input: {
   content: string;
   threadId?: string;
 }): Promise<SkillCatalogs> {
-  const res = await fetch(
-    `${API_BASE}/api/agent/skills/create${query({ threadId: input.threadId })}`,
-    {
-      method: 'POST',
+  const res = await api.request('skills.create', {
+    query: query({ threadId: input.threadId }),
+    init: {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: input.name, content: input.content }),
     },
-  );
+  });
   return asCatalogs(await readJson<SkillCatalogs>(res));
 }
 
@@ -105,9 +99,6 @@ export async function deleteUserSkill(
   folder: string,
   threadId?: string,
 ): Promise<SkillCatalogs> {
-  const res = await fetch(
-    `${API_BASE}/api/agent/skills/${encodeURIComponent(folder)}${query({ threadId })}`,
-    { method: 'DELETE' },
-  );
+  const res = await api.request('skills.delete', { params: { folder }, query: query({ threadId }) });
   return asCatalogs(await readJson<SkillCatalogs>(res));
 }

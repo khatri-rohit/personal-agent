@@ -4,6 +4,7 @@
 const nextConfig = {
   transpilePackages: [
     '@agent/agent-models',
+    '@agent/agent-client',
     'streamdown',
     '@streamdown/code',
     '@streamdown/mermaid',

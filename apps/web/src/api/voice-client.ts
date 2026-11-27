@@ -3,13 +3,12 @@ import {
   type VoiceCapabilities,
 } from '@agent/agent-models';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3333';
+import { api } from './client';
 
 /** Which voice backends this deployment serves (decided by the API's env). */
 export async function fetchVoiceCapabilities(): Promise<VoiceCapabilities> {
-  const res = await fetch(`${API_BASE}/api/voice/capabilities`, {
-    cache: 'no-store',
-    signal: AbortSignal.timeout(5_000),
+  const res = await api.request('voice.capabilities', {
+    init: { cache: 'no-store', signal: AbortSignal.timeout(5_000) },
   });
   if (!res.ok) throw new Error(`Voice capabilities failed (${res.status})`);
   return parseVoiceCapabilities(await res.json());
@@ -30,11 +29,8 @@ export async function transcribeAudio(
   const tail = context.trim().slice(-400);
   if (tail) headers['X-Voice-Context'] = encodeURIComponent(tail);
 
-  const res = await fetch(`${API_BASE}/api/voice/transcribe`, {
-    method: 'POST',
-    headers,
-    body: blob,
-    signal: AbortSignal.timeout(30_000),
+  const res = await api.request('voice.transcribe', {
+    init: { headers, body: blob, signal: AbortSignal.timeout(30_000) },
   });
 
   if (!res.ok) {
@@ -53,11 +49,12 @@ export async function synthesizeSpeech(
   text: string,
   signal: AbortSignal,
 ): Promise<Blob> {
-  const res = await fetch(`${API_BASE}/api/voice/speak`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+  const res = await api.request('voice.speak', {
+    init: {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+    },
   });
 
   if (!res.ok) {

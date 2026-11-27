@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { API_ROUTES } from '@agent/agent-models';
 import type { AgentService } from '@agent/agent-service';
 import {
   extraSkillRoots,
@@ -38,7 +39,7 @@ export function skillsRouter(service: AgentService): Router {
   }
 
   router.get(
-    '/skills',
+    API_ROUTES['skills.list'].path,
     asyncRoute(async (req: Request, res: Response) => {
       service.home();
       const extra = await overlayFor(req);
@@ -47,7 +48,7 @@ export function skillsRouter(service: AgentService): Router {
   );
 
   router.post(
-    '/skills/create',
+    API_ROUTES['skills.create'].path,
     asyncRoute(async (req: Request, res: Response) => {
       try {
         const agentHome = service.home();
@@ -65,7 +66,7 @@ export function skillsRouter(service: AgentService): Router {
   );
 
   router.get(
-    '/skills/:folder',
+    API_ROUTES['skills.get'].path,
     asyncRoute(async (req: Request, res: Response) => {
       try {
         service.home();
@@ -86,7 +87,7 @@ export function skillsRouter(service: AgentService): Router {
   );
 
   router.delete(
-    '/skills/:folder',
+    API_ROUTES['skills.delete'].path,
     asyncRoute(async (req: Request, res: Response) => {
       try {
         const agentHome = service.home();

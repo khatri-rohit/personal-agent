@@ -25,6 +25,9 @@
       "path": "./packages/agent-service"
     },
     {
+      "path": "./packages/agent-client"
+    },
+    {
       "path": "./apps/eval"
     }
   ]

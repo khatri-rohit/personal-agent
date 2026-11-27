@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { API_ROUTES } from '@agent/agent-models';
 import type { AgentService } from '@agent/agent-service';
 import { DEFAULT_MEMORY_CAPS, isWorkspaceKind, revertedOpId } from '@agent/agent-models';
 
@@ -7,7 +8,7 @@ import { asyncRoute } from '../platform/http-errors';
 export function memoryRouter(service: AgentService): Router {
   const router = Router();
 
-  router.get('/memory', asyncRoute(async (req: Request, res: Response) => {
+  router.get(API_ROUTES['memory.get'].path, asyncRoute(async (req: Request, res: Response) => {
     const memory = service.memory();
     const workspaceRoot =
       typeof req.query.workspaceRoot === 'string' &&
@@ -27,7 +28,7 @@ export function memoryRouter(service: AgentService): Router {
     return res.json({ files, ops: visible, caps: DEFAULT_MEMORY_CAPS });
   }));
 
-  router.patch('/memory', asyncRoute(async (req: Request, res: Response) => {
+  router.patch(API_ROUTES['memory.update'].path, asyncRoute(async (req: Request, res: Response) => {
     const user = typeof req.body?.user === 'string' ? req.body.user : undefined;
     if (user === undefined) {
       return res.status(400).json({ error: 'user is required' });
@@ -45,7 +46,7 @@ export function memoryRouter(service: AgentService): Router {
     }
   }));
 
-  router.post('/memory/revert', asyncRoute(async (req: Request, res: Response) => {
+  router.post(API_ROUTES['memory.revert'].path, asyncRoute(async (req: Request, res: Response) => {
     const opId = typeof req.body?.opId === 'string' ? req.body.opId.trim() : '';
     if (!opId) return res.status(400).json({ error: 'opId is required' });
     try {
@@ -58,12 +59,12 @@ export function memoryRouter(service: AgentService): Router {
   }));
 
   /** Suggestions waiting for the user (learning loop, staged foreground writes). */
-  router.get('/memory/pending', asyncRoute(async (_req: Request, res: Response) => {
+  router.get(API_ROUTES['memory.pending'].path, asyncRoute(async (_req: Request, res: Response) => {
     return res.json({ ops: await service.memory().listPending() });
   }));
 
   /** Approve or reject one pending suggestion. Notes go to the folder of the thread that proposed them. */
-  router.post('/memory/pending/:opId', asyncRoute(async (req: Request, res: Response) => {
+  router.post(API_ROUTES['memory.resolvePending'].path, asyncRoute(async (req: Request, res: Response) => {
     const decision = req.body?.decision;
     if (decision !== 'approve' && decision !== 'reject') {
       return res.status(400).json({ error: 'decision must be approve or reject' });

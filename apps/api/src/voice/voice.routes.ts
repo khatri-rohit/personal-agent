@@ -1,4 +1,5 @@
 import express, { Router, type Request, type Response } from 'express';
+import { API_ROUTES } from '@agent/agent-models';
 import {
   parseVoiceProvider,
   type VoiceCapabilities,
@@ -61,7 +62,7 @@ const ttsRouter = Router();
  * Does not touch Ollama or agent-core.
  */
 sttRouter.post(
-  '/transcribe',
+  API_ROUTES['voice.transcribe'].path,
   express.raw({
     type: (req) => {
       const ct = req.headers['content-type'] ?? '';
@@ -159,7 +160,7 @@ function clampSpeed(n: number): number {
  * Proxies to Speaches OpenAI-compatible /v1/audio/speech (Kokoro).
  * Does not touch Ollama or agent-core.
  */
-ttsRouter.post('/speak', async (req: Request, res: Response) => {
+ttsRouter.post(API_ROUTES['voice.speak'].path, async (req: Request, res: Response) => {
   const text =
     typeof req.body?.text === 'string' ? req.body.text.trim() : '';
   if (!text) return res.status(400).json({ error: 'text is required' });
@@ -209,7 +210,7 @@ ttsRouter.post('/speak', async (req: Request, res: Response) => {
  * provider is `speaches`.
  */
 export const voiceRouter = Router();
-voiceRouter.get('/capabilities', (_req: Request, res: Response) => {
+voiceRouter.get(API_ROUTES['voice.capabilities'].path, (_req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store');
   res.json(voiceProviders);
 });
