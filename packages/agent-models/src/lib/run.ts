@@ -208,6 +208,12 @@ export function parseStartRunRequest(raw: unknown): StartRunRequest | string {
   if (typeof body.threadId !== 'string' || !body.threadId) {
     return 'threadId is required';
   }
+  const run = parseRunOptions(body);
+  return typeof run === 'string' ? run : { threadId: body.threadId, ...run };
+}
+
+/** Everything of a run request but its thread (shared by `POST /run` and the queue). */
+export function parseRunOptions(body: Record<string, unknown>): Omit<StartRunRequest, 'threadId'> | string {
   if (
     !isOptional(body.model, 'string') ||
     !isOptional(body.local, 'boolean') ||
@@ -253,7 +259,6 @@ export function parseStartRunRequest(raw: unknown): StartRunRequest | string {
 
   const contextWindowMode = parseContextWindowMode(body.contextWindowMode);
   return {
-    threadId: body.threadId,
     ...(message ? { message } : {}),
     ...(body.rewindThroughSeq !== undefined
       ? { rewindThroughSeq: body.rewindThroughSeq as number }

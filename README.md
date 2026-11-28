@@ -1,6 +1,6 @@
 # Personal Assistant
 
-Personal **agent harness** in an [Nx](https://nx.dev) monorepo: a host-agnostic runtime (`@agent/agent-core`), Express API with SSE (`apps/api`), Next.js chat UI (`apps/web`), and a CLI eval harness (`apps/cli`). One engine, two bindings: **Home** (chat, optional web) and **Workspace** (folder-bound coding tools).
+Personal **agent harness** in an [Nx](https://nx.dev) monorepo: a host-agnostic runtime (`@agent/agent-core`) and **one app**, `apps/agent`: one process, one port (3333) serving the API (SSE) and the chat UI (`apps/web`, a Vite SPA). The eval viewer (`apps/eval`) stays a separate UI. One engine, two bindings: **Home** (chat, optional web) and **Workspace** (folder-bound coding tools).
 
 Before changing code, read [AGENTS.md](./AGENTS.md): ownership and lint-enforced boundaries, where code goes, naming, module design, and Nx conventions.
 
@@ -12,9 +12,10 @@ Before changing code, read [AGENTS.md](./AGENTS.md): ownership and lint-enforced
 | -------------- | --------------------- | -------------------------------------------------------------------------------------------- |
 | Domain types   | `@agent/agent-models` | `Run`, `Thread`, `AgentEvent`, `HOME_MODE` / `WORKSPACE_MODE`, chat shapes                   |
 | Runtime (pure) | `@agent/agent-core`   | `runLoop`, `RunManager`, tools, model invoke/stream, system prompt — **no HTTP, DOM, or DB** |
-| Transport      | `apps/api`            | Express: `/api/agent/*`, disk thread store, voice STT proxy                                  |
-| UI             | `apps/web`            | Chat UI + SSE via `thread-session` (threads from API catalog)                                 |
-| Local eval     | `apps/cli`            | Thin script calling core directly                                                            |
+| Host state     | `@agent/agent-service` | `createAgentService`: stores, runs, memory, skills, System 1, traces                        |
+| Transport      | `@agent/agent-http`   | Express: `/api/agent/*` from the protocol table, access, voice proxy, static UI              |
+| App            | `apps/agent`          | The `agent` binary: `serve`, `web`, `run` (isolated local run), `eval`                        |
+| UI             | `apps/web`            | Vite SPA chat UI + SSE via `thread-session`; built into `apps/agent`                         |
 
 ### Request flow (chat)
 
@@ -60,7 +61,7 @@ Tools are registered in `@agent/agent-core` and filtered per run:
 
 ### Context, budgets, and sub-agents
 
-- **Window:** each thread budgets against **260K** (default) or the **model's full size** (composer toggle, stored as `threads.context_window_mode`). Resolved once in `resolveContextBudget` (`apps/api/src/models/model-runtime.ts`) from `resolveContextWindow` (`agent-models/context.ts`).
+- **Window:** each thread budgets against **260K** (default) or the **model's full size** (composer toggle, stored as `threads.context_window_mode`). Resolved once in `resolveContextBudget` (`packages/agent-service/src/lib/models/model-runtime.ts`) from `resolveContextWindow` (`agent-models/context.ts`).
 - **Compaction between runs** starts at `compactAtRatio` (65%) of the input budget or `compactAtTokens` (100k), whichever is lower, and cuts older turns until history fits the lower of `compactToRatio` (25%) and `compactToTokens` (50k) (`compactionMarks` in `agent-models/context.ts`), and always below the in-run low mark. A larger window does not raise what a run starts with.
 - **Carry-over:** tool results made before a run starts stay in full newest-first up to `carryOverToolTokens` (40k); older ones become cards.
 - **Inside a run** (`agent-core/context/residency.ts`, `loop/residency-pass.ts`): one budget on the whole prompt, derived from the window (`inRunMarks`): a high mark at `inRunHighRatio` (80%) of the input budget and a low mark at `inRunLowShare` (70%) of it (192k / 134k on 260k). Below the high mark nothing leaves, so the prompt only grows and its prefix stays cacheable. Past it, one pass goes down to the low mark, cheapest loss first: superseded copies, card-only steps, other results (searches, commands), file views read once, diffs, and files the model already read back last; if that is not enough, the oldest steps fold into one extractive recap. Removed results become `(evicted)` cards with a sha for `recall`; an unchanged `read_file` re-read returns a pointer. Optional `inRunHighTokens` sets an absolute ceiling (for a provider without prompt caching).
@@ -119,13 +120,15 @@ Host-run API (typical dev) — see [.env.example](./.env.example):
 | `VOICE_TTS_VOICE`                | Kokoro voice (default `af_heart`)                                   |
 | `VOICE_TTS_SPEED`                | Speech speed 0.5–2.0 (default `1`)                                  |
 
-Web app (optional override):
+Web app (optional, inlined at build time; the UI always talks to its own origin):
 
-| Variable                     | Purpose                                                        |
-| ---------------------------- | -------------------------------------------------------------- |
-| `NEXT_PUBLIC_API_BASE`       | API origin (default `http://localhost:3333`)                   |
-| `NEXT_PUBLIC_VAD_ASSET_BASE` | Speaches dictation: Silero VAD worklet/model (default jsDelivr) |
-| `NEXT_PUBLIC_ORT_WASM_BASE`  | Speaches dictation: onnxruntime-web wasm (default jsDelivr)    |
+| Variable                | Purpose                                                         |
+| ----------------------- | --------------------------------------------------------------- |
+| `VITE_VAD_ASSET_BASE`   | Speaches dictation: Silero VAD worklet/model (default jsDelivr) |
+| `VITE_ORT_WASM_BASE`    | Speaches dictation: onnxruntime-web wasm (default jsDelivr)     |
+| `VITE_API_PROXY_TARGET` | Dev only: where the Vite dev server proxies `/api` (default `http://localhost:3333`) |
+
+**Access:** the browser is admitted only as the server's own page (`Sec-Fetch-Site: same-origin`, exact `Origin`); local processes send the token from `$AGENT_HOME/api-token`. There is no CORS (`CORS_ORIGIN` and `NEXT_PUBLIC_API_BASE` are retired).
 
 Docker-only overrides: [.env.docker.example](./.env.docker.example) — see [docker/README.md](./docker/README.md). **Compose does not run Ollama**; it provides Redis + Speaches.
 
@@ -141,14 +144,23 @@ npm install
 docker compose --profile cpu up -d
 # Optional: docker compose --env-file .env.docker up -d
 
-# Terminal 1 — API (port 3333)
-npx nx run @agent/api:serve
+# Daily use: build, then API + chat UI on one port, opens the browser
+npm start                     # → http://localhost:3333
 
-# Terminal 2 — Web (Next.js)
-npx nx run @agent/web:dev
+# Development: Vite (hot reload) on 4200 proxying /api to `agent serve` on 3333
+npm run dev                   # → http://localhost:4200
+
+# Headless API, a one-shot isolated run, the eval CLI (after a build)
+node apps/agent/dist/main.js serve --no-ui [--home <dir>] [--port 3333] [--host localhost]
+node apps/agent/dist/main.js run "What is 2+2?" [--workspace <dir>] [--ask]
+node apps/agent/dist/main.js eval up      # eval API on a free port, recorded in <evalHome>/server.json (run/gate read it)
 ```
 
-Open the web app URL printed by Next (often `http://localhost:4200` or `3000` — check Nx output).
+`agent` loads the repo's `.env.local` / `.env` itself (never over variables already set) and runs from the repo root, so built-in skills and the harness version resolve. Requires Node 24+.
+
+**One server per home.** A running server records itself in `AGENT_HOME/server.json`. A second `npm start` / `agent web` / `agent serve` on the same home prints that server's URL (and opens it), warns when it runs older code, and exits instead of starting a second server. Ctrl+C stops gracefully: new runs are refused, running ones are cancelled and saved (up to 10 s), then the file is removed; a second Ctrl+C exits at once.
+
+**Queued messages live on the host.** A message sent while a run is going is kept in `sessions/<threadId>/queued.json` (one per thread; a new one replaces it). The host starts it when the run settles, so it survives a reload and shows in every tab. A refused start keeps it queued with the reason. After a restart it is never sent by itself.
 
 ### Verify web search APIs (CLI)
 
@@ -186,11 +198,11 @@ Use `npx nx` (npm workspaces + package-lock.json):
 # Typecheck / build affected libs after changing agent packages
 npx nx run @agent/agent-core:typecheck
 npx nx run @agent/agent-models:typecheck
-npx nx run @agent/api:typecheck
+npx nx run @agent/agent-http:typecheck
 npx nx run @agent/web:lint
 
 npx nx run @agent/agent-core:build
-npx nx run @agent/api:build
+npx nx run @agent/agent:build        # bundles apps/agent and embeds the web dist as dist/ui
 npx nx run @agent/web:build
 
 # Lint / test (as configured)
@@ -224,8 +236,9 @@ npx nx affected -t typecheck build lint test
 | Tool definitions          | `packages/agent-core/src/lib/tools/web/tools.ts`, `skills.ts`                    |
 | System prompt             | `packages/agent-core/src/lib/prompts/system-prompt.ts`                           |
 | Home / Workspace profiles | `packages/agent-models/src/lib/mode.ts`                                          |
-| API routes                | `apps/api/src/<topic>/<topic>.routes.ts` (runs, threads, memory, models, skills) |
-| Voice STT proxy           | `apps/api/src/voice/voice.routes.ts`                                             |
+| API routes                | `packages/agent-http/src/lib/<topic>/<topic>.routes.ts` (runs, threads, memory, models, skills) |
+| Voice STT proxy           | `packages/agent-http/src/lib/voice/voice.routes.ts`                              |
+| App commands              | `apps/agent/src/main.ts` (`serve`, `web`, `run`, `eval`)                         |
 | Web SSE client            | `apps/web/src/api/agent-client.ts`                                               |
 | Web thread session        | `apps/web/src/features/conversation/thread-session.ts` (hook: `use-agent-run.ts`) |
 | Event → UI state          | `apps/web/src/features/conversation/chat-store.ts`                               |
@@ -257,7 +270,7 @@ Client tool wiring (`apps/web/src/api/agent-client.ts`):
    - Always on → `HOME_MODE.globalTools` or `WORKSPACE_MODE.globalTools` (merged in `runs.routes.ts`).
 4. **System prompt** — per-tool guardrails are injected from `guidance` in `buildSystemPrompt()`. Add policy in `system-prompt.ts` only when it is cross-tool behavior.
 5. **UI** — tool lifecycle events (`tool.started` / `completed` / `failed`) are generic in `chat-store.ts`; no change needed unless you add new event types.
-6. **Validate** — `npx nx run @agent/agent-core:typecheck` and `@agent/api:typecheck`.
+6. **Validate** — `npx nx run @agent/agent-core:typecheck` and `@agent/agent-http:typecheck`.
 
 External HTTP for tools belongs in core modules (e.g. `tools/web/router.ts`), not in Express routes.
 

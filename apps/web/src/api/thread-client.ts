@@ -7,7 +7,7 @@ import type {
   ThreadKind,
 } from '@agent/agent-models';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3333';
+import { api } from './client';
 
 async function readError(res: Response, fallback: string): Promise<string> {
   const body = await res.json().catch(() => ({}));
@@ -23,16 +23,15 @@ export async function pickWorkspaceFolder(
 ): Promise<string | null> {
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}/api/agent/workspace/pick`, {
-      method: 'POST',
+    res = await api.request('workspace.pick', { init: {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
         initialDir?.trim() ? { initialDir: initialDir.trim() } : {},
       ),
-    });
+    } });
   } catch {
     throw new Error(
-      `Cannot reach the API at ${API_BASE}. Start it with nx serve @agent/api, then try again.`,
+      'Cannot reach the agent host. Start it with npm start, then try again.',
     );
   }
   if (res.status === 204) return null;
@@ -46,7 +45,7 @@ export async function pickWorkspaceFolder(
 }
 
 export async function listThreads(): Promise<Thread[]> {
-  const res = await fetch(`${API_BASE}/api/agent/threads`);
+  const res = await api.request('threads.list');
   if (!res.ok) {
     throw new Error(
       await readError(res, `Failed to list threads: ${res.status}`),
@@ -61,8 +60,7 @@ export async function createThread(
   model: string,
   options?: { kind?: ThreadKind; workspaceRoot?: string },
 ): Promise<Thread> {
-  const res = await fetch(`${API_BASE}/api/agent/threads`, {
-    method: 'POST',
+  const res = await api.request('threads.create', { init: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       title,
@@ -72,7 +70,7 @@ export async function createThread(
         ? { workspaceRoot: options.workspaceRoot }
         : {}),
     }),
-  });
+  } });
   if (!res.ok) {
     throw new Error(
       await readError(res, `Failed to create thread: ${res.status}`),
@@ -82,7 +80,7 @@ export async function createThread(
 }
 
 export async function fetchThread(id: string): Promise<ThreadDetail | undefined> {
-  const res = await fetch(`${API_BASE}/api/agent/threads/${id}`);
+  const res = await api.request('threads.get', { params: { id } });
   if (res.status === 404) return undefined;
   if (!res.ok) {
     throw new Error(
@@ -102,11 +100,10 @@ export async function patchThread(
     workspaceRoot?: string | null;
   },
 ): Promise<Thread> {
-  const res = await fetch(`${API_BASE}/api/agent/threads/${id}`, {
-    method: 'PATCH',
+  const res = await api.request('threads.update', { params: { id }, init: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(changes),
-  });
+  } });
   if (!res.ok) {
     throw new Error(
       await readError(res, `Failed to update thread: ${res.status}`),
@@ -116,9 +113,7 @@ export async function patchThread(
 }
 
 export async function deleteThread(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/agent/threads/${id}`, {
-    method: 'DELETE',
-  });
+  const res = await api.request('threads.delete', { params: { id } });
   if (!res.ok) {
     throw new Error(
       await readError(res, `Failed to delete thread: ${res.status}`),
@@ -127,7 +122,7 @@ export async function deleteThread(id: string): Promise<void> {
 }
 
 export async function fetchLedger(threadId: string): Promise<LedgerResponse> {
-  const res = await fetch(`${API_BASE}/api/agent/threads/${threadId}/ledger`);
+  const res = await api.request('threads.ledger', { params: { id: threadId } });
   if (!res.ok) {
     throw new Error(
       await readError(res, `Failed to load ledger: ${res.status}`),
@@ -143,7 +138,7 @@ function runIdsQuery(runIds: string[]): string {
 }
 
 export async function fetchRunChanges(threadId: string, runIds: string[]): Promise<RunChanges> {
-  const res = await fetch(`${API_BASE}/api/agent/threads/${threadId}/changes?runIds=${runIdsQuery(runIds)}`);
+  const res = await api.request('threads.changes', { params: { id: threadId }, query: `runIds=${runIdsQuery(runIds)}` });
   if (!res.ok) throw new Error(await readError(res, `Failed to load changes: ${res.status}`));
   return res.json() as Promise<RunChanges>;
 }
@@ -153,19 +148,19 @@ export async function fetchRunFileDiff(
   runIds: string[],
   file: string,
 ): Promise<{ diff: string; truncated: boolean }> {
-  const res = await fetch(
-    `${API_BASE}/api/agent/threads/${threadId}/changes/diff?runIds=${runIdsQuery(runIds)}&path=${encodeURIComponent(file)}`,
-  );
+  const res = await api.request('threads.changeDiff', {
+    params: { id: threadId },
+    query: `runIds=${runIdsQuery(runIds)}&path=${encodeURIComponent(file)}`,
+  });
   if (!res.ok) throw new Error(await readError(res, `Failed to load the diff: ${res.status}`));
   return res.json() as Promise<{ diff: string; truncated: boolean }>;
 }
 
 export async function undoRunChanges(threadId: string, runIds: string[]): Promise<RevertResult> {
-  const res = await fetch(`${API_BASE}/api/agent/threads/${threadId}/changes/undo`, {
-    method: 'POST',
+  const res = await api.request('threads.undoChanges', { params: { id: threadId }, init: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ runIds }),
-  });
+  } });
   if (!res.ok) throw new Error(await readError(res, `Undo failed: ${res.status}`));
   return res.json() as Promise<RevertResult>;
 }

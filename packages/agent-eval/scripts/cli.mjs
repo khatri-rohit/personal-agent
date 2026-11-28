@@ -1,7 +1,7 @@
 /**
  * Bundle src/cli/main.ts (workspace packages resolved to source via the
  * `@agent/source` condition) and run it with the remaining arguments.
- * Same idea as @agent/cli:eval: esbuild + node, no ts runtime needed.
+ * esbuild + node, no ts runtime needed.
  */
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';

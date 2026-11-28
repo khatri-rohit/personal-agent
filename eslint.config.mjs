@@ -7,6 +7,9 @@ export default [
   {
     ignores: [
       '**/dist',
+      '**/dist-cli',
+      '**/.next',
+      '**/next-env.d.ts',
       '**/vite.config.*.timestamp*',
       '**/vitest.config.*.timestamp*',
       '**/test-output',
@@ -21,23 +24,50 @@ export default [
         {
           enforceBuildableLibDependency: true,
           allow: ['^.*/eslint(\\.base)?\\.config\\.[cm]?[jt]s$'],
-          // agent-models ← agent-core ← api/cli; web sees only agent-models.
+          // Tiers from docs/adr/0003 §8: data ← engine ← service ← adapter ← app;
+          // client depends on data only; a UI sees only data + client.
+          // `runtime:core` marks the agent runtime the eval app must never import.
           depConstraints: [
             {
               sourceTag: 'type:data',
               onlyDependOnLibsWithTags: ['type:data'],
             },
             {
-              sourceTag: 'type:logic',
+              sourceTag: 'type:client',
               onlyDependOnLibsWithTags: ['type:data'],
+            },
+            {
+              sourceTag: 'type:engine',
+              onlyDependOnLibsWithTags: ['type:data'],
+            },
+            {
+              // agent-eval: reads the home's files and drives trials through the API as a client.
+              sourceTag: 'type:measure',
+              onlyDependOnLibsWithTags: ['type:data', 'type:client'],
+            },
+            {
+              sourceTag: 'type:service',
+              onlyDependOnLibsWithTags: ['type:data', 'type:engine'],
+            },
+            {
+              sourceTag: 'type:adapter',
+              onlyDependOnLibsWithTags: ['type:data', 'type:engine', 'type:service'],
+            },
+            {
+              sourceTag: 'type:ui',
+              onlyDependOnLibsWithTags: ['type:data', 'type:client'],
             },
             {
               sourceTag: 'type:app',
-              onlyDependOnLibsWithTags: ['type:data', 'type:logic'],
+              onlyDependOnLibsWithTags: ['type:data', 'type:client', 'type:engine', 'type:measure', 'type:service', 'type:adapter'],
             },
             {
               sourceTag: 'scope:web',
-              onlyDependOnLibsWithTags: ['type:data'],
+              onlyDependOnLibsWithTags: ['type:data', 'type:client'],
+            },
+            {
+              sourceTag: 'scope:eval',
+              notDependOnLibsWithTags: ['runtime:core'],
             },
           ],
         },

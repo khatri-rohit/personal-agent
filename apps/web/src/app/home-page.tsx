@@ -1,0 +1,194 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate } from 'react-router';
+import {
+  isWorkspaceKind,
+  normalizeRunPosture,
+  type MessageAttachment,
+} from '@agent/agent-models';
+import { ChatInput } from '@/features/composer/chat-input';
+import { ChatShell } from '@/components/shell/chat-shell';
+import {
+  stashPendingMessage,
+  type ComposerOptions,
+} from '@/api/agent-client';
+import { useThreads } from '@/features/conversation/use-agent-run';
+import { createThread, removeThread } from '@/features/threads/thread-cache';
+import { toastError } from '@/hooks/use-toast';
+import {
+  readStoredComposerPrefs,
+  SERVER_COMPOSER_PREFS,
+  writeStoredComposerLocal,
+  writeStoredComposerModel,
+} from '@/features/composer/ollama-models';
+import { clampChatTitle } from '@/features/threads/thread-title';
+import { formatRelativeTime } from '@/lib/format-relative-time';
+import {
+  folderNameFromRoot,
+  sameWorkspaceRoot,
+  setWorkspaceRoot,
+  useAgentSpace,
+} from '@/features/threads/space-store';
+
+/** Must match ChatInput draft key for the home composer. */
+const HOME_DRAFT_SCOPE = '__home__';
+
+// Server-safe start; stored prefs are applied after mount.
+const defaultOptions = (webSearch: boolean): ComposerOptions => ({
+  webSearch,
+  ...SERVER_COMPOSER_PREFS,
+  posture: 'agent',
+});
+
+function restoreHomeDraft(content: string, attachments?: MessageAttachment[]) {
+  try {
+    localStorage.setItem(
+      `agent:composerDraft:${HOME_DRAFT_SCOPE}`,
+      JSON.stringify({
+        content,
+        attachments: attachments ?? [],
+      }),
+    );
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+export default function HomePage() {
+  const navigate = useNavigate();
+  const { workspaceRoot } = useAgentSpace();
+  const bound = Boolean(workspaceRoot);
+  const threads = useThreads();
+  const [pendingContent, setPendingContent] = useState(false);
+  /** Remount ChatInput after a failed send so it reloads the restored draft. */
+  const [draftEpoch, setDraftEpoch] = useState(0);
+  const [composerOptions, setComposerOptions] = useState<ComposerOptions>(() =>
+    defaultOptions(true),
+  );
+  // Browser storage after mount, so server HTML matches the first render.
+  useEffect(() => {
+    const stored = readStoredComposerPrefs();
+    setComposerOptions((prev) => ({ ...prev, ...stored }));
+  }, []);
+
+  const recentThreads = useMemo(() => {
+    return (threads ?? [])
+      .filter((thread) => {
+        if (thread.title === 'New Chat') return false;
+        if (!workspaceRoot) return !isWorkspaceKind(thread.kind);
+        return (
+          isWorkspaceKind(thread.kind) &&
+          sameWorkspaceRoot(thread.workspaceRoot, workspaceRoot)
+        );
+      })
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, 5);
+  }, [threads, workspaceRoot]);
+
+  return (
+    <ChatShell layout="home">
+      <div className="flex w-full max-w-2xl flex-col gap-9">
+        <div className="w-full space-y-2 text-center">
+          <h1 className="type-hero-title text-foreground/95">
+            {bound
+              ? `Work in ${folderNameFromRoot(workspaceRoot)}`
+              : 'Chat with your agent'}
+          </h1>
+          <p className="type-hero-sub mx-auto max-w-sm text-pretty">
+            {bound
+              ? 'Ask to find, edit, or build in this folder.'
+              : 'Start a conversation, or pick a workspace in the composer.'}
+          </p>
+        </div>
+        <ChatInput
+          key={`${HOME_DRAFT_SCOPE}-${draftEpoch}`}
+          draftScope={HOME_DRAFT_SCOPE}
+          variant="hero"
+          showWorkspacePicker
+          showPostureChips={bound}
+          onSend={async (content, options, attachments) => {
+            setPendingContent(true);
+            try {
+              const thread = await createThread('New Chat', options.model, {
+                kind: bound ? 'workspace' : 'home',
+                ...(bound && workspaceRoot ? { workspaceRoot } : {}),
+              });
+              if (thread.workspaceRoot) setWorkspaceRoot(thread.workspaceRoot);
+              const stashed = stashPendingMessage({
+                content,
+                webSearch: options.webSearch,
+                model: options.model,
+                local: options.local,
+                thinking: options.thinking,
+                posture: bound ? normalizeRunPosture(options.posture) : undefined,
+                attachments,
+                ...(options.skills ? { skills: options.skills } : {}),
+                ...(options.contextWindowMode
+                  ? { contextWindowMode: options.contextWindowMode }
+                  : {}),
+              });
+              if (!stashed) {
+                await removeThread(thread.id);
+                setPendingContent(false);
+                restoreHomeDraft(content, attachments);
+                setDraftEpoch((n) => n + 1);
+                toastError(
+                  'Could not start the chat with those images. Try fewer or smaller ones.',
+                  'Images too large to hand off',
+                );
+                return;
+              }
+              navigate(`/chat/${thread.id}`);
+            } catch {
+              setPendingContent(false);
+              restoreHomeDraft(content, attachments);
+              setDraftEpoch((n) => n + 1);
+              toastError(
+                'Could not create the chat. Your draft was restored - try again.',
+                'Failed to start chat',
+              );
+            }
+          }}
+          isRunning={pendingContent}
+          queuedMessage={null}
+          onSendQueuedNow={() => undefined}
+          onEditQueued={() => null}
+          composerOptions={composerOptions}
+          onComposerOptionsChange={(options) => {
+            const local = options.local === true;
+            setComposerOptions({ ...options, local });
+            writeStoredComposerLocal(local);
+            writeStoredComposerModel(options.model, local);
+          }}
+        />
+        {recentThreads.length > 0 ? (
+          <section aria-label="Recent threads" className="w-full">
+            <p className="type-ui mb-2 font-medium text-muted-foreground">
+              {bound
+                ? `Recent in ${folderNameFromRoot(workspaceRoot)}`
+                : 'Recent in Home'}
+            </p>
+            <ul className="flex flex-col gap-0.5">
+              {recentThreads.map((thread) => (
+                <li key={thread.id}>
+                  <Link
+                    to={`/chat/${thread.id}`}
+                    className="flex items-center gap-3 rounded-md px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent/45 hover:text-foreground"
+                  >
+                    <span className="min-w-0 flex-1 truncate">
+                      {clampChatTitle(thread.title)}
+                    </span>
+                    <span className="type-caption shrink-0 tabular-nums text-muted-foreground">
+                      {formatRelativeTime(thread.updatedAt)}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+      </div>
+    </ChatShell>
+  );
+}

@@ -30,6 +30,7 @@ import { record_finding } from '../tools/record-finding';
 import { createToolRegistry } from '../tools/registry';
 import type { Tool } from '../tools/types';
 import { runLoop } from './loop';
+import { LIFTED_HIGH_CEILING } from './residency-pass';
 import type { ModelCallFn, RunLoopConfig } from './types';
 
 // ---------------------------------------------------------------- workspace
@@ -499,18 +500,27 @@ describe('harness invariants over a reacting model', () => {
   // that starts over the high mark (the host's pre-run compaction could not
   // run) must not make the run trim every step: when a pass cannot reach the
   // low mark, the marks lift by the shortfall and the next pass waits for real
-  // growth. (The recap fold itself, the last resort when results cannot be
-  // removed, is covered in residency.test.ts.)
-  it('I1: a run that starts over the high mark completes and still removes sparingly', async () => {
+  // growth. The lift stops at LIFTED_HIGH_CEILING of the input budget
+  // (residency-pass.ts, f689d7e): at that ceiling a pass on every step the
+  // prompt grows is the designed cost, the lesser one next to a prompt the
+  // window rejects, so sparseness is required only below the ceiling. (The
+  // recap fold itself, the last resort when results cannot be removed, is
+  // covered in residency.test.ts.)
+  it('I1: a run that starts over the high mark completes and removes sparingly below the lifted ceiling', async () => {
     const sizeFolds = (sim: Sim) =>
       of(sim, 'context_compacted_inrun').filter((event) => event.reason === undefined).length;
     expect(sizeFolds(await run('conversation'))).toBe(0);
     const over = await simulate({ facts: 16, batch: 2, record: true }, workspace(16, 20_000), {}, priorConversation(1.05 * SIM_MARKS.high));
     expect(of(over, 'run_finish')[0]?.status).toBe('completed');
     expect(sizeFolds(over)).toBeLessThanOrEqual(Math.ceil(over.steps / REMOVAL_EVERY_STEPS));
-    const removalSteps = new Set(of(over, 'context_evicted').map((event) => event.iteration)).size;
-    expect(removalSteps).toBeGreaterThan(0);
-    expect(removalSteps).toBeLessThanOrEqual(Math.ceil(over.steps / REMOVAL_EVERY_STEPS));
+
+    const ceiling = LIFTED_HIGH_CEILING * (SIM_BUDGET.windowTokens - SIM_BUDGET.outputReserveTokens);
+    const promptAt = new Map(of(over, 'context_shape').map((event) => [event.iteration, event.promptTokens]));
+    const removalSteps = [...new Set(of(over, 'context_evicted').map((event) => event.iteration))];
+    expect(removalSteps.length).toBeGreaterThan(0);
+    // Below the ceiling the lifted marks wait for real growth, as on any run.
+    const belowCeiling = removalSteps.filter((iteration) => (promptAt.get(iteration) ?? 0) < ceiling);
+    expect(belowCeiling.length).toBeLessThanOrEqual(Math.ceil(over.steps / REMOVAL_EVERY_STEPS));
   });
 
   it('uses a real context budget (the shipped derivation for its window)', () => {

@@ -152,7 +152,7 @@ export function useAgentRun(threadId: string) {
     return {
       content: queued.content,
       attachments: queued.attachments,
-      skills: queued.options.skills,
+      skills: queued.skills,
     };
   }, []);
 

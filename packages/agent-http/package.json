@@ -1,0 +1,44 @@
+{
+  "name": "@agent/agent-http",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "@agent/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "nx": {
+    "tags": [
+      "scope:agent",
+      "type:adapter",
+      "runtime:core"
+    ],
+    "targets": {
+      "lint": { "executor": "@nx/eslint:lint", "options": {} },
+      "test": {
+        "options": {
+          "command": "node scripts/run-vitest.mjs run"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@agent/agent-core": "*",
+    "@agent/agent-models": "*",
+    "@agent/agent-service": "*",
+    "express": "^4.21.2",
+    "pino": "^9.5.0",
+    "pino-http": "^10.3.0",
+    "tslib": "^2.3.0"
+  },
+  "devDependencies": {
+    "pino-pretty": "^11.2.2"
+  }
+}

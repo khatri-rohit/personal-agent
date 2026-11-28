@@ -15,16 +15,16 @@ function assetBase(raw: string | undefined): string | null {
 /**
  * Silero VAD assets: AudioWorklet + ONNX model. Pinned to the installed
  * @ricky0123/vad-web version (bump with package.json). Env override points at
- * a self-hosted copy for offline use. Inlined at build time (NEXT_PUBLIC_).
+ * a self-hosted copy for offline use. Inlined at build time (VITE_).
  */
 const VAD_ASSET_BASE =
-  assetBase(process.env.NEXT_PUBLIC_VAD_ASSET_BASE) ??
+  assetBase(import.meta.env.VITE_VAD_ASSET_BASE) ??
   'https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.31/dist/';
 /**
  * onnxruntime wasm must match the bundled onnxruntime-web JS exactly, so the
  * default is built from the runtime's own version (see start()).
  */
-const ORT_WASM_BASE_OVERRIDE = assetBase(process.env.NEXT_PUBLIC_ORT_WASM_BASE);
+const ORT_WASM_BASE_OVERRIDE = assetBase(import.meta.env.VITE_ORT_WASM_BASE);
 
 /** Silero speech probability that opens an utterance. */
 const POSITIVE_SPEECH = 0.5;

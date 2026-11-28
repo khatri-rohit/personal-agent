@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
+import { useLocation, useNavigate } from 'react-router';
 import { Circle, MessageSquare } from 'lucide-react';
 import { Kbd } from '@/components/ui/kbd';
 import { cn } from '@/lib/utils';
@@ -96,8 +96,8 @@ function syncSpaceForThread(threadId: string): void {
  * Hold Ctrl and press ` or Tab to cycle; release Ctrl to navigate.
  */
 export function RecentThreadsSwitcher() {
-  const router = useRouter();
-  const pathname = usePathname();
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [entries, setEntries] = useState<SwitcherEntry[]>([]);
@@ -129,13 +129,13 @@ export function RecentThreadsSwitcher() {
       setOpen(false);
       switcherOpen = false;
       if (id === HOME_RECENT_ID) {
-        if (pathname !== '/') router.push('/');
+        if (pathname !== '/') navigate('/');
         return;
       }
       syncSpaceForThread(id);
-      if (pathname !== `/chat/${id}`) router.push(`/chat/${id}`);
+      if (pathname !== `/chat/${id}`) navigate(`/chat/${id}`);
     },
-    [pathname, router],
+    [pathname, navigate],
   );
 
   const openSwitcher = useCallback(() => {

@@ -26,8 +26,11 @@ import type {
   StartRunOptions,
 } from './types';
 
-/** How long a settled run's events stay for late SSE subscribers; then 404, and the ledger is the truth. */
+/** How long a settled run's events stay for late SSE subscribers; after that only its `run.settled` is kept. */
 const RUN_HANDLE_TTL_MS = 5 * 60_000;
+
+/** Cleared runs whose `run.settled` this process still answers with (newest kept). */
+const MAX_SETTLED_ENDS = 2_000;
 
 /** How long a new run waits for a cancelled or finishing run on its thread to settle. */
 const PREDECESSOR_WAIT_MS = 10_000;
@@ -77,6 +80,12 @@ function emptyResult(runId: string, content = ''): RunLoopResult {
  */
 export class RunManager {
   private runs = new Map<string, RunHandle>();
+  /**
+   * The last event of each cleared run, so a late subscriber (a reload, a
+   * background tab) gets the end instead of a 404: the ledger already holds
+   * everything else. Lost on restart, when a run id is simply unknown.
+   */
+  private settledEnds = new Map<string, AgentEvent>();
 
   /**
    * Hold `threadId` for a new run. Busy while another run on it is being set
@@ -415,7 +424,8 @@ export class RunManager {
 
   /**
    * Buffered events after `fromSeq`, plus a live subscription until the run
-   * settles. Null when the run is unknown (never existed, or cleared).
+   * settles. A cleared run replays only its `run.settled`. Null when this
+   * process never ran it.
    */
   subscribe(
     runId: string,
@@ -423,7 +433,11 @@ export class RunManager {
     subscriber: EventSubscriber,
   ): { replay: AgentEvent[]; live: boolean; unsubscribe: () => void } | null {
     const handle = this.runs.get(runId);
-    if (!handle) return null;
+    if (!handle) {
+      const end = this.settledEnds.get(runId);
+      if (!end) return null;
+      return { replay: end.seq > fromSeq ? [end] : [], live: false, unsubscribe: () => undefined };
+    }
     const replay = handle.emitter.getEventsFromSeq(fromSeq);
     if (handle.phase === 'settled') {
       return { replay, live: false, unsubscribe: () => undefined };
@@ -435,18 +449,41 @@ export class RunManager {
     };
   }
 
+  /**
+   * Stopping the process: cancel every run that has not settled and wait up
+   * to `timeoutMs` for all of them to write their last rows. True if they did.
+   */
+  drain(timeoutMs: number): Promise<boolean> {
+    const open = [...this.runs.values()].filter((handle) => handle.phase !== 'settled');
+    for (const handle of open) this.cancel(handle.runId);
+    return waitForAll(
+      open.map((handle) => handle.done),
+      timeoutMs,
+    );
+  }
+
   private clear(runId: string): void {
-    this.runs.get(runId)?.emitter.dispose();
+    const handle = this.runs.get(runId);
+    const end = handle?.emitter.lastEvent;
+    // A claim released before it started never had a stream; nothing to answer.
+    if (end?.type === 'run.settled') {
+      this.settledEnds.set(runId, end);
+      if (this.settledEnds.size > MAX_SETTLED_ENDS) {
+        const oldest = this.settledEnds.keys().next().value;
+        if (oldest !== undefined) this.settledEnds.delete(oldest);
+      }
+    }
+    handle?.emitter.dispose();
     this.runs.delete(runId);
   }
 }
 
 /** True once every run has settled; false if any is still going after the wait. */
-async function waitForAll(done: Promise<RunEnd>[]): Promise<boolean> {
+async function waitForAll(done: Promise<RunEnd>[], timeoutMs = PREDECESSOR_WAIT_MS): Promise<boolean> {
   if (done.length === 0) return true;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<false>((resolve) => {
-    timer = setTimeout(() => resolve(false), PREDECESSOR_WAIT_MS);
+    timer = setTimeout(() => resolve(false), timeoutMs);
     timer.unref?.();
   });
   const settled = await Promise.race([

@@ -370,3 +370,23 @@ export {
   parseVoiceCapabilities,
   parseVoiceProvider,
 } from './lib/voice.js';
+
+export { SERVER_FILE, parseServerInfo, serverOrigin, type ServerInfo } from './lib/server.js';
+export {
+  parseQueuedMessage,
+  parseQueuedRunRequest,
+  type QueuedMessage,
+  type QueuedRunRequest,
+} from './lib/queue.js';
+
+export {
+  API_MOUNTS,
+  API_ROUTES,
+  parseVersionInfo,
+  PROTOCOL_VERSION,
+  type VersionInfo,
+  type ApiMount,
+  type ApiRoute,
+  type ApiRouteName,
+  type HttpMethod,
+} from './lib/protocol.js';

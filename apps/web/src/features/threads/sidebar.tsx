@@ -1,7 +1,6 @@
 'use client';
 
-import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { Link, useLocation, useNavigate } from 'react-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
@@ -80,8 +79,8 @@ function sortThreadsByRecency(threads: Thread[]): Thread[] {
 
 export function Sidebar({ collapsed, onCollapse, onExpand }: SidebarProps) {
   const threads = useThreads();
-  const pathname = usePathname();
-  const router = useRouter();
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
   const { workspaceRoot, workspaceOrder, collapsedFolders } = useAgentSpace();
   const [dragRoot, setDragRoot] = useState<string | null>(null);
   const [dropTargetRoot, setDropTargetRoot] = useState<string | null>(null);
@@ -188,7 +187,7 @@ export function Sidebar({ collapsed, onCollapse, onExpand }: SidebarProps) {
 
   const openBlankHome = () => {
     setWorkspaceRoot(null);
-    router.push('/');
+    navigate('/');
   };
 
   // Re-entry guard: the folder picker POST opens a native dialog on the API
@@ -201,12 +200,12 @@ export function Sidebar({ collapsed, onCollapse, onExpand }: SidebarProps) {
       const selected = await pickWorkspaceFolder(workspaceRoot);
       if (!selected) return;
       setWorkspaceRoot(selected);
-      router.push('/');
+      navigate('/');
     } catch (error) {
       toastError(
         error instanceof Error
           ? error.message
-          : 'Could not open the folder picker. The dialog runs on the API host — start @agent/api on this machine and try again.',
+          : 'Could not open the folder picker. The dialog runs on the agent host — start it on this machine (npm start) and try again.',
         'Folder picker failed',
       );
     } finally {
@@ -216,7 +215,7 @@ export function Sidebar({ collapsed, onCollapse, onExpand }: SidebarProps) {
 
   const openBlankForFolder = (root: string) => {
     setWorkspaceRoot(root);
-    router.push('/');
+    navigate('/');
   };
 
   const moveWorkspace = (fromRoot: string, toRoot: string) => {
@@ -259,7 +258,7 @@ export function Sidebar({ collapsed, onCollapse, onExpand }: SidebarProps) {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Link
-                  href="/"
+                  to="/"
                   aria-label="New chat"
                   className={railBtn}
                   onClick={() => setWorkspaceRoot(null)}
@@ -280,7 +279,7 @@ export function Sidebar({ collapsed, onCollapse, onExpand }: SidebarProps) {
           <div className="shrink-0 px-2 pt-2">
             <header className="flex items-center justify-between gap-2 px-1 pb-2.5">
               <Link
-                href="/"
+                to="/"
                 className="type-ui truncate text-sm font-semibold tracking-tight text-foreground hover:text-foreground"
               >
                 Personal Assistant
@@ -303,7 +302,7 @@ export function Sidebar({ collapsed, onCollapse, onExpand }: SidebarProps) {
             </header>
             <div className="mb-2 flex items-center gap-1">
               <Link
-                href="/"
+                to="/"
                 onClick={() => setWorkspaceRoot(null)}
                 className="type-ui inline-flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground"
               >
@@ -657,8 +656,8 @@ function ThreadItem({
   active: boolean;
   dense?: boolean;
 }) {
-  const pathname = usePathname();
-  const router = useRouter();
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
   const isPending = thread.title === 'New Chat';
   const displayTitle = isPending ? '' : clampChatTitle(thread.title);
   const isPinned = Boolean(thread.pinned);
@@ -680,7 +679,7 @@ function ThreadItem({
   const handleDelete = async () => {
     await removeThread(thread.id);
     if (pathname === `/chat/${thread.id}`) {
-      router.push('/');
+      navigate('/');
     }
   };
 
@@ -788,7 +787,7 @@ function ThreadItem({
         )}
       >
         <Link
-          href={`/chat/${thread.id}`}
+          to={`/chat/${thread.id}`}
           className={cn(
             'flex min-w-0 flex-1 items-center gap-1.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
             // pr-12 reserves the shared timestamp/menu slot so the title

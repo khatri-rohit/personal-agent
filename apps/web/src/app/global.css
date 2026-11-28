@@ -50,9 +50,9 @@
 :root {
   --scrollbar-size: 8px;
 
-  /* Typography — next/font injects --font-ui / --font-code on <html> */
-  --font-ui: ui-sans-serif, system-ui, sans-serif;
-  --font-code: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  /* Typography — self-hosted Inter and JetBrains Mono (@fontsource, main.tsx) */
+  --font-ui: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
   --font-sans: var(--font-ui), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-code), ui-monospace, monospace;
 

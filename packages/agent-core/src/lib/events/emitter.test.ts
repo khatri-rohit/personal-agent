@@ -17,6 +17,19 @@ describe('EventEmitter', () => {
     expect(emitter.currentSeq).toBe(MAX_BUFFERED_EVENTS + extra);
   });
 
+  it('drops a message\'s deltas once it completes, and keeps everything else', () => {
+    const emitter = new EventEmitter();
+    emitter.emit({ type: 'assistant.started', runId: 'r1', messageId: 'm1' });
+    emitter.emit({ type: 'assistant.delta', runId: 'r1', messageId: 'm1', delta: 'Hel' });
+    emitter.emit({ type: 'assistant.delta', runId: 'r1', messageId: 'm1', delta: 'lo' });
+    emitter.emit({ type: 'assistant.started', runId: 'r1', messageId: 'm2' });
+    emitter.emit({ type: 'assistant.delta', runId: 'r1', messageId: 'm2', delta: 'Wor' });
+    emitter.emit({ type: 'assistant.completed', runId: 'r1', messageId: 'm1', content: 'Hello' });
+
+    expect(emitter.getBuffer().map((e) => e.seq)).toEqual([1, 4, 5, 6]);
+    expect(emitter.lastEvent?.type).toBe('assistant.completed');
+  });
+
   it('replays only seqs after fromSeq', () => {
     const emitter = new EventEmitter();
     emitter.emit({ type: 'run.settled', runId: 'r1' });
