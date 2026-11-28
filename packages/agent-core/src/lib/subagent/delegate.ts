@@ -16,19 +16,19 @@ const EFFORT_TEXT = THOROUGHNESS.map((level) => `${level} (${THOROUGHNESS_TOOL_C
 /** The paths rule as the run applies it (flags.siblingBriefs: named to siblings, not refused). */
 function pathsRule(siblingBriefs: boolean): string {
   return siblingBriefs
-    ? 'Name the files or folders a brief covers in paths: sub-agents running at the same time see each other\'s objective and paths, so they do not take the same question.'
+    ? 'Name the files or folders a brief covers in paths. Sub-agents running at the same time see each other\'s objective and paths, so they do not take the same question.'
     : 'Name the files or folders a brief covers in paths: a brief whose paths overlap a running sub-agent\'s is refused.';
 }
 
 function describe(profiles: SubagentProfile[], siblingBriefs: boolean): string {
-  return `Hand a self-contained side task to a specialist sub-agent with its own context. You get back a short report, not its raw tool output.
+  return `Hand a self-contained side task to a specialist sub-agent with its own context. You get back a short report, not its raw tool results.
 
 Profiles:
 ${profiles.map((profile) => `- ${profile.name}: ${profile.description}`).join('\n')}
 
 Rules:
 - Delegate wide reading (more than ~5 files, several searches, or web research) to explore. Answer it yourself when a couple of reads will do.
-- One explore per question. Start several only for clearly separate areas (different folders or files), and split them by area, never by sections of your answer: children with overlapping scope read the same files and cost the run several times over.
+- One explore per question. Start several only for separate areas (different folders or files). Split them by area, never by sections of your answer. Sub-agents with overlapping scope read the same files and cost the run several times over.
 - Effort is a budget: ${EFFORT_TEXT}. The child stops at it. A new brief gets at most medium (explore's default); thorough is granted when you resume a sub-agent whose report came back partial.
 - ${pathsRule(siblingBriefs)}
 - The child's findings join your record; its report lists open questions. Check those gaps, not its findings.

@@ -22,6 +22,6 @@ describe('workspace prompt and the harness card flag', () => {
       expect(JSON.stringify(tool.definition), name).not.toMatch(/harness card/i);
     }
     // record_finding is still offered, worded without the card.
-    expect(prompt).toContain('write the answer from your recorded findings');
+    expect(prompt).toContain('Write the answer from your recorded findings');
   });
 });

@@ -23,5 +23,5 @@ Target: small, named, locally consistent. Avoid these patterns:
 - Comment narrator: comments that restate the next line.
 - Duplicate-to-look-structured: copy-paste types or config "for clarity."
 
-When emitting code in chat (not only when editing files), the same law applies.
+When you write code in an answer (not only in files), the same law applies.
 `.trim();

@@ -62,7 +62,7 @@ export function createMemoryTool(store: MemoryToolStore): Tool {
         'On a workspace run, a lesson that should apply the next time this folder is open.',
       ],
       whenNotToUse: [
-        'Ordinary chat that is only true for this question.',
+        'Small talk, or a fact true only for this question.',
         'Secrets, API keys, passwords, or tokens.',
         'Project-file edits — that is not this tool.',
         'Facts that belong in another folder — notes are scoped to the open workspace.',

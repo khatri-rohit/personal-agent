@@ -390,3 +390,15 @@ export {
   type ApiRouteName,
   type HttpMethod,
 } from './lib/protocol.js';
+export {
+  GLOSSARY,
+  HEDGE_WORDS,
+  FILLER_PHRASES,
+  STYLE_MAX_SENTENCE_WORDS,
+  answerStyleMetrics,
+  checkStyle,
+  proseOf,
+  sentencesOf,
+  type AnswerStyleMetrics,
+  type StyleIssue,
+} from './lib/style.js';

@@ -334,7 +334,7 @@ export function createPlanTools(store: PlanStore): Tool[] {
       function: {
         name: 'plan',
         description:
-          'Update this thread\'s plan journal. Works in Ask and Agent. set_goal / note / decide while discussing. finalize with the complete plan when the user says implement, go, or lock it. revise if they change a locked plan. clear only to start over.',
+          'Update this thread\'s plan journal. It works in Ask and Agent. Use set_goal, note and decide while you discuss. Use finalize with the complete plan when the user says implement, go or lock it. Use revise if they change a locked plan. Use clear only to start over.',
         parameters: {
           type: 'object',
           properties: {
@@ -454,7 +454,7 @@ export function createPlanTools(store: PlanStore): Tool[] {
             scope: {
               type: 'object',
               description:
-                'What the user\'s current request covers. Set it when they ask for part of the plan ("phase 2 only", "phases 1 and 2") or the whole plan (all=true). Change it when a new request covers other items; todos may then be empty.',
+                'What the user\'s current request covers. Set it when they ask for part of the plan ("phase 2 only", "phases 1 and 2") or the whole plan (all=true). Change it when a new request covers other items. The list can then be empty.',
               properties: {
                 label: {
                   type: 'string',
@@ -491,7 +491,7 @@ export function createPlanTools(store: PlanStore): Tool[] {
       usage: [
         'Create the list from the final plan, then keep it current while you edit and verify.',
         'Exactly one in_progress item. Do not finish the run with open todos in the current scope unless you are stuck.',
-        'When the user asks for part of the plan, set scope to exactly those items and do only them; when they are done, stop and list what remains. Never widen the scope yourself.',
+        'When the user asks for part of the plan, set scope to exactly those items and do only them. When they are done, stop and list what remains. Never widen the scope yourself.',
       ],
     },
     risk: 'write',

@@ -29,7 +29,7 @@ export function createSessionSearchTool(search: SessionSearch): Tool {
       function: {
         name: 'session_search',
         description:
-          'Keyword search over earlier conversations (user and assistant messages, not tool output). Returns thread, position and a snippet per match.',
+          'Keyword search over earlier conversations (user and assistant messages, not tool results). Returns thread, position and a snippet per match.',
         parameters: {
           type: 'object',
           properties: {
@@ -49,7 +49,7 @@ export function createSessionSearchTool(search: SessionSearch): Tool {
     },
     guidance: {
       whenToUse: [
-        'The user refers to something discussed in another chat ("like we did last week", "that bug from before").',
+        'The user refers to something discussed in another thread ("like we did last week", "that bug from before").',
         'A decision or fact from an earlier thread would change the answer now.',
       ],
       whenNotToUse: [

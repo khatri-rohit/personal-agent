@@ -52,7 +52,7 @@ export const offer_choice: Tool = {
     function: {
       name: 'offer_choice',
       description:
-        'Pause for the human to steer. Show two or more options as checkboxes (they may pick several) plus an extra text field. Use when approaches or attributes would change the work. Do not use to ask permission to edit or run commands.',
+        'Pause for the human to steer. Show two or more options as checkboxes (they can pick several) plus an extra text field. Use when approaches or attributes would change the work. Do not use to ask permission to edit or run commands.',
       parameters: {
         type: 'object',
         properties: {
@@ -76,7 +76,7 @@ export const offer_choice: Tool = {
               required: ['id', 'label'],
               additionalProperties: false,
             },
-            description: 'At least two options. The human may check any subset.',
+            description: 'At least two options. The human can check any subset.',
           },
         },
         required: ['question', 'options'],
@@ -101,7 +101,7 @@ export const offer_choice: Tool = {
     ],
     usage: [
       'Pass a short question and at least two options with stable ids.',
-      'The human may check several options and/or type extra direction. Follow all of that.',
+      'The human can check several options and type extra direction. Follow all of it.',
       'If they skip, the run ends with a summary of the options for them to decide from. Never pick one yourself.',
     ],
   },

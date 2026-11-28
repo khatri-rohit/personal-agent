@@ -74,7 +74,7 @@ Tools are registered in `@agent/agent-core` and filtered per run: the mode's `gl
 
 Skills are [Agent Skills](https://agentskills.io) folders (`<name>/SKILL.md` with `name` and `description` frontmatter). They are read from, lowest to highest precedence:
 
-1. Built-ins: `packages/agent-core/skills` (`patch-and-verify`, `home-research`).
+1. Built-ins: `packages/agent-core/skills` (`patch-and-verify`, `home-research`, `plain-technical-english`).
 2. `~/.agents/skills` (where `npx skills add <owner/repo> -g` installs).
 3. `$AGENT_HOME/skills` (your own packs).
 4. `<workspace>/.agents/skills`, for a bound workspace. It only adds new names and never replaces one from above.
@@ -88,6 +88,14 @@ Invalid or shadowed packs are listed with a reason in the Skills panel and never
 Typing `/` in the composer names a skill; typing `@` attaches another thread (shown as a chip with a message icon). Both are **references**: the message carries the skill's name and the thread's id, and the model loads them with its tools: `load_skill` for the skill, `read_thread` for the thread, and only the pages it needs. Each load is an ordinary tool call in the ledger, shown as "Ran skill …" or "Read thread …". After compaction folds the turns that used them, the brief names those skills and threads so the model can load them again.
 
 Optional packs in this repo live in `skills/` (for example `npx skills add <this-repo> --skill ai-writing-guidelines -g`).
+
+### Writing rules
+
+The harness writes to the model in controlled plain English, adapted from ASD-STE100: one instruction or fact per sentence, sentences of 25 words or fewer, active voice, the condition before the action, no hedges, and one term per concept (the glossary in `packages/agent-models/src/lib/style.ts`). The goal is precision: an instruction with one meaning keeps the model on the request. Code, commands, paths and quoted text keep their exact form.
+
+- `checkStyle` checks text against the rules. `packages/agent-core/src/lib/prompts/plain-style.test.ts` runs it over every system prompt, tool description and guidance line, harness note and sub-agent prompt, so a new long or vague sentence fails the build.
+- The workspace system prompt gives the model the same rules for its own text. The `plain-technical-english` skill holds the full set for answers, plans and reviews; pick it with `/`.
+- Eval run metrics report `answerStyle` (sentence length, hedges, filler, a preamble before the result) and `drift` (repeats the harness answered, results read back, stall nudges), so a style change can be compared run against run.
 
 ### Context and budgets
 
