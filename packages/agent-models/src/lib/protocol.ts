@@ -7,6 +7,8 @@
  * Changing a path or method is a protocol change: bump PROTOCOL_VERSION.
  */
 
+import type { HarnessVersion } from './flags.js';
+
 /** Bumped on any breaking change to a route's path, method or payload. */
 export const PROTOCOL_VERSION = 2;
 
@@ -70,3 +72,30 @@ export const API_ROUTES = {
 } as const satisfies Record<string, ApiRoute>;
 
 export type ApiRouteName = keyof typeof API_ROUTES;
+
+/** `GET /version`: what this process runs and where it writes (a stale API, or one on the wrong home, measures the wrong thing). */
+export type VersionInfo = {
+  harnessVersion: HarnessVersion | null;
+  agentHome: string;
+  /** Absent from servers older than the route table. */
+  protocolVersion?: number;
+};
+
+function parseHarnessVersion(raw: unknown): HarnessVersion | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const { sha, dirty } = raw as Record<string, unknown>;
+  if (typeof sha !== 'string' || !(dirty === null || typeof dirty === 'string')) return null;
+  return { sha, dirty };
+}
+
+/** A `/version` body, or null when it is not one. */
+export function parseVersionInfo(raw: unknown): VersionInfo | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Record<string, unknown>;
+  if (typeof value.agentHome !== 'string') return null;
+  return {
+    harnessVersion: parseHarnessVersion(value.harnessVersion),
+    agentHome: value.agentHome,
+    ...(typeof value.protocolVersion === 'number' ? { protocolVersion: value.protocolVersion } : {}),
+  };
+}

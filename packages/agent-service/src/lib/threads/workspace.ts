@@ -37,7 +37,7 @@ export async function workspaceAllowed(
     agentHome: service.home(),
     root,
     threadRoots: store.listThreads({ includeSubagents: true }).map((thread) => thread.workspaceRoot),
-    env: service.config.env,
+    workspaceRoots: service.config.workspaceRoots,
   });
 }
 

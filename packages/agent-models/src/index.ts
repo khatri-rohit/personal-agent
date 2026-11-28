@@ -373,8 +373,8 @@ export {
 
 export { SERVER_FILE, parseServerInfo, serverOrigin, type ServerInfo } from './lib/server.js';
 export {
-  parseQueueBody,
   parseQueuedMessage,
+  parseQueuedRunRequest,
   type QueuedMessage,
   type QueuedRunRequest,
 } from './lib/queue.js';
@@ -382,7 +382,9 @@ export {
 export {
   API_MOUNTS,
   API_ROUTES,
+  parseVersionInfo,
   PROTOCOL_VERSION,
+  type VersionInfo,
   type ApiMount,
   type ApiRoute,
   type ApiRouteName,

@@ -1,4 +1,4 @@
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -7,12 +7,12 @@ import {
   isSideCallThinking,
   MODEL_SETTING_ROLES,
   type ModelRoleSetting,
-  type ModelSettingRole,
   type ModelSettings,
   type ResolvedModelSettings,
   type SideCallThinking,
 } from '@agent/agent-models';
 
+import { writeFileAtomic } from '../platform/atomic-write';
 import type { ServiceCore } from '../service';
 
 /** What the settings file needs from the service: where the home is, and the env role vars. */
@@ -93,18 +93,8 @@ export async function readModelSettings(host: SettingsHost): Promise<ModelSettin
 
 /** Atomic write: readers never see a partial file; last write wins. */
 export async function writeModelSettings(host: SettingsHost, settings: ModelSettings): Promise<void> {
-  const target = settingsPath(host);
-  const tmp = `${target}.${process.pid}.tmp`;
-  await writeFile(tmp, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-  await rename(tmp, target);
+  await writeFileAtomic(settingsPath(host), JSON.stringify(settings, null, 2) + '\n');
 }
-
-const ENV_ROLE_VARS: Record<ModelSettingRole, 'AGENT_MODEL_FAST' | 'AGENT_MODEL_STRONG' | 'AGENT_MODEL_SUMMARY' | 'TITLE_MODEL'> = {
-  fast: 'AGENT_MODEL_FAST',
-  strong: 'AGENT_MODEL_STRONG',
-  summary: 'AGENT_MODEL_SUMMARY',
-  title: 'TITLE_MODEL',
-};
 
 /**
  * Resolve every role for one run: file > env > the run's own model. The
@@ -129,7 +119,7 @@ export async function resolveModelSettings(
   for (const role of MODEL_SETTING_ROLES) {
     const fileSetting = settings.roles[role];
     if (fileSetting.model !== '') {
-      if (fileSetting.endpoint === 'cloud' && !host.config.env.OLLAMA_API_KEY) {
+      if (fileSetting.endpoint === 'cloud' && !host.config.ollamaApiKey) {
         console.warn(
           `[models] settings role ${role}=${fileSetting.model} needs OLLAMA_API_KEY; falling back`,
         );
@@ -142,7 +132,7 @@ export async function resolveModelSettings(
         continue;
       }
     }
-    const envModel = host.config.env[ENV_ROLE_VARS[role]]?.trim();
+    const envModel = host.config.roleModels[role];
     // Env vars hold cloud ids; on local runs they would not resolve, so the
     // run's own model applies (the pre-settings behavior).
     if (envModel && runEndpoint === 'cloud') {

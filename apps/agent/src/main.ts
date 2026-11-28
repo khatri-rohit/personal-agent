@@ -71,10 +71,7 @@ async function serveCommand(argv: string[], open: boolean): Promise<number> {
     // One server per home: use the one running (its own terminal keeps it alive).
     console.log(`\n  The agent harness for ${result.server.agentHome} is already running (pid ${result.server.pid}): ${url}`);
     if (result.server.port !== port && port !== 0) console.log(`  (on its port ${result.server.port}, not --port ${port})`);
-    const { harnessVersion } = await import('@agent/agent-service');
-    const here = await harnessVersion();
-    const there = result.server.harnessVersion;
-    if (here && there && (here.sha !== there.sha || here.dirty !== there.dirty)) {
+    if (result.runsOtherCode) {
       console.log('  It runs other code than this checkout: stop it (Ctrl+C in its terminal) and start again to run the new code.');
     }
     console.log('');

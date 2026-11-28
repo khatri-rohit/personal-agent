@@ -119,6 +119,7 @@
     ]
   },
   "dependencies": {
+    "@agent/agent-client": "*",
     "@agent/agent-core": "*",
     "@agent/agent-http": "*",
     "@agent/agent-models": "*",

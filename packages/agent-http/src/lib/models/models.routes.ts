@@ -12,13 +12,13 @@ export function modelsRouter(service: AgentService): Router {
   const router = Router();
 
   router.get(API_ROUTES['usage.balance'].path, asyncRoute(async (_req: Request, res: Response) => {
-    if (!capacityEnabled(service.config.env.OLLAMA_API_KEY)) {
+    if (!capacityEnabled(service.config.ollamaApiKey)) {
       res.status(404).json({ error: 'No OLLAMA_API_KEY configured' });
       return;
     }
 
     try {
-      res.json(await getOllamaBalance(service.config.env.OLLAMA_API_KEY));
+      res.json(await getOllamaBalance(service.config.ollamaApiKey));
     } catch (error) {
       if (error instanceof BalanceError) {
         res.status(error.status).json({ error: error.message });
@@ -63,7 +63,7 @@ export function modelsRouter(service: AgentService): Router {
       const config = await getOllamaModelConfig(model, endpoint);
       return res.json({
         ...config,
-        system1Auto: system1AutoFor(service.system1, endpoint, config),
+        system1Auto: system1AutoFor(service.config.system1, endpoint, config),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 
@@ -19,6 +19,7 @@ import {
 } from '@agent/agent-core';
 
 import { sideCallBudget } from '../models/model-settings-store';
+import { writeFileAtomic } from '../platform/atomic-write';
 import type { ServiceCore } from '../service';
 
 /**
@@ -28,7 +29,6 @@ import type { ServiceCore } from '../service';
  * Off the request path; failures only log.
  */
 
-const DEFAULT_IDLE_MS = 10 * 60_000;
 const MIN_NEW_USER_TURNS = 2;
 
 type ReviewInput = {
@@ -83,10 +83,6 @@ async function reviewThinking(
 export function createLearningLoop(service: ServiceCore): LearningLoop {
   const timers = new Map<string, NodeJS.Timeout>();
 
-  function idleMs(): number {
-    const raw = Number(service.config.env.AGENT_LEARNING_IDLE_MS);
-    return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_IDLE_MS;
-  }
 
   function reviewedPath(threadId: string): string {
     return path.join(service.home(), 'learning', `${threadId}.json`);
@@ -106,9 +102,7 @@ export function createLearningLoop(service: ServiceCore): LearningLoop {
     await mkdir(path.dirname(target), { recursive: true });
     // Atomic like every other store: a crash mid-write must not reset the
     // cursor to 0 and re-review the whole thread.
-    const tmp = `${target}.${process.pid}.tmp`;
-    await writeFile(tmp, JSON.stringify({ throughSeq }), 'utf8');
-    await rename(tmp, target);
+    await writeFileAtomic(target, JSON.stringify({ throughSeq }));
   }
 
   async function reviewThread(input: ReviewInput): Promise<void> {
@@ -182,7 +176,7 @@ export function createLearningLoop(service: ServiceCore): LearningLoop {
           error instanceof Error ? error.message : error,
         );
       });
-    }, idleMs());
+    }, service.config.learningIdleMs);
     // Never keeps the process alive on shutdown.
     timer.unref();
     timers.set(input.threadId, timer);

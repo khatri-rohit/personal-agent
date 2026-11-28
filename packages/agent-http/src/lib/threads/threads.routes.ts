@@ -9,7 +9,7 @@ import {
   isWorkspaceKind,
   normalizeRunPosture,
   parseContextWindowMode,
-  parseQueueBody,
+  parseQueuedRunRequest,
   parseThreadKind,
 } from '@agent/agent-models';
 import type { ApiClientKind } from '../platform/access';
@@ -24,7 +24,7 @@ import {
 import { forgetCheckpoints, revertRuns, runChanges, runFileDiff } from '@agent/agent-service';
 import { asyncRoute } from '../platform/http-errors';
 
-import { isQueueStarting, queueMessage, readSettledLastRun, sendQueuedNow } from '@agent/agent-service';
+import { isQueueStarting, queueMessage, readSettledLastRun, sendQueuedNow, takeQueued } from '@agent/agent-service';
 
 export type PickFolderResult =
   | { ok: true; path: string }
@@ -221,22 +221,18 @@ export function threadsRouter(service: AgentService, pickFolder: PickFolder = no
     return res.json(ledger);
   }));
 
-  /** PUT /threads/:id/queue { request, composer? } — the message to send when the run ends (replaces one queued). */
+  /** PUT /threads/:id/queue <run request with a message> — sent when the run ends (replaces one queued). */
   router.put(API_ROUTES['threads.queue'].path, asyncRoute(async (req: Request, res: Response) => {
-    const body = parseQueueBody(req.body, req.params.id);
-    if (typeof body === 'string') return res.status(400).json({ error: body });
-    const result = await queueMessage(service, req.params.id, body);
+    const request = parseQueuedRunRequest(req.body);
+    if (typeof request === 'string') return res.status(400).json({ error: request });
+    const result = await queueMessage(service, req.params.id, request);
     if (!result.ok) return res.status(result.reason === 'not_found' ? 404 : 400).json({ error: result.error });
     return res.json({ queued: result.queued });
   }));
 
   /** DELETE /threads/:id/queue — take the queued message back (into the composer). */
   router.delete(API_ROUTES['threads.takeQueued'].path, asyncRoute(async (req: Request, res: Response) => {
-    const store = await service.threads();
-    if (!store.getThread(req.params.id)) return res.status(404).json({ error: 'Thread not found' });
-    const queued = await store.readQueued(req.params.id);
-    await store.writeQueued(req.params.id, null);
-    return res.json({ queued });
+    return res.json({ queued: await takeQueued(service, req.params.id) });
   }));
 
   /** POST /threads/:id/queue/send { posture? } — stop the run going and send the queued message. */

@@ -1,4 +1,4 @@
-import type { QueuedMessage, RevertResult, RunPosture, StartRunRequest } from '@agent/agent-models';
+import type { RevertResult, StartRunRequest } from '@agent/agent-models';
 import {
   HOME_MODE,
   imageAttachments,
@@ -58,6 +58,7 @@ import {
 } from './run-context';
 import { createSubagentHost } from './subagent-host';
 import { system1EnforceAvailable, system1PortForRun } from './system1-runtime';
+import { startQueued } from './queue';
 import { titleNewThread } from './thread-title';
 
 export type StartRunResult =
@@ -125,7 +126,7 @@ async function startClaimedRun(
   claim: RunClaim,
 ): Promise<StartRunResult> {
   const runId = claim.runId;
-  const accountKey = service.config.env.OLLAMA_API_KEY;
+  const accountKey = service.config.ollamaApiKey;
   if (!(await claim.ready)) {
     return reject('busy', 'The previous run on this thread is still stopping');
   }
@@ -363,9 +364,9 @@ async function startClaimedRun(
   const effortPolicy = buildEffortPolicy(
     modelConfig,
     requestedThinking,
-    system1EnforceAvailable(service.system1, endpoint),
+    system1EnforceAvailable(service.config.system1, endpoint),
   );
-  const system1 = system1PortForRun(service.system1, endpoint, prepared.mode.limits.maxWallMs);
+  const system1 = system1PortForRun(service.config.system1, endpoint, prepared.mode.limits.maxWallMs);
   // Cloud runs share one account: pause on a spent session/week instead of
   // erroring, and steer tighter when behind even weekly pace.
   const capacity =
@@ -436,7 +437,7 @@ async function startClaimedRun(
       ...(thread.workspaceRoot ? { workspaceRoot: thread.workspaceRoot } : {}),
       putBlob: (text) => store.putBlob(threadId, text),
       // Every model call's exact input/output, for the eval viewer. Off: AGENT_RECORD_MODEL_CALLS=0.
-      recordCalls: service.config.env.AGENT_RECORD_MODEL_CALLS !== '0',
+      recordCalls: service.config.recordModelCalls,
       readBlob: (sha256, offset, length) =>
         store.readBlobText(threadId, sha256, offset, length),
       onMessage: async (record, meta) => {
@@ -582,79 +583,3 @@ async function startClaimedRun(
   return { ok: true, runId, ...(restore ? { restore } : {}) };
 }
 
-/**
- * Threads whose queued message is being started now. Process-scoped like the
- * RunManager it guards (one service per process): the ledger reports it so a
- * client that just saw a run settle reads again for the next one.
- */
-const queueStarting = new Set<string>();
-
-export function isQueueStarting(threadId: string): boolean {
-  return queueStarting.has(threadId);
-}
-
-/**
- * Start the thread's queued message, if it has one and nothing runs. A
- * refusal keeps it queued with the reason; there is no retry loop, and a
- * restart never calls this (a queued cloud run is not started unseen).
- */
-export async function startQueued(service: AgentService, threadId: string): Promise<void> {
-  if (queueStarting.has(threadId) || service.closing()) return;
-  queueStarting.add(threadId);
-  try {
-    const store = await service.threads();
-    const queued = await store.readQueued(threadId);
-    // Another send started a run meanwhile: its own settle starts the queue.
-    if (!queued || service.runs.activeRun(threadId)) return;
-    const result = await startThreadRun(service, { threadId, ...queued.request });
-    // Another start holds the thread (a send in flight): that run's settle starts the queue.
-    if (!result.ok && result.reason === 'busy') return;
-    // A newer message queued while this one started stays.
-    const current = await store.readQueued(threadId);
-    if (current?.queuedAt !== queued.queuedAt) return;
-    await store.writeQueued(threadId, result.ok ? null : { ...queued, refused: result.error });
-  } catch (error) {
-    console.error('starting the queued message failed:', error instanceof Error ? error.message : error);
-  } finally {
-    queueStarting.delete(threadId);
-  }
-}
-
-/** Queue a message for the thread (replacing one already queued); starts it at once when nothing runs. */
-export async function queueMessage(
-  service: AgentService,
-  threadId: string,
-  body: Omit<QueuedMessage, 'queuedAt'>,
-): Promise<{ ok: true; queued: QueuedMessage } | { ok: false; reason: 'not_found' | 'invalid'; error: string }> {
-  const store = await service.threads();
-  const thread = store.getThread(threadId);
-  if (!thread) return { ok: false, reason: 'not_found', error: 'Thread not found' };
-  if (thread.parentThreadId) return { ok: false, reason: 'invalid', error: 'Sub-agent threads are read-only' };
-  const queued: QueuedMessage = { ...body, queuedAt: new Date().toISOString() };
-  await store.writeQueued(threadId, queued);
-  // The run may have ended while the client decided to queue.
-  if (!service.runs.activeRun(threadId)) void startQueued(service, threadId);
-  return { ok: true, queued };
-}
-
-/**
- * Send the queued message now: stop the run going (the queue starts once it
- * settles) or, with nothing running, start it. `posture` is the chip as it
- * is now, which wins over the one frozen at enqueue.
- */
-export async function sendQueuedNow(
-  service: AgentService,
-  threadId: string,
-  posture?: RunPosture,
-): Promise<boolean> {
-  const store = await service.threads();
-  const queued = await store.readQueued(threadId);
-  if (!queued) return false;
-  const next: QueuedMessage = { ...queued, request: { ...queued.request, ...(posture ? { posture } : {}) } };
-  delete next.refused;
-  await store.writeQueued(threadId, next);
-  const active = service.runs.activeRun(threadId);
-  if (active) service.runs.cancel(active.runId);
-  else await startQueued(service, threadId);
-  return true;
-}

@@ -38,18 +38,18 @@ import {
 } from './chat-store';
 import { observeRunEvent } from './run-alerts';
 
+/** The queued message as the composer chip shows it. */
 export type QueuedMessage = {
   content: string;
-  options: ComposerOptions;
   attachments?: MessageAttachment[];
-  /** Why the host could not start it; it stays queued. */
-  refused?: string;
-  /**
-   * Held by this tab only: a send that failed to start. Every other queued
-   * message is held by the host, which starts it when the run settles.
-   */
-  local?: true;
-};
+  /** The `/` skill picks, given back on take-back. */
+  skills?: ComposerOptions['skills'];
+} & (
+  /** Held by the host, which starts it when the run settles. */
+  | { held: 'host'; refused?: string }
+  /** Held by this tab only: a send that failed to start; this tab starts it again. */
+  | { held: 'tab'; options: ComposerOptions }
+);
 
 export type ThreadView = {
   messages: Message[];
@@ -68,13 +68,12 @@ const http = { startRun, subscribeRun, cancelRun, resolveChoice, fetchLedger, qu
 function queuedFromLedger(ledger: LedgerResponse): QueuedMessage | null {
   const queued = ledger.queued;
   if (!queued) return null;
-  const saved = (queued.composer ?? {}) as { options?: ComposerOptions };
-  const { content, attachments } = queued.request.message;
+  const { message, skills } = queued.request;
   return {
-    content,
-    // Only `skills` is read back (take-back into the composer).
-    options: saved.options ?? ({} as ComposerOptions),
-    ...(attachments ? { attachments } : {}),
+    held: 'host',
+    content: message.content,
+    ...(message.attachments ? { attachments: message.attachments } : {}),
+    ...(skills ? { skills } : {}),
     ...(queued.refused ? { refused: queued.refused } : {}),
   };
 }
@@ -227,7 +226,7 @@ export function createThreadSession(
 
   /** The host's queued message, or this tab's own (a send that failed to start). */
   function queuedOf(ledger: LedgerResponse): QueuedMessage | null {
-    return queuedFromLedger(ledger) ?? (view.queued?.local ? view.queued : null);
+    return queuedFromLedger(ledger) ?? (view.queued?.held === 'tab' ? view.queued : null);
   }
 
   /** The ledger once the host has started the queued message (it starts right after a settle). */
@@ -250,7 +249,8 @@ export function createThreadSession(
       if (disposed) return;
       const next = ledger.activeRun;
       const queued = queuedOf(ledger);
-      if (queued?.refused && queued.refused !== view.queued?.refused) {
+      const before = view.queued?.held === 'host' ? view.queued.refused : undefined;
+      if (queued?.held === 'host' && queued.refused && queued.refused !== before) {
         toastError(queued.refused, 'Queued message not sent');
       }
       update({
@@ -279,7 +279,7 @@ export function createThreadSession(
       });
     }
     void refreshThreads();
-    if (!busy() && view.queued?.local) void flushQueue();
+    if (!busy() && view.queued?.held === 'tab') void flushQueue();
   }
 
   async function refreshMessages(): Promise<void> {
@@ -345,7 +345,7 @@ export function createThreadSession(
   async function reconcile(): Promise<void> {
     await load();
     void refreshThreads();
-    if (!busy() && view.queued?.local) void flushQueue();
+    if (!busy() && view.queued?.held === 'tab') void flushQueue();
   }
 
   /**
@@ -354,7 +354,7 @@ export function createThreadSession(
    */
   async function start(
     request: Parameters<ThreadTransport['startRun']>[1],
-    unsent?: QueuedMessage,
+    unsent?: Extract<QueuedMessage, { held: 'tab' }>,
   ): Promise<void> {
     update({ starting: true });
     disconnect?.();
@@ -363,7 +363,7 @@ export function createThreadSession(
       const started = await transport.startRun(threadId, request);
       if (started.restore) showRestoreResult(started.restore);
     } catch (error) {
-      update({ starting: false, ...(unsent ? { queued: { ...unsent, local: true } } : {}) });
+      update({ starting: false, ...(unsent ? { queued: unsent } : {}) });
       toastError(errorMessage(error, 'Could not start the run'), 'Send failed');
       // The thread may have changed (a user row is kept; Retry re-runs it).
       await refreshMessages();
@@ -378,7 +378,7 @@ export function createThreadSession(
   /** Start this tab's unsent message (a send that failed to start); the host starts its own queue. */
   async function flushQueue(): Promise<void> {
     const queued = view.queued;
-    if (!queued?.local) return;
+    if (queued?.held !== 'tab') return;
     update({ queued: null });
     await start(
       {
@@ -398,17 +398,17 @@ export function createThreadSession(
     options: ComposerOptions,
     attachments?: MessageAttachment[],
   ): Promise<void> {
-    const message: QueuedMessage = { content, options, ...(attachments ? { attachments } : {}) };
+    const shown = { content, ...(attachments ? { attachments } : {}), ...(options.skills ? { skills: options.skills } : {}) };
     const request = { message: { content, attachments }, ...runRequest(options) };
     if (!busy()) {
-      await start(request, message);
+      await start(request, { ...shown, held: 'tab', options });
       return;
     }
-    update({ queued: message });
+    update({ queued: { ...shown, held: 'host' } });
     try {
-      await transport.queueRun(threadId, request, { options });
+      await transport.queueRun(threadId, request);
     } catch (error) {
-      update({ queued: { ...message, local: true } });
+      update({ queued: { ...shown, held: 'tab', options } });
       toastError(errorMessage(error, 'Could not queue the message'), 'Queue failed');
       return;
     }
@@ -443,7 +443,7 @@ export function createThreadSession(
     const queued = view.queued;
     if (!queued) return;
     // The posture chip as it is now wins over the one frozen at enqueue.
-    if (queued.local) {
+    if (queued.held === 'tab') {
       update({ queued: { ...queued, options: { ...queued.options, posture } } });
       await stop();
       await flushQueue();
@@ -531,7 +531,7 @@ export function createThreadSession(
     takeQueued(): QueuedMessage | null {
       const queued = view.queued;
       update({ queued: null });
-      if (queued && !queued.local) {
+      if (queued?.held === 'host') {
         void transport.takeQueuedRun(threadId).catch((error: unknown) => {
           toastError(errorMessage(error, 'The host still holds the queued message'), 'Take back failed');
         });

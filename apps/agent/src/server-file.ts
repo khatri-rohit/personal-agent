@@ -1,7 +1,15 @@
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { parseServerInfo, SERVER_FILE, serverOrigin, type HarnessVersion, type ServerInfo } from '@agent/agent-models';
+import { createAgentClient } from '@agent/agent-client';
+import {
+  parseServerInfo,
+  parseVersionInfo,
+  SERVER_FILE,
+  serverOrigin,
+  type HarnessVersion,
+  type ServerInfo,
+} from '@agent/agent-models';
 
 /** A server that answered for its home, with the code it runs. */
 export type LiveServer = ServerInfo & { harnessVersion: HarnessVersion | null };
@@ -44,23 +52,24 @@ export async function liveServer(home: string): Promise<LiveServer | null> {
   const info = readInfo(home);
   if (!info || info.pid === process.pid || !pidAlive(info.pid)) return null;
   const key = token(home);
+  const client = createAgentClient({ baseUrl: serverOrigin(info), ...(key ? { token: key } : {}) });
   try {
-    const res = await fetch(`${serverOrigin(info)}/api/agent/version`, {
-      headers: key ? { authorization: `Bearer ${key}` } : {},
-      signal: AbortSignal.timeout(1_500),
-    });
+    const res = await client.request('version', { init: { signal: AbortSignal.timeout(1_500) } });
     if (!res.ok) return null;
-    const body = (await res.json()) as { agentHome?: unknown; harnessVersion?: HarnessVersion | null };
-    if (typeof body.agentHome !== 'string' || path.resolve(body.agentHome) !== path.resolve(home)) return null;
-    return { ...info, harnessVersion: body.harnessVersion ?? null };
+    const version = parseVersionInfo(await res.json());
+    if (!version || path.resolve(version.agentHome) !== path.resolve(home)) return null;
+    return { ...info, harnessVersion: version.harnessVersion };
   } catch {
     return null;
   }
 }
 
-/** Record this process as the home's server (replacing a stale file). */
+/** Record this process as the home's server (replacing a stale file), atomically: a reader never sees half a record. */
 export function writeServerFile(home: string, info: ServerInfo): void {
-  writeFileSync(path.join(home, SERVER_FILE), `${JSON.stringify(info, null, 2)}\n`, 'utf8');
+  const target = path.join(home, SERVER_FILE);
+  const tmp = `${target}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(info, null, 2)}\n`, 'utf8');
+  renameSync(tmp, target);
 }
 
 /** Remove the file if it is still this process's. */

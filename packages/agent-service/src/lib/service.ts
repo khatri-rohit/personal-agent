@@ -13,54 +13,10 @@ import {
   subagentProfileWarnings,
 } from '@agent/agent-core';
 
+import type { AgentConfig } from './config';
 import { createLearningLoop, type LearningLoop } from './memory/learning-loop';
 import { MemoryStore } from './memory/memory-store';
-import { resolveAgentHome } from './platform/agent-home';
-import { system1SettingsFrom, type System1Settings } from './runs/system1-runtime';
 import { openThreadStore, type ThreadStore } from './threads/thread-store';
-
-/**
- * The host settings the service reads, by name. `loadConfig` copies exactly
- * these from the environment once; nothing in the service reads
- * `process.env` for config after that (ADR-0003 §4.1). The engine
- * (agent-core) still reads its own keys, so the caller loads `.env` first.
- */
-export const HOST_ENV_KEYS = [
-  'AGENT_HOME',
-  'AGENT_FLAGS',
-  'AGENT_LEARNING_IDLE_MS',
-  'AGENT_MODEL_FAST',
-  'AGENT_MODEL_STRONG',
-  'AGENT_MODEL_SUMMARY',
-  'TITLE_MODEL',
-  'AGENT_RECORD_MODEL_CALLS',
-  'AGENT_WORKSPACE_ROOTS',
-  'OLLAMA_API_KEY',
-  'OLLAMA_SYSTEMONE_URL',
-  'SYSTEMONE_MODE',
-  'SYSTEMONE_MODEL',
-  'SYSTEMONE_TIMEOUT_MS',
-  'SYSTEMONE_WITH_LOCAL',
-] as const;
-export type HostEnvKey = (typeof HOST_ENV_KEYS)[number];
-/** Raw values, parsed where they are used exactly as before. */
-export type HostEnv = Readonly<Partial<Record<HostEnvKey, string>>>;
-
-export type AgentConfig = Readonly<{
-  env: HostEnv;
-  /** The user's home directory (os.homedir() in production). */
-  homedir: string;
-}>;
-
-/** A frozen snapshot of the host keys in `env`. */
-export function loadConfig(env: Record<string, string | undefined>, homedir: string): AgentConfig {
-  const picked: Partial<Record<HostEnvKey, string>> = {};
-  for (const key of HOST_ENV_KEYS) {
-    const value = env[key];
-    if (value !== undefined) picked[key] = value;
-  }
-  return Object.freeze({ env: Object.freeze(picked), homedir });
-}
 
 /**
  * The host: the one owner of the state that derives from an agent home and
@@ -72,8 +28,6 @@ export interface AgentService {
   readonly config: AgentConfig;
   /** In-memory runs: SSE replay, choices, one active run per thread. */
   readonly runs: RunManager;
-  /** System 1 wiring from config; null when disabled. */
-  readonly system1: System1Settings | null;
   readonly learning: LearningLoop;
   /**
    * The agent home. Every call also re-applies the skill roots (builtin,
@@ -96,8 +50,8 @@ let created = false;
 
 /** Resolved once: AGENT_HOME, else ~/.local/personal-assistant, else the legacy ~/.local/agent if only that exists. */
 function resolveHome(config: AgentConfig): string {
-  const resolved = resolveAgentHome({ env: config.env, homedir: config.homedir });
-  if (config.env.AGENT_HOME) return resolved;
+  if (config.agentHome) return config.agentHome;
+  const resolved = path.join(config.homedir, '.local', 'personal-assistant');
   const legacy = path.join(config.homedir, '.local', 'agent');
   if (!existsSync(resolved) && existsSync(legacy)) return legacy;
   return resolved;
@@ -173,7 +127,7 @@ export function createAgentService(options: { config: AgentConfig }): AgentServi
     return runs.drain(timeoutMs);
   };
 
-  const base: ServiceCore = { config, runs, system1: system1SettingsFrom(config.env), home, threads, memory, closing, close };
+  const base: ServiceCore = { config, runs, home, threads, memory, closing, close };
   return { ...base, learning: createLearningLoop(base) };
 }
 

@@ -1,5 +1,5 @@
 import express, { type Express } from 'express';
-import { API_MOUNTS, API_ROUTES, PROTOCOL_VERSION } from '@agent/agent-models';
+import { API_MOUNTS, API_ROUTES, PROTOCOL_VERSION, type VersionInfo } from '@agent/agent-models';
 
 import { memoryRouter } from './memory/memory.routes';
 import { modelsRouter } from './models/models.routes';
@@ -50,7 +50,7 @@ export function createApp(service: AgentService, logger: Logger, options: AppOpt
   // before a suite (a stale API, or one on the wrong home, measures the wrong thing).
   app.get(`${API_MOUNTS.agent}${API_ROUTES.version.path}`, (_req, res, next) => {
     harnessVersion()
-      .then((version) => res.json({ harnessVersion: version, agentHome: service.home(), protocolVersion: PROTOCOL_VERSION }))
+      .then((version) => res.json({ harnessVersion: version, agentHome: service.home(), protocolVersion: PROTOCOL_VERSION } satisfies VersionInfo))
       .catch(next);
   });
 

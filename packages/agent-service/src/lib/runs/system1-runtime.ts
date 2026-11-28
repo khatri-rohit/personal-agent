@@ -13,8 +13,6 @@ import type {
   System1Mode,
 } from '@agent/agent-models';
 
-import type { HostEnv } from '../service';
-
 /**
  * Host wiring for System 1, from the service config (env keys):
  * - OLLAMA_SYSTEMONE_URL   endpoint; unset = disabled everywhere
@@ -58,7 +56,7 @@ function parseTimeout(raw: string | undefined): number {
 }
 
 /** Read once, when the service is created; null = disabled. */
-export function system1SettingsFrom(env: HostEnv): System1Settings | null {
+export function system1SettingsFrom(env: Record<string, string | undefined>): System1Settings | null {
   const url = env.OLLAMA_SYSTEMONE_URL?.trim();
   const mode = parseMode(env.SYSTEMONE_MODE);
   if (!url || mode === 'off') return null;

@@ -3,7 +3,6 @@ import {
   mkdir,
   open,
   readFile,
-  rename,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -40,6 +39,8 @@ import {
   type ThreadPlan,
 } from '@agent/agent-models';
 import { looksLikeSecret, type SessionSearchHit } from '@agent/agent-core';
+
+import { writeFileAtomic } from '../platform/atomic-write';
 
 const BLOB_INLINE_MAX = 8 * 1024;
 /** Run task records a thread file keeps (oldest leave first); the prompt bounds what it shows. */
@@ -468,13 +469,10 @@ export class ThreadStore {
     threadId: string,
     envelopes: LedgerEnvelope[],
   ): Promise<void> {
-    const dest = this.ledgerPath(threadId);
-    const tmp = `${dest}.tmp`;
     const body = envelopes
       .map((envelope) => JSON.stringify(envelope))
       .join('\n');
-    await writeFile(tmp, body.length > 0 ? `${body}\n` : '', 'utf8');
-    await rename(tmp, dest);
+    await writeFileAtomic(this.ledgerPath(threadId), body.length > 0 ? `${body}\n` : '');
   }
 
   private serialize<T>(threadId: string, work: () => Promise<T>): Promise<T> {
@@ -660,9 +658,7 @@ export class ThreadStore {
       await rm(target, { force: true });
       return;
     }
-    const tmp = `${target}.${process.pid}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(queued)}\n`, 'utf8');
-    await rename(tmp, target);
+    await writeFileAtomic(target, `${JSON.stringify(queued)}\n`);
   }
 
   /** Task records of this thread's runs, oldest first (see RunTaskRecord). */

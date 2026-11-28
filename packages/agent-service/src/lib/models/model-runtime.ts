@@ -1,11 +1,9 @@
 import {
   contextBudgetForWindow,
   resolveContextWindow,
-  resolveModelRoles,
   type ContextBudget,
   type ContextWindowMode,
   type ContextWindowSource,
-  type ModelRoles,
   type OllamaEndpoint,
   type ThinkingValue,
 } from '@agent/agent-models';
@@ -15,7 +13,7 @@ import {
   resolveReasoningEffort,
 } from '@agent/agent-core';
 
-import type { HostEnv } from '../service';
+import { ROLE_MODEL_ENV, type AgentConfig } from '../config';
 
 /** Per-model call knobs: thinking effort from /api/show, endpoint, temperature. */
 export async function resolveCallOptions(
@@ -78,23 +76,14 @@ export async function resolveContextBudget(
   return { budget: contextBudgetForWindow(window.windowTokens), source: window.source, modelMax };
 }
 
-/** Sub-agent model roles. AGENT_MODEL_FAST / AGENT_MODEL_STRONG default to the parent's model. */
-export function modelRolesFor(env: HostEnv, main: string): ModelRoles {
-  return resolveModelRoles({
-    main,
-    ...(env.AGENT_MODEL_FAST ? { fast: env.AGENT_MODEL_FAST } : {}),
-    ...(env.AGENT_MODEL_STRONG ? { strong: env.AGENT_MODEL_STRONG } : {}),
-  });
-}
-
 /**
  * Boot check: a sub-agent role model without tool support would fail mid-run.
  * Warns once per configured role; never blocks startup.
  */
-export async function warnRoleModelsWithoutTools(env: HostEnv): Promise<void> {
+export async function warnRoleModelsWithoutTools(roleModels: AgentConfig['roleModels']): Promise<void> {
   const roles = [
-    ['AGENT_MODEL_FAST', env.AGENT_MODEL_FAST?.trim()],
-    ['AGENT_MODEL_STRONG', env.AGENT_MODEL_STRONG?.trim()],
+    [ROLE_MODEL_ENV.fast, roleModels.fast],
+    [ROLE_MODEL_ENV.strong, roleModels.strong],
   ] as const;
   for (const [name, model] of roles) {
     if (!model) continue;

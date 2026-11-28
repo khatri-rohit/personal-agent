@@ -13,7 +13,6 @@ import {
   modeForKind,
   normalizeRunPosture,
   normalizeThreadKind,
-  parseHarnessFlags,
   threadMentions,
   type ContextWindowMode,
   type HarnessFlags,
@@ -157,7 +156,7 @@ export async function prepareRun(service: Pick<ServiceCore, 'config' | 'memory' 
   /** Resolved once here; the loop must run with the same switches the prompt was built with. */
   flags: HarnessFlags;
 }> {
-  const flags = parseHarnessFlags(service.config.env.AGENT_FLAGS);
+  const { flags } = service.config;
   const memory = service.memory();
   const kind = normalizeThreadKind(input.thread?.kind);
   const mode = modeForKind(kind);

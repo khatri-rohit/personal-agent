@@ -33,7 +33,10 @@ export type ServeOptions = {
 };
 
 /** `started`: this process serves the home. `attached`: another process already did, and keeps doing so. */
-export type ServeResult = { url: string; started: true; server: ServerInfo } | { url: string; started: false; server: LiveServer };
+export type ServeResult =
+  | { url: string; started: true; server: ServerInfo }
+  /** `runsOtherCode`: the running server's code differs from this checkout's (it needs a restart to run the new code). */
+  | { url: string; started: false; server: LiveServer; runsOtherCode: boolean };
 
 /** How long a stop waits for runs to write their last rows (post-run compaction can be a model call). */
 const DRAIN_MS = 10_000;
@@ -53,7 +56,7 @@ export async function serve(options: ServeOptions): Promise<ServeResult> {
   const home = service.home();
 
   const running = await liveServer(home);
-  if (running) return attached(running);
+  if (running) return await attached(running);
 
   // The chat UI the build embedded next to this bundle; none = headless.
   const uiDir = options.ui ? resolveUiDir(path.join(__dirname, 'ui')) : null;
@@ -74,7 +77,7 @@ export async function serve(options: ServeOptions): Promise<ServeResult> {
     if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
       for (let i = 0; i < 10; i++) {
         const winner = await liveServer(home);
-        if (winner) return attached(winner);
+        if (winner) return await attached(winner);
         await new Promise((resolve) => setTimeout(resolve, 300));
       }
       throw new Error(`Port ${options.port} is in use by another program. Choose another with --port.`);
@@ -102,13 +105,16 @@ export async function serve(options: ServeOptions): Promise<ServeResult> {
   // Read the running code's version now, so later edits are not mistaken for it.
   void harnessVersion().then((version) => logger.info({ harnessVersion: version }, 'harness version'));
   // Logs the System 1 setup and warms the scorer; never blocks or throws.
-  initSystem1(service.system1);
-  void warnRoleModelsWithoutTools(service.config.env);
+  initSystem1(service.config.system1);
+  void warnRoleModelsWithoutTools(service.config.roleModels);
   return { url: `${serverOrigin(info)}/`, started: true, server: info };
 }
 
-function attached(server: LiveServer): ServeResult {
-  return { url: `${serverOrigin(server)}/`, started: false, server };
+async function attached(server: LiveServer): Promise<ServeResult> {
+  const here = await harnessVersion();
+  const there = server.harnessVersion;
+  const runsOtherCode = Boolean(here && there && (here.sha !== there.sha || here.dirty !== there.dirty));
+  return { url: `${serverOrigin(server)}/`, started: false, server, runsOtherCode };
 }
 
 /**

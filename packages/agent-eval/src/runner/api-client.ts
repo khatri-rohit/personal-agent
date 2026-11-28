@@ -1,5 +1,14 @@
 import { createAgentClient, type AgentClient } from '@agent/agent-client';
-import { API_ROUTES, type ApiRouteName, type LedgerResponse, type StartRunRequest, type ThinkingValue, type ThreadLastRun } from '@agent/agent-models';
+import {
+  API_ROUTES,
+  parseVersionInfo,
+  type ApiRouteName,
+  type LedgerResponse,
+  type StartRunRequest,
+  type ThinkingValue,
+  type ThreadLastRun,
+  type VersionInfo,
+} from '@agent/agent-models';
 
 /** How often a trial reads the ledger while it waits for its run. */
 const POLL_MS = 2_000;
@@ -43,9 +52,9 @@ export class ApiClient {
   }
 
   /** What the API runs and which home it writes (`GET /version`); null on an API from before the route. */
-  async version(): Promise<{ harnessVersion: { sha: string; dirty: string | null } | null; agentHome: string } | null> {
+  async version(): Promise<VersionInfo | null> {
     try {
-      return await this.json('version');
+      return parseVersionInfo(await this.json('version'));
     } catch (error) {
       if (error instanceof Error && error.message.includes('→ 404')) return null;
       throw error;

@@ -4,28 +4,22 @@
  * transports (HTTP routes today) hold it and call the functions below with it.
  */
 
-// The service: config snapshot and the one instance
-export {
-  createAgentService,
-  HOST_ENV_KEYS,
-  loadConfig,
-  type AgentConfig,
-  type AgentService,
-  type HostEnv,
-  type HostEnvKey,
-} from './lib/service';
+// The service: its config (parsed once) and the one instance
+export { loadConfig, type AgentConfig } from './lib/config';
+export { createAgentService, type AgentService } from './lib/service';
 export { ServiceError, type ServiceErrorCode } from './lib/errors';
 export { harnessVersion } from './lib/platform/harness-version';
 export { createJsonlTraceSink } from './lib/platform/trace-sink';
 
 // Runs
-export { isQueueStarting, queueMessage, sendQueuedNow, startThreadRun } from './lib/runs/start-run';
-export { estimateContext, type ContextEstimate } from './lib/runs/estimate-context';
-export { endpointFromLocal, prepareRun, readSettledLastRun, resolveRequestedSkills } from './lib/runs/run-context';
+export { startThreadRun } from './lib/runs/start-run';
+export { isQueueStarting, queueMessage, sendQueuedNow, takeQueued } from './lib/runs/queue';
+export { estimateContext } from './lib/runs/estimate-context';
+export { readSettledLastRun } from './lib/runs/run-context';
 export { initSystem1, system1AutoFor } from './lib/runs/system1-runtime';
 
 // Threads: workspace access and file checkpoints
-export { isAllowedWorkspace, rememberWorkspace, WORKSPACE_NOT_PICKED } from './lib/threads/workspace-allowlist';
+export { rememberWorkspace, WORKSPACE_NOT_PICKED } from './lib/threads/workspace-allowlist';
 export { resolveWorkspaceDir, threadRunIds, workspaceAllowed } from './lib/threads/workspace';
 export { forgetCheckpoints, revertRuns, runChanges, runFileDiff } from './lib/threads/checkpoints';
 

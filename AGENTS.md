@@ -60,7 +60,7 @@ apps/web composer (features/composer), same origin as the API (agent serve, :333
   → chat-store / use-agent-run   apps/web/src/features/conversation/
 ```
 
-One active run per thread, in process memory. A live run's buffer replays every event to a reconnecting client, except the deltas of messages already completed (`assistant.completed` carries the text). After `RUN_HANDLE_TTL_MS` (5 minutes) the process keeps only the run's `run.settled`; a run it never ran (e.g. after a restart) is 404, and the client then rebuilds from `GET /api/agent/threads/:id/ledger`. A message sent while a run is going is queued on the host (`start-run.ts` `queueMessage` / `startQueued`, `sessions/<id>/queued.json`) and started once the run settles. One server per home: `apps/agent/src/server-file.ts` (`AGENT_HOME/server.json`). Retry/edit **rewinds** (truncates) the ledger. Title generation (`runs/thread-title.ts`) is maintenance, not on the request path.
+One active run per thread, in process memory. A live run's buffer replays every event to a reconnecting client, except the deltas of messages already completed (`assistant.completed` carries the text). After `RUN_HANDLE_TTL_MS` (5 minutes) the process keeps only the run's `run.settled`; a run it never ran (e.g. after a restart) is 404, and the client then rebuilds from `GET /api/agent/threads/:id/ledger`. A message sent while a run is going is queued on the host (`runs/queue.ts`, `sessions/<id>/queued.json`) and started once the run settles. One server per home: `apps/agent/src/server-file.ts` (`AGENT_HOME/server.json`). Retry/edit **rewinds** (truncates) the ledger. Title generation (`runs/thread-title.ts`) is maintenance, not on the request path.
 
 **Home vs Workspace** is `packages/agent-models/src/lib/mode.ts`: allowed tools, global tools, iteration/token/wall limits. Home is chat; Workspace adds folder-jailed coding tools (`edit_file`, `run_terminal`, `delegate`, `diff`).
 
@@ -124,10 +124,10 @@ Eval reads these files. It does not re-derive what core already put in the trace
 
 **Service** — `packages/agent-service/src/lib/`
 
-- `service.ts` — `createAgentService`, `loadConfig`; `errors.ts` — `ServiceError`.
+- `config.ts` — `loadConfig`: the host's env parsed once into a typed `AgentConfig` (nothing downstream reads raw env); `service.ts` — `createAgentService`; `errors.ts` — `ServiceError`.
 - `threads/thread-store.ts` — catalog + ledger + plans on disk; `threads/workspace.ts`, `checkpoints.ts`.
-- `runs/start-run.ts`, `run-context.ts`, `compaction.ts`, `thread-title.ts`, `subagent-host.ts`, `system1-runtime.ts`.
-- `platform/agent-home.ts`, `platform/trace-sink.ts`, `platform/harness-version.ts`; `memory/`, `skills/`, `models/`, `voice/`.
+- `runs/start-run.ts`, `queue.ts` (the queued message), `run-context.ts`, `compaction.ts`, `thread-title.ts`, `subagent-host.ts`, `system1-runtime.ts`.
+- `platform/atomic-write.ts` (every replace-a-file write), `platform/trace-sink.ts`, `platform/harness-version.ts`; `memory/`, `skills/`, `models/`, `voice/`.
 
 **HTTP** — `packages/agent-http/src/lib/`
 

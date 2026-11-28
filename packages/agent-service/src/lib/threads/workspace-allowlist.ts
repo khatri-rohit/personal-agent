@@ -54,13 +54,12 @@ export async function isAllowedWorkspace(input: {
   root: string;
   /** Workspace roots of existing threads. */
   threadRoots: Array<string | undefined>;
-  /** The service config's env (AGENT_WORKSPACE_ROOTS). */
-  env: Readonly<{ AGENT_WORKSPACE_ROOTS?: string }>;
+  /** AGENT_WORKSPACE_ROOTS, parsed (config). */
+  workspaceRoots: readonly string[];
 }): Promise<boolean> {
   const { root } = input;
   if (input.threadRoots.some((known) => known !== undefined && sameWorkspaceRoot(known, root))) return true;
-  const configured = input.env.AGENT_WORKSPACE_ROOTS ?? '';
-  for (const parent of configured.split(path.delimiter).map((item) => item.trim()).filter(Boolean)) {
+  for (const parent of input.workspaceRoots) {
     if (isWithin(root, parent)) return true;
   }
   return (await readRoots(input.agentHome)).some((known) => sameWorkspaceRoot(known, root));

@@ -134,18 +134,17 @@ async function failure(res: Response, fallback: string): Promise<Error> {
 
 /**
  * Queue a message on the host until the thread's run ends (it replaces one
- * already queued). `composer` comes back on take-back.
+ * already queued).
  */
 export async function queueRun(
   threadId: string,
   request: Omit<NonNullable<Parameters<typeof startRun>[1]>, 'rewindThroughSeq' | 'restoreFiles'>,
-  composer: unknown,
 ): Promise<QueuedMessage> {
   const res = await api.request('threads.queue', {
     params: { id: threadId },
     init: {
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ request: { ...request, posture: normalizeRunPosture(request.posture) }, composer }),
+      body: JSON.stringify({ ...request, posture: normalizeRunPosture(request.posture) }),
     },
   });
   if (!res.ok) throw await failure(res, 'Failed to queue the message');
