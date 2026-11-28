@@ -244,6 +244,9 @@ export type TraceEvent =
       runId: string;
       iteration?: number;
       name: string;
+      /** A file of the pack read with `load_skill({ file })`. */
+      file?: string;
+      /** Old traces only: a section of a large pack (sections no longer exist). */
       section?: string;
       tokens: number;
       source: 'model' | 'pick' | 'profile';
@@ -251,6 +254,7 @@ export type TraceEvent =
       scope?: 'builtin' | 'user' | 'workspace';
     }
   | {
+      /** Old traces only: a skill body replaced by its card. No longer written. */
       type: 'skill_evicted';
       runId: string;
       iteration: number;
@@ -360,7 +364,7 @@ export type TraceEvent =
        * no evidence arrives). `delegation`: a sub-agent brief was capped or
        * refused. `finish`: a done gate sent the answer back. `boundary`:
        * the prompt was reshaped (ids name what triggered it); between
-       * boundaries the prompt only grows (v2 phase 7).
+       * boundaries the prompt only grows.
        */
       type: 'policy_decision';
       runId: string;

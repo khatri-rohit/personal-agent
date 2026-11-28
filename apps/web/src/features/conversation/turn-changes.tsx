@@ -26,7 +26,7 @@ export function turnWriteRuns(replies: Message[]): { runIds: string[]; wrote: bo
 const STATUS_MARK: Record<FileChange['status'], string> = { added: 'A', modified: 'M', deleted: 'D' };
 
 /**
- * What a turn's runs changed on disk (B3): a chip under the reply that opens
+ * What a turn's runs changed on disk: a chip under the reply that opens
  * the file list, each file's diff, and Undo. The last turn loads at once
  * (Retry and Edit need the count); older turns load when opened.
  */

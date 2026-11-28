@@ -6,7 +6,6 @@ import type {
 import { CHARS_PER_TOKEN, inRunMarks, type ContextBudget } from '@agent/agent-models';
 
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
-import { skillCard } from '../tools/skills';
 import { builtinToolTraits, fileLineRange, type ToolTraits, type TraitsOf } from '../tools/traits';
 import { sha256Text } from '../tools/web/source';
 import { argsPreview, toolCallIndex, type ToolCallInfo } from './outcome-card';
@@ -206,9 +205,9 @@ export function windowCard(
 /**
  * Keep this run's prompt under the in-run high mark (`inRunMarks`), measured
  * on the whole prompt. Below the mark nothing leaves: the prompt only grows,
- * so its prefix stays reusable and nothing the model is using disappears
- * (P3). Past it, one pass removes results down to the low mark, cheapest loss
- * first (P4: what it costs to get one back against what it costs to keep):
+ * so its prefix stays reusable and nothing the model is using disappears.
+ * Past it, one pass removes results down to the low mark, cheapest loss
+ * first (what it costs to get one back against what it costs to keep):
  * 1. superseded: a later resident read covers the same lines of the same
  *    file (`lineRange`), or the same call was made again (`repeatKey`: the
  *    same command, the same file's diff; only calls that ran count). Nothing
@@ -286,7 +285,8 @@ export async function manageWorkingSet(
       }
     } else if (traits?.repeatKey) {
       const key = traits.repeatKey(args);
-      // A blocked, skipped or repeat-refused call must not card a real run.
+      // Only calls that actually ran can supersede: a blocked, skipped or
+      // repeat-refused call has no output to stand in for an earlier one.
       if (key && (traits.ran?.(content) ?? true)) {
         const callKey = `${info?.name ?? ''}|${key}`;
         superseded = laterCalls.has(callKey);
@@ -375,35 +375,6 @@ function removalRank(candidate: Candidate): number {
   if (candidate.traits?.residency === 'no_aging') return 2;
   if (candidate.path !== null) return 1;
   return 0;
-}
-
-/**
- * Turn applied skill bodies into skill cards (core rules + reload note).
- * Age-based, not size-based: a body is needed while the model plans and
- * starts the work, not for the rest of the run.
- */
-export function retireSkillBodies(
-  messages: ChatCompletionMessageParam[],
-  loads: Map<string, { name: string; iteration: number }>,
-  iteration: number,
-  residentIterations: number,
-): { toolCallId: string; name: string }[] {
-  const retired: { toolCallId: string; name: string }[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    const message = messages[i];
-    if (message?.role !== 'tool' || typeof message.content !== 'string') continue;
-    const load = loads.get(message.tool_call_id);
-    if (!load || iteration - load.iteration < residentIterations) continue;
-    if (!isResident(message.content)) continue;
-    messages[i] = {
-      role: 'tool',
-      tool_call_id: message.tool_call_id,
-      content: skillCard(load.name, load.iteration),
-    };
-    loads.delete(message.tool_call_id);
-    retired.push({ toolCallId: message.tool_call_id, name: load.name });
-  }
-  return retired;
 }
 
 function textOf(content: ChatCompletionMessageParam['content']): string {
@@ -679,7 +650,7 @@ export async function foldResidue(
 /**
  * Chars of the recap lines messages[from, to) become, exactly as
  * foldIntoRecap writes them (steps sized at four digits; a stored body's sha
- * counted at its fixed length). One measure for both folds (P2).
+ * counted at its fixed length). One measure for both folds.
  */
 function recapLinesChars(
   messages: ChatCompletionMessageParam[],
@@ -776,7 +747,7 @@ async function foldIntoRecap(
     const sha = await putBlob(recap);
     recap = `(New session at a verified milestone: every earlier step of this run, in full: recall sha256:${sha})`;
   } else if (recap.length > RECAP_MAX_CHARS) {
-    // Over the bound the oldest lines leave, but not out of reach (P4).
+    // Over the bound the oldest lines leave, but not out of reach.
     const full = putBlob ? await putBlob(recap) : undefined;
     const tail = recap.slice(recap.length - RECAP_MAX_CHARS);
     recap = full

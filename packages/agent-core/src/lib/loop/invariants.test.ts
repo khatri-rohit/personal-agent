@@ -1,17 +1,16 @@
 /**
- * Harness invariants over a reacting model (v2 build plan, phase 0).
+ * Harness invariants over a reacting model.
  *
  * Scripted replays pin what the loop does for a fixed script; they cannot
  * show feedback loops, because a script never reacts to what the harness
  * did. The model here does: it works a fake workspace with planted facts,
  * re-reads whatever it needs that is no longer in view, can repeat a
  * search, delegate, edit and run a check. Each invariant is a property the
- * v2 design promises, measured on the trace of such runs.
+ * harness promises, measured on the trace of such runs.
  *
  * Invariants the current code does not meet yet are `it.fails`: the test
- * passes while the property is broken and fails once a later phase fixes
- * it, which forces the marker to be removed. Each names the phase that
- * owns it.
+ * passes while the property is broken and fails once a fix lands, which
+ * forces the marker to be removed.
  */
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { describe, expect, it } from 'vitest';
@@ -125,7 +124,7 @@ function body(message: ChatCompletionMessageParam): string {
 /**
  * A model that reacts to its prompt: it learns where a fact is from a
  * search, reads the file, and before answering re-reads every fact that is
- * no longer in view (the parent re-verifying in the smoke run). It never
+ * no longer in view (a parent re-verifying before it answers). It never
  * re-reads a fact twice at verify time, so runs end.
  */
 function reactiveModel(behaviour: Behaviour): ModelCallFn {
@@ -370,7 +369,7 @@ describe('harness invariants over a reacting model', () => {
     }
   });
 
-  // Phase 7: the prompt is reshaped only at boundaries. Between them a call
+  // The prompt is reshaped only at boundaries. Between them a call
   // keeps the previous call's whole prompt (but its ephemeral card) as its
   // prefix; a shorter stable prefix must come with a boundary decision at
   // the step before (residency runs at the end of a step).
@@ -474,7 +473,7 @@ describe('harness invariants over a reacting model', () => {
     'context_compacted_inrun:residue',
     'policy_decision:guard',
     'policy_decision:card',
-    // Phase 5: each decision id, not only its kind.
+    // Each decision id, not only its kind.
     'decision:dedupe_answered',
     'decision:repeat_answered',
     'decision:advice',

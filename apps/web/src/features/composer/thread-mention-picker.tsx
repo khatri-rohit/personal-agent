@@ -9,7 +9,7 @@ import {
 } from '@agent/agent-models';
 import { folderNameFromRoot } from '@/features/threads/space-store';
 import { cn } from '@/lib/utils';
-import { X } from 'lucide-react';
+import { MessageSquareText, X } from 'lucide-react';
 
 export function rankMentionThreads(
   threads: Thread[],
@@ -84,12 +84,16 @@ export function ThreadMentionChip({
   return (
     <span
       className={cn(
-        'inline-flex max-w-[16rem] items-center gap-1 rounded-md py-0.5 pl-2 pr-1 text-xs ring-1',
+        'inline-flex max-w-[16rem] items-center gap-1 rounded-md py-0.5 pl-1.5 pr-1 text-xs ring-1',
         selected
           ? 'bg-primary/15 text-foreground ring-primary/45'
           : 'bg-muted/80 text-foreground/90 ring-border/50',
       )}
     >
+      <MessageSquareText
+        className="size-3.5 shrink-0 text-muted-foreground"
+        aria-label="Attached thread"
+      />
       <button
         type="button"
         className="min-w-0 truncate text-left"

@@ -554,7 +554,7 @@ const TurnView = memo(function TurnView({
     ? compactionNotice
     : null;
 
-  // F3/F4: memoize the timeline + work summary per turn. Non-last turns have
+  // Memoize the timeline + work summary per turn. Non-last turns have
   // stable inputs (empty live arrays, no streaming), so this runs once.
   const steps = useMemo(
     () =>

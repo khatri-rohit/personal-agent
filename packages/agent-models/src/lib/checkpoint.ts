@@ -1,5 +1,5 @@
 /**
- * Checkpoints (B3): what a workspace run changed on disk, and putting it
+ * Checkpoints: what a workspace run changed on disk, and putting it
  * back. The host snapshots the folder before an Agent run and again when
  * it ends; these are the shapes the API returns about those snapshots.
  */

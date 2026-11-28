@@ -53,8 +53,6 @@ export type ContextBudget = {
   inRunHighTokens?: number;
   /** Newest steps an in-run fold keeps in place (recap and residue folds). */
   inRunKeepToolResults: number;
-  /** Iterations a loaded skill body stays in full before it becomes a skill card. */
-  skillResidentIterations: number;
   /**
    * Tokens of findings the harness card shows (newest first). The card is
    * sent on every call, so it is part of the window like any other item.
@@ -101,7 +99,6 @@ export const DEFAULT_CONTEXT_BUDGET: ContextBudget = {
   inRunHighRatio: 0.8,
   inRunLowShare: 0.7,
   inRunKeepToolResults: 4,
-  skillResidentIterations: 4,
   /** ~24k chars: about 200 typical (~120-char) findings. */
   recordCardTokens: 6_000,
 };
@@ -161,7 +158,7 @@ export function contextBudgetForWindow(
 
 /**
  * The in-run marks in tokens, on the whole prompt. `high`: past it, one pass
- * removes down to `low`. Derived from the window alone (P2), unless
+ * removes down to `low`. Derived from the window alone, unless
  * `inRunHighTokens` sets an absolute ceiling.
  */
 export function inRunMarks(budget: ContextBudget): { high: number; low: number } {
@@ -219,8 +216,6 @@ export type ContextReport = {
   occupiedTokens: number;
   stubbedToolResults: number;
   needsCompaction: boolean;
-  /** `/` picks pinned as core + contents because the pinned total passed its cap. */
-  trimmedSkills?: string[];
   /**
    * Where budget.windowTokens came from for this assembly.
    * Hosts set this after assembleContext; refresh preserves it.
@@ -246,7 +241,7 @@ export type Snapshot = {
   /**
    * Blob of the full text of every turn this snapshot covers (messages,
    * tool calls, tool results or their blob shas), so a compacted turn is
-   * restorable with `recall` instead of lost (v2 phase 6). Absent on
+   * restorable with `recall` instead of lost. Absent on
    * snapshots written before it.
    */
   transcriptSha?: string;

@@ -299,7 +299,6 @@ async function startClaimedRun(
     envelopes,
     model: useModel,
     endpoint,
-    skillNames,
     onMemoryUpdated: (payload: MemoryUpdatedPayload) =>
       service.runs.publish(runId, { type: 'memory.updated', runId, ...payload }),
     onPlanUpdated: (payload: PlanUpdatedPayload) =>
@@ -313,7 +312,7 @@ async function startClaimedRun(
   let prepared = await runWithSkillRoots(skillRoots, () =>
     prepareRun(service, prepareInput),
   );
-  // Oversized start (window switched down, big mention, long last run):
+  // Oversized start (window switched down, long last run):
   // compact before the first model call instead of carrying it all run.
   const preRunSnapshot = await compactThread({
     store,

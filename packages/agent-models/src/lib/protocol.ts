@@ -2,7 +2,7 @@
  * The HTTP protocol between the agent host and its clients: every route by
  * name, its method, the router it is mounted on, and its path there. The
  * host mounts its routes from this table and agent-client builds its URLs
- * from it, so the two cannot disagree on a path (ADR-0003 §4.9).
+ * from it, so the two cannot disagree on a path.
  *
  * Changing a path or method is a protocol change: bump PROTOCOL_VERSION.
  */

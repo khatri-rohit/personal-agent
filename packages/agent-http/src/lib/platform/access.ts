@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { NextFunction, Request, Response } from 'express';
 
 /**
- * Who may drive the API (B1, ADR-0003 §4.6). The API listens on loopback, so
+ * Who may drive the API. The API listens on loopback, so
  * the threat is the browser: any page the user has open can send requests to
  * localhost.
  *

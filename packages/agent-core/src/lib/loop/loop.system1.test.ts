@@ -134,7 +134,7 @@ describe('runLoop with System 1', () => {
     expect(enforced.result.status).toBe('completed');
     // 1: first turn (floor). 2: first eligible lower (pending). 3: lowered.
     // 4: three steps with no evidence (this script records none): the floor
-    // holds the baseline again (F-4).
+    // holds the baseline again.
     expect(enforced.calls.map((call) => call.overrides?.reasoningEffort)).toEqual([
       undefined,
       undefined,

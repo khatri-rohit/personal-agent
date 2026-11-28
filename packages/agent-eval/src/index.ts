@@ -1,6 +1,6 @@
 // @agent/agent-eval — read-only access to what the agent runtime writes
-// (catalog.db, ledgers, traces, usage log). Metrics, runner and gate land in
-// their own stages (the eval plan of record, §6).
+// (catalog.db, ledgers, traces, usage log), plus metrics, the trial runner
+// and the gate built on those readers.
 
 export { readCatalog, type ThreadRecord } from './read/catalog.js';
 export { readLedger, type ParsedLedger } from './read/ledger.js';

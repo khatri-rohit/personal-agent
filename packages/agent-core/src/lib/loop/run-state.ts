@@ -134,7 +134,7 @@ export type RunState = {
   recordBlobSha: string | undefined;
   /**
    * Findings already written into the prompt history as the task record
-   * message (phase 7): the card shows only those recorded after it.
+   * message: the card shows only those recorded after it.
    */
   recordedThrough: number;
   /** Local hash of the record text that blob holds, so it is stored again only when the record changed. */

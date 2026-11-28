@@ -4,8 +4,8 @@ import path from 'node:path';
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 
 /**
- * Serves the built chat UI (apps/web `dist`) on the API's own origin
- * (ADR-0003 §4.5). Hashed files under `assets/` never change, so they are
+ * Serves the built chat UI (apps/web `dist`) on the API's own origin.
+ * Hashed files under `assets/` never change, so they are
  * cached for good; the shell is revalidated on every load so a new build is
  * picked up. Any other GET outside `/api` gets the shell: the SPA router owns
  * those paths (`/`, `/chat/<id>`).

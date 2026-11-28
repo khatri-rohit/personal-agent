@@ -22,7 +22,7 @@ export async function resolveWorkspaceDir(
 
 /**
  * Whether this caller may open `root` as a workspace. A browser may open only
- * a folder a person chose (B1, workspace-allowlist.ts); a trusted local
+ * a folder a person chose (workspace-allowlist.ts); a trusted local
  * process (`trustedCaller`: it presented the API token) may open any
  * existing folder.
  */

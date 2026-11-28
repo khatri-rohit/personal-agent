@@ -26,8 +26,8 @@ export type ImageAttachment = {
 };
 
 /**
- * Reference to another thread packed into this run's context.
- * Host loads a budgeted extract at assemble time; this object is a pointer.
+ * Another thread the user attached to a message. A reference: the model
+ * reads that thread with `read_thread` when the task needs it.
  */
 export type ThreadMentionAttachment = {
   type: 'thread';
@@ -93,7 +93,15 @@ export function parseMessageAttachments(
       if (++mentions > MAX_THREAD_MENTIONS) {
         return `at most ${MAX_THREAD_MENTIONS} thread mentions per message`;
       }
-      out.push(a as ThreadMentionAttachment);
+      // Rebuilt field by field, so no unknown field reaches the ledger.
+      out.push({
+        type: 'thread',
+        id: a.id,
+        threadId: a.threadId,
+        title: a.title,
+        kind: a.kind as ThreadKind,
+        ...(typeof a.workspaceRoot === 'string' ? { workspaceRoot: a.workspaceRoot } : {}),
+      });
       continue;
     }
     if (a.type !== undefined && a.type !== 'image') return 'invalid attachment';

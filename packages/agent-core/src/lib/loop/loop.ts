@@ -5,7 +5,6 @@ import type {
 } from 'openai/resources/chat/completions';
 
 import {
-  CHARS_PER_TOKEN,
   EFFORT_IDLE_FLOOR_STEPS,
   emptyRunUsage,
   limitMessage,
@@ -30,7 +29,6 @@ import {
   type EffortSignals,
 } from '../system1/effort';
 import { buildEffortState } from '../system1/state';
-import { getSkill } from '../tools/skills';
 import { traitsResolver } from '../tools/traits';
 import type { ToolRegistry } from '../tools/types';
 import {
@@ -273,19 +271,6 @@ async function runLoopCore(
       : {}),
     startedAt: new Date(runStartedAt).toISOString(),
   });
-  for (const name of config.pinnedSkills ?? []) {
-    const skill = getSkill(name);
-    if (!skill) continue;
-    trace({
-      type: 'skill_loaded',
-      runId,
-      iteration: 0,
-      name: skill.name,
-      tokens: Math.ceil(skill.instructions.length / CHARS_PER_TOKEN),
-      source: 'pick',
-      scope: skill.scope,
-    });
-  }
 
   // Hoisted so the catch can skip any unanswered tool calls of the turn in
   // progress when the loop throws — upholds I1 (every tool_call_id gets one
@@ -329,7 +314,7 @@ async function runLoopCore(
         wrote: turnSignals.wrote,
         idleSteps: s.task.stepsSinceEvidence,
       };
-      // F-4: effort may not drop below the baseline while no evidence comes
+      // Effort may not drop below the baseline while no evidence comes
       // in. Traced when the floor starts and when evidence lifts it, only for
       // runs whose effort System 1 can move.
       if (config.system1 && config.effortPolicy?.ladder) {

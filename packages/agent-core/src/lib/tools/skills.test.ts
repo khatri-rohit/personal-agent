@@ -14,17 +14,19 @@ import type { ToolContext } from '@agent/agent-models';
 import {
   configureSkillRoots,
   extraSkillRoots,
-  formatSkillBodies,
   formatSkillsCatalog,
   getSkill,
   listSkillCatalogs,
   listSkills,
   load_skill,
+  skillBodyInPrompt,
   parseSkillMarkdown,
   readSkillFile,
   resolveSkillsRoot,
   runWithSkillRoots,
+  SKILL_BODY_MAX_CHARS,
   SKILL_FILE_MAX_BYTES,
+  SKILL_FILE_PAGE_CHARS,
   type ParsedSkill,
 } from './skills';
 import type { SkillMetadata } from './types';
@@ -141,20 +143,6 @@ describe('formatSkillsCatalog', () => {
     expect(text).not.toContain('when:');
     expect(text).not.toContain('modes:');
     expect(text).toMatch(/Catalog of procedure packs/i);
-  });
-});
-
-describe('formatSkillBodies', () => {
-  it('inlines requested bodies and skips already loaded names', () => {
-    const text = formatSkillBodies(
-      ['patch-and-verify', 'missing-skill'],
-      ['patch-and-verify'],
-    );
-    expect(text).toBe('');
-    const loaded = formatSkillBodies(['patch-and-verify']);
-    expect(loaded).toMatch(/# Loaded skills/);
-    expect(loaded).toContain('## patch-and-verify');
-    expect(loaded).toMatch(/Use this when the user asked you to change code/i);
   });
 });
 
@@ -510,5 +498,96 @@ describe('skill catalog roots', () => {
         .map((s) => s.name)
         .sort(),
     ).toEqual(['keep-me', 'late-pack']);
+  });
+});
+
+describe('skillBodyInPrompt', () => {
+  const call = (id: string, args: Record<string, unknown>) => ({
+    role: 'assistant',
+    content: null,
+    tool_calls: [{ id, type: 'function', function: { name: 'load_skill', arguments: JSON.stringify(args) } }],
+  });
+
+  it('is true only while a whole body of that skill is in the prompt', () => {
+    const loaded = [call('c1', { skill_name: 'Patch-And-Verify' }), { role: 'tool', tool_call_id: 'c1', content: 'Body text.' }];
+    expect(skillBodyInPrompt(loaded, 'patch-and-verify')).toBe(true);
+    expect(skillBodyInPrompt(loaded, 'home-research')).toBe(false);
+    // A file read, a pointer or an evicted card is not the body.
+    expect(skillBodyInPrompt([call('c2', { skill_name: 'x', file: 'a.md' }), { role: 'tool', tool_call_id: 'c2', content: 'A.' }], 'x')).toBe(false);
+    expect(skillBodyInPrompt([call('c3', { skill_name: 'x' }), { role: 'tool', tool_call_id: 'c3', content: '(unchanged) The x skill…' }], 'x')).toBe(false);
+    expect(skillBodyInPrompt([call('c4', { skill_name: 'x' }), { role: 'tool', tool_call_id: 'c4', content: '(evicted) …' }], 'x')).toBe(false);
+    // The call whose result is not back yet does not count.
+    expect(skillBodyInPrompt([call('c5', { skill_name: 'x' })], 'x')).toBe(false);
+  });
+});
+
+describe('load_skill whole bodies and pack files', () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    configureSkillRoots(null);
+    for (const dir of dirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function packRoot(): string {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'pa-skill-files-'));
+    dirs.push(dir);
+    return dir;
+  }
+
+  it('returns a large body whole, then lists the pack files', async () => {
+    const root = packRoot();
+    const body = Array.from({ length: 400 }, (_, i) => `Rule ${i}: keep every line.`).join('\n');
+    writeSkill(root, 'big-pack', `---\nname: big-pack\ndescription: A large pack.\n---\n\n${body}\n`);
+    mkdirSync(path.join(root, 'big-pack', 'references'));
+    writeFileSync(path.join(root, 'big-pack', 'references', 'guide.md'), 'Guide text.', 'utf8');
+    configureSkillRoots([{ scope: 'user', path: root }]);
+
+    const result = await load_skill.execute({ skill_name: 'big-pack' }, ctx());
+    expect(result).toContain('Rule 0: keep every line.');
+    expect(result).toContain('Rule 399: keep every line.');
+    expect(result).not.toMatch(/core rules/i);
+    expect(result).toContain('- references/guide.md');
+  });
+
+  it('reads one pack file, jailed to the pack folder', async () => {
+    const root = packRoot();
+    writeSkill(root, 'filed', '---\nname: filed\ndescription: Has files.\n---\n\nSee references/a.md.\n');
+    mkdirSync(path.join(root, 'filed', 'references'));
+    writeFileSync(path.join(root, 'filed', 'references', 'a.md'), 'Detail A.', 'utf8');
+    writeFileSync(path.join(root, 'outside.md'), 'Not in the pack.', 'utf8');
+    configureSkillRoots([{ scope: 'user', path: root }]);
+
+    expect(await load_skill.execute({ skill_name: 'filed', file: 'references/a.md' }, ctx())).toBe('Detail A.');
+    expect(await load_skill.execute({ skill_name: 'filed', file: '../outside.md' }, ctx())).toMatch(/^Error: .*not a path inside/);
+    expect(await load_skill.execute({ skill_name: 'filed', file: path.join(root, 'outside.md') }, ctx())).toMatch(/^Error:/);
+    expect(await load_skill.execute({ skill_name: 'filed', file: 'missing.md' }, ctx())).toMatch(/^Error: filed has no file/);
+  });
+
+  it('pages a long pack file instead of cutting it', async () => {
+    const root = packRoot();
+    writeSkill(root, 'paged', '---\nname: paged\ndescription: Long file.\n---\n\nBody.\n');
+    writeFileSync(path.join(root, 'paged', 'long.txt'), 'x'.repeat(SKILL_FILE_PAGE_CHARS + 500), 'utf8');
+    configureSkillRoots([{ scope: 'user', path: root }]);
+
+    const first = await load_skill.execute({ skill_name: 'paged', file: 'long.txt' }, ctx());
+    expect(first).toContain(`offset=${SKILL_FILE_PAGE_CHARS}`);
+    const second = await load_skill.execute(
+      { skill_name: 'paged', file: 'long.txt', offset: SKILL_FILE_PAGE_CHARS },
+      ctx(),
+    );
+    expect(second).toBe('x'.repeat(500));
+  });
+
+  it('lists a pack over the body limit as invalid instead of cutting it', () => {
+    const root = packRoot();
+    writeSkill(root, 'huge', `---\nname: huge\ndescription: Too big.\n---\n\n${'y'.repeat(SKILL_BODY_MAX_CHARS + 1)}\n`);
+    configureSkillRoots([{ scope: 'user', path: root }]);
+    expect(getSkill('huge')).toBeUndefined();
+    const entry = listSkillCatalogs().user.find((item) => item.folder === 'huge');
+    expect(entry?.issue).toBe('invalid');
+    expect(entry?.reason).toMatch(/move detail into files/);
   });
 });

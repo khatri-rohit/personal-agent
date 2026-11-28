@@ -5,8 +5,8 @@
   "prompts": [
     {
       "roles": "system,user",
-      "chars": 11107,
-      "sha256": "704877c0967d6cb0de367643b1d1bab7dd398a66defc50bbd7b59dd166e70d00",
+      "chars": 11579,
+      "sha256": "6acba000c7d5c1cc7af1e1e4a75c52e4c1f0c518aba8a7db4582a8afdd26812d",
       "tools": [
         "delegate",
         "diff",
@@ -18,6 +18,7 @@
         "offer_choice",
         "plan",
         "read_file",
+        "read_thread",
         "recall",
         "record_finding",
         "run_terminal",
@@ -29,8 +30,8 @@
     },
     {
       "roles": "system,user,assistant,tool",
-      "chars": 11375,
-      "sha256": "de4bc92d27478f976583d4bd083185c97e7dbc5803d86a950a86490ea9c5e268",
+      "chars": 11847,
+      "sha256": "fd3fb82329d53c91da776cb20f67e1ed08dc336bec6d2d63e1a1126bb3711b40",
       "tools": [
         "delegate",
         "diff",
@@ -42,6 +43,7 @@
         "offer_choice",
         "plan",
         "read_file",
+        "read_thread",
         "recall",
         "record_finding",
         "run_terminal",
@@ -53,8 +55,8 @@
     },
     {
       "roles": "system,user,assistant,tool,assistant,tool,user",
-      "chars": 12131,
-      "sha256": "4c13d69cd18c312cb86112719aa782814ca0ad6e082538118b049c4ad974b920",
+      "chars": 12603,
+      "sha256": "34ffc2911bf376f09f2344848701b7c0e3fea169027667f992300c90599f7551",
       "tools": [
         "delegate",
         "diff",
@@ -66,6 +68,7 @@
         "offer_choice",
         "plan",
         "read_file",
+        "read_thread",
         "recall",
         "record_finding",
         "run_terminal",
@@ -77,8 +80,8 @@
     },
     {
       "roles": "system,user,assistant,tool,assistant,tool,assistant,tool,user",
-      "chars": 12288,
-      "sha256": "17fe00dd97325115cacf0e2e0d55f0b735f437150fa1d7b68b98ed7ff9361c85",
+      "chars": 12760,
+      "sha256": "9e924148382d194a4b8f3575232edc525b8950fe35d38a2c857c82f8ef29647b",
       "tools": [
         "delegate",
         "diff",
@@ -90,6 +93,7 @@
         "offer_choice",
         "plan",
         "read_file",
+        "read_thread",
         "recall",
         "record_finding",
         "run_terminal",
@@ -101,8 +105,8 @@
     },
     {
       "roles": "system,user,assistant,tool,assistant,tool,assistant,tool,assistant,tool,user",
-      "chars": 12644,
-      "sha256": "0fc0180bcb2431b18111e3c15587dc5ec33d96db098a2fbd8863742c3a4956e4",
+      "chars": 13116,
+      "sha256": "e970aa1a6d61c26d7b8a7cba7077a008bfc69590021eeea21a0caa59db18f0d1",
       "tools": [
         "delegate",
         "diff",
@@ -114,6 +118,7 @@
         "offer_choice",
         "plan",
         "read_file",
+        "read_thread",
         "recall",
         "record_finding",
         "run_terminal",

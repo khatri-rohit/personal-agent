@@ -12,7 +12,7 @@ import {
 } from '@agent/agent-models';
 
 /**
- * Checkpoints (B3). Before an Agent run in a workspace the host snapshots the
+ * Checkpoints. Before an Agent run in a workspace the host snapshots the
  * folder, and again when the run ends. Undo puts back what a run changed,
  * but only the files that still hold what the run left: anything changed
  * since (by the user or a later run) is reported, never overwritten.

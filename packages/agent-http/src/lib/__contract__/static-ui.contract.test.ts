@@ -1,5 +1,5 @@
 /**
- * Contract: the chat UI on the API's own origin (ADR-0003 §4.5). Hashed
+ * Contract: the chat UI on the API's own origin. Hashed
  * assets are immutable, the shell is revalidated, any non-/api GET falls back
  * to the shell, /api never does, and with no UI the host is headless.
  */

@@ -28,7 +28,7 @@ export type RequestOptions = {
 };
 
 /**
- * The only HTTP client of the agent host (ADR-0003 §4.9). It knows every
+ * The only HTTP client of the agent host. It knows every
  * route's method and URL from the protocol table and adds the token when it
  * has one; reading the response stays with the caller, so each caller keeps
  * its own handling of statuses and bodies.

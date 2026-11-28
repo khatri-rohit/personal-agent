@@ -4,7 +4,7 @@ import path from 'node:path';
 import { sameWorkspaceRoot } from '@agent/agent-models';
 
 /**
- * Folders a browser request may open as a workspace (B1). A page must not
+ * Folders a browser request may open as a workspace. A page must not
  * be able to point the agent at any folder on disk, so a folder is allowed
  * only when a person chose it:
  * - picked in the folder dialog (`/workspace/pick` records it here);

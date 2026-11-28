@@ -1,7 +1,7 @@
 import { parseRunOptions, type StartRunRequest } from './run.js';
 
 /**
- * The message waiting for a thread's run to end (F2). One per thread, held
+ * The message waiting for a thread's run to end. One per thread, held
  * by the host (`sessions/<id>/queued.json`) so it survives reloads and shows
  * in every tab. The host starts it when the thread's run settles; it is
  * never started by a restart.

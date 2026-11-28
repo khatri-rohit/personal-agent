@@ -646,7 +646,7 @@ export class ThreadStore {
     );
   }
 
-  /** The message waiting for this thread's run to end (F2), or null. */
+  /** The message waiting for this thread's run to end, or null. */
   async readQueued(threadId: string): Promise<QueuedMessage | null> {
     return this.readJsonFile(this.queuedPath(threadId), parseQueuedMessage, null);
   }

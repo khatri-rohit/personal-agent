@@ -58,35 +58,35 @@ export type HarnessFlags = {
    */
   stateCard: boolean;
   /*
-   * Flags of docs/plans/context-and-subagent-fixes-plan.md. Off until each
-   * one's own eval passes with the others off.
+   * Context and sub-agent behaviour switches. Off until each one's own
+   * eval passes with the others off.
    */
   /**
-   * Fix 1: an earlier turn's tool rows keep the same per-tool cap they had
+   * An earlier turn's tool rows keep the same per-tool cap they had
    * inside the run (`liveResultCapChars`), a cut lands on a line boundary,
    * and its footer names the ledger blob's sha for `recall`.
    */
   carryWholeReads: boolean;
   /**
-   * Fix 2: a turn's results stop joining the prompt past the window guard
+   * A turn's results stop joining the prompt past the window guard
    * share of the input budget (they become evicted cards with a sha), and a
    * prompt still over the input budget is reshaped before it is sent.
    */
   windowGuard: boolean;
   /**
-   * Fix 3: a sub-agent report is partial only when the child hit a limit,
+   * A sub-agent report is partial only when the child hit a limit,
    * sent no report, or said partial itself; open questions no longer make
    * it partial. Header and body show the same status.
    */
   childStatusAtLimit: boolean;
   /**
-   * Fix 4: a brief whose paths overlap a running sub-agent's starts anyway,
+   * A brief whose paths overlap a running sub-agent's starts anyway,
    * and every brief names the sub-agents running at the same time instead
    * of being refused.
    */
   siblingBriefs: boolean;
   /**
-   * Fix 5: a resumed sub-agent whose replayed history is over the
+   * A resumed sub-agent whose replayed history is over the
    * compaction mark gets its older tool results as evicted cards before
    * its first call.
    */

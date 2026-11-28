@@ -99,7 +99,7 @@ export type RunMetrics = {
   untracedPromptTokens: number;
   /** Balance change across the run, from usage.jsonl (legacy session/weekly plans). */
   capacity: { weeklyPercent: number | null; sessionPercent: number | null } | null;
-  /** Whether the harness mechanisms do what they exist for (v2 phase 0). */
+  /** Whether the harness mechanisms do what they exist for. */
   health: HealthMetrics;
 };
 

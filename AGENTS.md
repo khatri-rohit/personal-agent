@@ -41,11 +41,11 @@ Nx monorepo for a personal agent harness: **one app** (`apps/agent`), one proces
 | `apps/web` | Vite SPA chat (react-router). Imports `agent-models` and `agent-client` only, never `agent-core`. | Composer, thread view, sidebar, usage meters. Rebuilds from the ledger; SSE is the live path. Served by `apps/agent` on the same origin; produces assets, not a process. |
 | `packages/agent-eval` | Read-only measurement. Imports `agent-models` only, never `agent-core`. | Readers, metrics, trial runner, gate. Trials talk to the HTTP API; they do not run a second loop. |
 | `apps/eval` | Next.js viewer over `agent-eval`. Does not import `agent-core`. | Suite results, run traces, usage, thread/run **Review**. Not the chat UI. |
-| `evals/` | Task corpus (not an Nx project). | `evals/tasks`, `evals/baselines`, plan of record in `evals/ROADMAP.md`. |
+| `evals/` | Task corpus (not an Nx project). | `evals/tasks` (`regression/`, `matrix/`), `evals/baselines`. |
 
-Lint (`@nx/enforce-module-boundaries` in `eslint.config.mjs`) matches this, using the tiers from `docs/adr/0003` §8: `type:data` (agent-models) ← `type:engine` (agent-core, agent-eval) ← `type:service` ← `type:adapter` ← `type:app`; `type:client` and `type:ui` (web) see only data and client. `apps/eval` is `scope:eval` and may not import anything tagged `runtime:core` (agent-core). Every project has an explicit `lint` target, so `nx run-many -t lint` enforces these rules everywhere.
+Lint (`@nx/enforce-module-boundaries` in `eslint.config.mjs`) matches this, using dependency tiers: `type:data` (agent-models) ← `type:engine` (agent-core, agent-eval) ← `type:service` ← `type:adapter` ← `type:app`; `type:client` and `type:ui` (web) see only data and client. `apps/eval` is `scope:eval` and may not import anything tagged `runtime:core` (agent-core). Every project has an explicit `lint` target, so `nx run-many -t lint` enforces these rules everywhere.
 
-**Behaviour guards** (keep green; `docs/plans/one-binary-host-plan.md`): `packages/agent-http/src/lib/__contract__/` pins every HTTP route, the access rules, the static UI and SSE, plus one golden Workspace run with a scripted model (`__golden__/workspace-run.json`); `apps/agent/src/local-run.contract.test.ts` pins the isolated CLI run (`__golden__/local-run.json`); `agent-core` `loop/__replay__/` pins event and trace order. A deliberate behaviour change re-records them (`vitest -u`) and says why in the commit.
+**Behaviour guards** (keep green): `packages/agent-http/src/lib/__contract__/` pins every HTTP route, the access rules, the static UI and SSE, plus one golden Workspace run with a scripted model (`__golden__/workspace-run.json`); `apps/agent/src/local-run.contract.test.ts` pins the isolated CLI run (`__golden__/local-run.json`); `agent-core` `loop/__replay__/` pins event and trace order. A deliberate behaviour change re-records them (`vitest -u`) and says why in the commit.
 
 ## Chat flow
 

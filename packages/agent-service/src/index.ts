@@ -1,6 +1,5 @@
 /**
- * agent-service: the host's state and run logic (docs/plans/one-binary-host-plan.md,
- * stage 1). Create one `AgentService` per process with `createAgentService`;
+ * agent-service: the host's state and run logic. Create one `AgentService` per process with `createAgentService`;
  * transports (HTTP routes today) hold it and call the functions below with it.
  */
 

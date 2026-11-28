@@ -1,8 +1,8 @@
 /**
- * I8 (v2 build plan): one value per quantity. Where two parts of the
- * harness mean the same thing, they must agree, or a bug like the 7k read
- * window cut again by a 16k live cap, or a "~150 calls" brief running under
- * a 450-call limit, comes back. Each check names the pair it guards.
+ * One value per quantity. Where two parts of the harness mean the same
+ * thing (a tool's read window and the cap applied to its result, a brief's
+ * call budget and the limit it runs under), they must agree. Each check
+ * names the pair it guards.
  */
 import { describe, expect, it } from 'vitest';
 

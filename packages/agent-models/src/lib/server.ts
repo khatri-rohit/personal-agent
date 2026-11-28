@@ -1,5 +1,5 @@
 /**
- * The running server of an agent home (F3): `AGENT_HOME/server.json`, written
+ * The running server of an agent home: `AGENT_HOME/server.json`, written
  * once the server listens and removed when it stops. Readers (a second
  * `agent web`, the eval runner) attach to it instead of guessing a port. The
  * file alone proves nothing after a crash: a reader checks it answers.

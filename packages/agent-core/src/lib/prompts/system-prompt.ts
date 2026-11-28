@@ -73,10 +73,13 @@ function toolProtocol(registry: ToolRegistry, isWorkspace: boolean): string {
       ? '- web_fetch returns a source card (sha256 + teaser). Find the part you need with sha256 + query; page with offset only to read one section in full. Do not refetch the URL.'
       : '',
     has('recall')
-      ? '- Old results may appear as "(evicted)" cards and skills as "(skill card)". Call recall with the sha256 (or load_skill again) only when you need that exact text.'
+      ? '- Old results may appear as "(evicted)" cards. Call recall with the sha256 only when you need that exact text.'
       : '',
     has('load_skill')
-      ? '- Skills: load one when its catalog description matches what you are about to do. Do not load skills for questions you can answer directly. Bodies in "Loaded skills" are already loaded.'
+      ? "- Skills: load one when its catalog description matches what you are about to do, and load every skill the user's message lists as attached before you act on it. A loaded skill stays above; do not load it again. Do not load skills for questions you can answer directly."
+      : '',
+    has('read_thread')
+      ? "- Threads the user's message lists as attached are references, not text you have read. Read one with read_thread when the request depends on it, and only the pages you need."
       : '',
     has('plan')
       ? '- plan and todo are a durable journal and checklist. Use them for multi-step work the user will want to track; skip them for small tasks. If a Final plan with open todos exists, work against it and keep todo status current.'
@@ -90,9 +93,10 @@ function toolProtocol(registry: ToolRegistry, isWorkspace: boolean): string {
 }
 
 /**
- * Workspace system prompt: judgment, not procedure. Each section answers a
- * failure seen in traces (drift, false "verified", ritual tool calls, wide
- * reads in the parent). Stable text first; the date sits at the very end.
+ * Workspace system prompt: judgment, not procedure. Sections cover staying
+ * on the request, verifying before claiming done, calling tools only when
+ * they add information, and keeping wide reads in sub-agents. Stable text
+ * first; the date sits at the very end so the prefix stays cacheable.
  */
 /**
  * `stateCard`: the harness card is sent each call. Off (the A/B baseline),

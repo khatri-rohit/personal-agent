@@ -192,7 +192,7 @@ export class Admission {
     }
 
     // Storm guard by what the tool is: paging one file's content. Past the
-    // limit the read is answered, not run (P5); only a loop past twice the
+    // limit the read is answered, not run; only a loop past twice the
     // limit stops the run.
     const traits = traitsOf(toolName);
     const readPath = traits?.lineRange ? (traits.file?.(args) ?? null) : null;

@@ -1,337 +1,216 @@
 # Personal Assistant
 
-Personal **agent harness** in an [Nx](https://nx.dev) monorepo: a host-agnostic runtime (`@agent/agent-core`) and **one app**, `apps/agent`: one process, one port (3333) serving the API (SSE) and the chat UI (`apps/web`, a Vite SPA). The eval viewer (`apps/eval`) stays a separate UI. One engine, two bindings: **Home** (chat, optional web) and **Workspace** (folder-bound coding tools).
+A personal **agent harness** in an [Nx](https://nx.dev) monorepo. One app, `apps/agent`, runs one process on one port (3333) that serves the HTTP API (with SSE) and the chat UI (`apps/web`, a Vite SPA). The runtime (`@agent/agent-core`) has two bindings:
 
-Before changing code, read [AGENTS.md](./AGENTS.md): ownership and lint-enforced boundaries, where code goes, naming, module design, and Nx conventions.
+- **Home**: chat, with optional web search.
+- **Workspace**: a chat bound to one folder, with coding tools jailed to that folder.
+
+The eval viewer (`apps/eval`) is a separate UI for measuring runs.
+
+Read [AGENTS.md](./AGENTS.md) before changing code. It covers ownership, the lint-enforced module boundaries, where code goes, and the major files.
 
 ---
 
 ## Architecture
 
-| Layer          | Package / app         | Responsibility                                                                               |
-| -------------- | --------------------- | -------------------------------------------------------------------------------------------- |
-| Domain types   | `@agent/agent-models` | `Run`, `Thread`, `AgentEvent`, `HOME_MODE` / `WORKSPACE_MODE`, chat shapes                   |
-| Runtime (pure) | `@agent/agent-core`   | `runLoop`, `RunManager`, tools, model invoke/stream, system prompt — **no HTTP, DOM, or DB** |
-| Host state     | `@agent/agent-service` | `createAgentService`: stores, runs, memory, skills, System 1, traces                        |
-| Transport      | `@agent/agent-http`   | Express: `/api/agent/*` from the protocol table, access, voice proxy, static UI              |
-| App            | `apps/agent`          | The `agent` binary: `serve`, `web`, `run` (isolated local run), `eval`                        |
-| UI             | `apps/web`            | Vite SPA chat UI + SSE via `thread-session`; built into `apps/agent`                         |
+| Layer | Package / app | Responsibility |
+| ----- | ------------- | -------------- |
+| Shared types | `@agent/agent-models` | Events, ledger, threads, traces, modes (`HOME_MODE` / `WORKSPACE_MODE`). Imports nothing. |
+| Runtime | `@agent/agent-core` | Loop, tools, context assembly, model calls, sub-agents. No HTTP, DOM or database. |
+| Host state | `@agent/agent-service` | `createAgentService`: thread store, runs, memory, skills, checkpoints, traces. One per process. |
+| Transport | `@agent/agent-http` | Express app: routes from the protocol table, access control, voice proxy, static UI. |
+| Client | `@agent/agent-client` | The one HTTP client, used by the web UI and the eval runner. |
+| App | `apps/agent` | The `agent` binary: `serve`, `web`, `run`, `eval`. |
+| UI | `apps/web` | Chat UI. Talks to the API on its own origin. |
+| Measurement | `@agent/agent-eval`, `apps/eval` | Read-only trace/ledger readers, metrics, trial runner, gate, and the viewer. |
 
 ### Request flow (chat)
 
 ```
-User message (apps/web)
-  → POST /api/agent/run  { threadId, messages, allowedTools?, model?, thinking? }
-  → createToolRegistry(ALL_TOOLS, clientTools ∪ globalTools)
-  → RunManager.start → runLoop(modelCall, messages, tools)
-  → GET /api/agent/run/:runId/events  (SSE AgentEvents)
-  → apps/web chat-store reducer → UI
+apps/web composer
+  → POST /api/agent/run                start the run (agent-http → agent-service)
+  → assemble context                   ledger, memory, skills, workspace rules, compaction
+  → RunManager.start → runLoop         agent-core
+  → GET /api/agent/run/:runId/events   SSE AgentEvents
+  → chat-store reducer                 apps/web
 ```
 
-**Threads are host-owned on disk** (`AGENT_HOME` SQLite catalog + per-thread `ledger.jsonl`). The first user turn seeds a sidebar title and refines it with the chat model. The ledger is the durable history of the **active tape**. Retry/edit **rewind** truncates that tape (atomic rewrite) — discarded turns are gone. SSE is a live convenience; after a run handle is cleared (5 minute TTL) a late events subscribe is 404 and the client rebuilds from `GET /ledger`.
+**Threads live on disk** under `AGENT_HOME`: a SQLite catalog plus one append-only `ledger.jsonl` per thread. The ledger is the durable history. Retry or edit **rewinds** it (truncates the later rows). SSE is the live path. Once a run handle expires (5 minutes after it settles) the client rebuilds from `GET /api/agent/threads/:id/ledger`.
 
-**One active run per thread** (enforced by `RunManager`, in-process — not multi-instance). Two threads bound to the same workspace folder can run Agent-posture runs at the same time; nothing locks the folder. Use `POST /api/agent/run/:runId/cancel` to stop generation.
+**One active run per thread**, held in process memory. A message sent while a run is going is queued on the host (`sessions/<threadId>/queued.json`) and starts when the run settles. `POST /api/agent/run/:runId/cancel` stops a run.
 
-### Harness mental models
+**Checkpoints.** Before an Agent-posture run in a workspace, the host snapshots the files the run may touch. The UI shows what each run changed and can restore it.
 
-How to think about this system when changing it or prompting it. (Response branching is not in the tree; rewind stays.)
+### How to think about the harness
 
-1. **The loop is a budget machine.** Home caps iterations and tool calls; Workspace sets its own finite iteration/tool caps via `WORKSPACE_MODE` and also relies on the repeat detector, tool timeouts, cancel, and context residency (`packages/agent-core/src/lib/loop/limits.ts`). Tune budgets and residency when the model loops — almost never the system prompt.
+1. **The loop is a budget machine.** Each mode caps iterations, tool calls, prompt tokens and wall time (`packages/agent-core/src/lib/loop/limits.ts`). When the model loops, tune budgets and residency, not the system prompt.
+2. **Context is a cache.** `assembleContext` keeps a stable prefix (system prompt, skills catalog, memory, rules) so the provider's prompt cache holds, and evicts by cost: old tool results become cards first, large bodies spill to blobs, older turns compact last. Anything evicted keeps a `sha256` the model can `recall`.
+3. **Gates are code, not prompt text.** Memory writes, posture and the workspace path jail are deterministic checks. Same input, same verdict.
+4. **The ledger is the truth.** `AgentEvent` is the live API. UI state that cannot be rebuilt from the ledger is a bug.
+5. **Everything except the model is deterministic.** Compaction is extractive (no LLM call on the request path). Model calls outside the loop (thread titles) are maintenance work.
 
-2. **Context is a cache; stubbing is eviction.** `assembleContext` evicts by role: old tool results stub first, old image attachments stub next (`keepAttachmentsForTurns`), large bodies spill to blobs, the tape compact last. Judge new capabilities by cache residency.
+### Tools
 
-3. **The gate is the constitution; the model is a petitioner.** Memory writes, posture, and the workspace path jail are deterministic (`packages/agent-core/src/lib/memory/gate.ts`). Same input → same verdict. Ship the gate in the same change as the capability. Write/exec tools run without an Allow/Deny pause.
+Tools are registered in `@agent/agent-core` and filtered per run: the mode's `globalTools`, plus the user-toggleable `allowedTools` the composer sends (today only `web_search`). Profiles are in `packages/agent-models/src/lib/mode.ts`.
 
-4. **Events are the product; the ledger is the truth; SSE is a convenience.** `AgentEvent` is the live API. Any UI state that cannot be rebuilt from `GET /ledger` is a bug. A seq gap on the stream refetches the ledger (`thread-session`).
+| Tool | Home | Workspace | Purpose |
+| ---- | :--: | :-------: | ------- |
+| `web_search` | toggle | toggle | Search: Ollama → Firecrawl → Tavily. Returns hit cards; the top 2 hits are prefetched into the source store. |
+| `web_fetch` | ✓ | ✓ | Fetch a URL into the store and return a card (~2k teaser). Page through the stored text by `sha256` + `offset`. |
+| `recall` | ✓ | ✓ | Read back a stored body by `sha256`: an evicted tool result, a sub-agent report, a compacted turn. |
+| `load_skill` | ✓ | ✓ | Load a skill pack's instructions (see [Skills](#skills)). |
+| `memory` | ✓ | ✓ | Read and change the user and project memory files. |
+| `session_search` | ✓ | ✓ | Search messages in the user's other threads. |
+| `read_thread` | ✓ | ✓ | Read another thread by id, a page of whole messages at a time (tool calls listed, tool results left out). |
+| `plan`, `todo` | ✓ | ✓ | The thread's plan and to-do list. |
+| `record_finding` | ✓ | ✓ | Record a cited finding that stays in context across turns. |
+| `offer_choice` | ✓ | ✓ | Ask the user to pick between options. |
+| `glob`, `grep`, `read_file` | | ✓ | Read the workspace (jailed to the folder). |
+| `edit_file`, `run_terminal` | | ✓ | Change files and run commands in the folder. Commands get an allowlisted environment (no host secrets). Commands that reach off the machine or outside the folder ask first. |
+| `diff` | | ✓ | `git diff HEAD` plus untracked files. |
+| `delegate` | | ✓ (Agent posture) | Hand a side task to a sub-agent (`explore`, `review`, `advisor`, or a user agent). |
 
-5. **Determinism is load-bearing.** Everything except the model is deterministic. Compaction is extractive (no LLM on the request path). Model calls belong in maintenance (thread title), not admission or assembly.
+### Skills
 
-### Tool policy (important)
+Skills are [Agent Skills](https://agentskills.io) folders (`<name>/SKILL.md` with `name` and `description` frontmatter). They are read from, lowest to highest precedence:
 
-Tools are registered in `@agent/agent-core` and filtered per run:
+1. Built-ins: `packages/agent-core/skills` (`patch-and-verify`, `home-research`).
+2. `~/.agents/skills` (where `npx skills add <owner/repo> -g` installs).
+3. `$AGENT_HOME/skills` (your own packs).
+4. `<workspace>/.agents/skills`, for a bound workspace. It only adds new names and never replaces one from above.
 
-| Tool         | When available                                                                             | Purpose                                                                                                                                                                     |
-| ------------ | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `web_search` | Only if the client enables **Web search** in the composer (`allowedTools: ['web_search']`) | Live search: Ollama → Firecrawl → Tavily. Returns **hit cards**; top **2** hits are prefetched into the source store (`sha256`).                                            |
-| `web_fetch`  | **Always** (Home and Workspace `globalTools`)                                              | `url` → fetch pipeline (Ollama → Firecrawl → Tavily → **local HTTP**), store full page, return a **card** (~2k teaser). `sha256`+`offset`+`limit` → page the stored source. |
-| `load_skill` | **Always** (server `globalTools`)                                                          | Spec-valid `SKILL.md` folders from built-ins, `~/.agents/skills`, `$AGENT_HOME/skills`, and, when a workspace is bound, `<workspace>/.agents/skills` (same name: `$AGENT_HOME/skills` beats `~/.agents/skills` beats built-in; a workspace pack only adds new names, never replaces one). Built-ins are only harness procedures (`patch-and-verify`, `home-research`); optional packs from this repo live in `skills/` (e.g. `npx skills add <this-repo> --skill ai-writing-guidelines -g`). Add packs with `npx skills add owner/repo -g`. **Trust model:** anything in these folders is loaded as-is (no approval step); invalid or shadowed packs are listed with a reason in the Skills panel and never loaded. The catalog is read once per run. Removing a pack in the panel moves it to `$AGENT_HOME/.trash/skills` (kept 30 days) and never touches `~/.agents/skills` (use `npx skills remove <name> -g`). `web_search` / `web_fetch` work without loading a skill. |
-| `recall`     | **Always**                                                                                 | Read back a stored body by `sha256`: an `(evicted)` tool-result card, a sub-agent report, or a ledger blob.                                                                 |
-| `diff`       | Workspace                                                                                  | Read-only `git diff HEAD` + untracked files, jailed to the workspace folder. Used by the parent and the `review` sub-agent.                                                 |
-| `delegate`   | Workspace (Agent posture)                                                                  | Hand a side task to a sub-agent (`explore`, `review`, `advisor`, or a user agent). Returns a capped digest; full report via `recall`.                                       |
+The system prompt carries only the catalog (name + description). The model calls `load_skill` when a description matches its task, and gets the **whole** SKILL.md body plus a list of the pack's other files. `load_skill` with `file` reads one of them (jailed to the pack folder, paged past 20k chars). A loaded skill stays in the conversation; loading it again while it is still there returns a pointer instead of a second copy. A pack whose body is over 100,000 chars is listed as invalid; keep long detail in the pack's own files.
 
-### Context, budgets, and sub-agents
+Invalid or shadowed packs are listed with a reason in the Skills panel and never loaded. Removing a pack moves it to `$AGENT_HOME/.trash/skills` (kept 30 days).
 
-- **Window:** each thread budgets against **260K** (default) or the **model's full size** (composer toggle, stored as `threads.context_window_mode`). Resolved once in `resolveContextBudget` (`packages/agent-service/src/lib/models/model-runtime.ts`) from `resolveContextWindow` (`agent-models/context.ts`).
-- **Compaction between runs** starts at `compactAtRatio` (65%) of the input budget or `compactAtTokens` (100k), whichever is lower, and cuts older turns until history fits the lower of `compactToRatio` (25%) and `compactToTokens` (50k) (`compactionMarks` in `agent-models/context.ts`), and always below the in-run low mark. A larger window does not raise what a run starts with.
-- **Carry-over:** tool results made before a run starts stay in full newest-first up to `carryOverToolTokens` (40k); older ones become cards.
-- **Inside a run** (`agent-core/context/residency.ts`, `loop/residency-pass.ts`): one budget on the whole prompt, derived from the window (`inRunMarks`): a high mark at `inRunHighRatio` (80%) of the input budget and a low mark at `inRunLowShare` (70%) of it (192k / 134k on 260k). Below the high mark nothing leaves, so the prompt only grows and its prefix stays cacheable. Past it, one pass goes down to the low mark, cheapest loss first: superseded copies, card-only steps, other results (searches, commands), file views read once, diffs, and files the model already read back last; if that is not enough, the oldest steps fold into one extractive recap. Removed results become `(evicted)` cards with a sha for `recall`; an unchanged `read_file` re-read returns a pointer. Optional `inRunHighTokens` sets an absolute ceiling (for a provider without prompt caching).
-- **Token budget:** `maxPromptTokens` / `maxWallMs` per run (`WORKSPACE_MODE`: 10M / 2 h, `HOME_MODE`: 400k / 15 min). One wrap-up nudge at 80%, `limit.tokens` / `limit.wall` at 100%. Sub-agent spend is charged to the parent.
-- **Sub-agents** (`agent-core/subagent/`): one writer, many readers. Children get profile tools ∩ parent tools, minus `delegate`, `offer_choice`, `memory`, `plan`, `todo`, `edit_file`, `run_terminal`; no nesting; at most 4 in parallel per run; cancelled with the parent; a lean child prompt; a `report` tool that ends the child run. Model roles: `AGENT_MODEL_FAST` (explore) and `AGENT_MODEL_STRONG` (review, advisor), both defaulting to the parent's model. User agents: `$AGENT_HOME/agents/<name>.md` (frontmatter `name`, `description`, `model: main|fast|strong`, `thinking: off|default|high|max`, `effort: quick|medium|thorough` (default medium: the work budget when a brief names none), `tools`, `context: none|diff`, `maxTurns`; body is the prompt).
-- **Traces:** every run (children included) writes `<AGENT_HOME>/sessions/<threadId>/traces/<runId>.jsonl`, schema version `v` (`TRACE_SCHEMA_VERSION`), with per-call usage and timing, context layers, evictions, compaction, budget warnings, and `run_finish` usage.
+### Skills and threads in a message
 
-**Resource discipline (by design):**
+Typing `/` in the composer names a skill; typing `@` attaches another thread (shown as a chip with a message icon). Both are **references**: the message carries the skill's name and the thread's id, and the model loads them with its tools: `load_skill` for the skill, `read_thread` for the thread, and only the pages it needs. Each load is an ordinary tool call in the ledger, shown as "Ran skill …" or "Read thread …". After compaction folds the turns that used them, the brief names those skills and threads so the model can load them again.
 
-- General knowledge, math, coding without live data → **no** `web_search`.
-- `web_search` is not “always on”; the UI toggle controls whether it is in the allow list.
-- `web_fetch` does not imply searching; use it for URLs and selective deep reads.
+Optional packs in this repo live in `skills/` (for example `npx skills add <this-repo> --skill ai-writing-guidelines -g`).
 
-Profile defaults live in `packages/agent-models/src/lib/mode.ts` (`HOME_MODE` / `WORKSPACE_MODE`: `allowedTools`, `globalTools`, limits).
+### Context and budgets
+
+- **Window.** Each thread budgets against 260K tokens by default, or the model's full window (composer toggle). Resolved in `packages/agent-service/src/lib/models/model-runtime.ts` from `packages/agent-models/src/lib/context.ts`.
+- **Between runs.** History compacts at 65% of the input budget (or 100k tokens, whichever is lower), down to 25% (or 50k). Tool results from earlier turns stay in full, newest first, up to 40k tokens; older ones become cards.
+- **Inside a run.** One pass on the whole prompt at the high mark (80% of the input budget) brings it down to the low mark (70%), cheapest loss first. Below the high mark nothing leaves, so the prompt prefix stays cacheable. See `packages/agent-core/src/lib/context/residency.ts`.
+- **Per-run caps.** Home: 40 iterations, 80 tool calls, 400k prompt tokens, 15 minutes. Workspace: 500 iterations, 1,200 tool calls, 10M prompt tokens, 2 hours. One wrap-up nudge at 80%, a stop at 100%. Sub-agent spend counts against the parent.
+- **Sub-agents.** One writer, many readers. Children get the profile's tools minus every write tool and `delegate`; no nesting; at most 4 in parallel; cancelled with the parent. Model roles: `AGENT_MODEL_FAST` (explore) and `AGENT_MODEL_STRONG` (review, advisor), both defaulting to the parent's model. User agents live in `$AGENT_HOME/agents/<name>.md`.
+- **Traces.** Every run (children included) writes `<AGENT_HOME>/sessions/<threadId>/traces/<runId>.jsonl` with per-call usage and timing, context layers, evictions, compaction and budget events.
 
 ---
 
 ## Prerequisites
 
-- **Node.js** 20+ (LTS recommended)
-- **npm** (root `package.json` `workspaces` + `package-lock.json`)
-- **Ollama** for chat: cloud API key and/or local `OLLAMA_BASE_URL` ([docs](https://docs.ollama.com))
-- **Web search/fetch** always run the same layered pipeline (Ollama → Firecrawl → Tavily; fetch then **local HTTP**). Keys are credentials for a layer, not a router. Firecrawl/Tavily keyless still work without a dedicated search key.
-- **Redis** (optional but required for async **thread title** jobs): local Docker or existing instance — see [docker/README.md](./docker/README.md)
-- **Voice add-ons** (optional, off per reader until enabled in Settings → Voice add-ons): dictation (STT) and read-aloud (TTS). Default **browser** APIs; optional **Speaches** (Whisper + Kokoro) via Docker — see env table + [docker/README.md](./docker/README.md). Neither sits on the run path.
-
-Ollama **chat** uses the OpenAI-compatible endpoint (`OLLAMA_BASE_URL=https://ollama.com/v1`). Web tools are independent of which model is chatting: `tools/web/router.ts` tries Ollama, then Firecrawl, then Tavily; `web_fetch` then tries local HTTP. Keyless Firecrawl/Tavily tiers are shared / rate-limited — not a production SLA.
-
----
+- **Node.js 24+** and **npm** (the workspace uses `package-lock.json`).
+- **Ollama** for chat: an Ollama cloud API key (`OLLAMA_BASE_URL=https://ollama.com/v1`) or a local endpoint.
+- **Web tools** work without extra keys (keyless Firecrawl and Tavily), but those tiers are shared and rate-limited. Set `FIRECRAWL_API_KEY` / `TAVILY_API_KEY` for regular use.
+- **Voice (optional).** Dictation and read-aloud default to the browser's speech APIs. [Speaches](./docker/README.md) (Whisper + Kokoro, via Docker) is an optional local alternative.
 
 ## Environment
 
-Copy and fill secrets (never commit `.env`):
+Copy the example and fill in secrets (never commit `.env`):
 
 ```bash
 cp .env.example .env
 ```
 
-Host-run API (typical dev) — see [.env.example](./.env.example):
+| Variable | Purpose |
+| -------- | ------- |
+| `OLLAMA_BASE_URL` | Chat completions base URL (default: Ollama cloud). |
+| `OLLAMA_API_KEY` | Chat (cloud), and the first web search/fetch layer. |
+| `FIRECRAWL_API_KEY`, `TAVILY_API_KEY` | Optional: higher limits for the web layers. |
+| `AGENT_HOME` | Where threads, memory, skills and traces live (default `~/.local/personal-assistant`). |
+| `AGENT_MODEL_FAST`, `AGENT_MODEL_STRONG` | Optional sub-agent models. |
+| `VOICE_STT_PROVIDER`, `VOICE_TTS_PROVIDER` | `browser` (default), `speaches` or `off`. |
+| `SPEACHES_*`, `VOICE_STT_*`, `VOICE_TTS_*` | Speaches settings; see [docker/README.md](./docker/README.md). |
 
-| Variable                         | Purpose                                                             |
-| -------------------------------- | ------------------------------------------------------------------- |
-| `OLLAMA_BASE_URL`                | Chat completions base URL (default cloud)                           |
-| `OLLAMA_API_KEY`                 | Chat (cloud) + first web search/fetch layer when set                |
-| `FIRECRAWL_API_KEY`              | Optional — higher Firecrawl limits (keyless works without it)       |
-| `TAVILY_API_KEY`                 | Optional — higher Tavily limits (keyless works without it)          |
-| `AGENT_HOME`                     | Session catalog/ledger root (default `~/.local/personal-assistant`) |
-| `VOICE_STT_PROVIDER`             | Dictation: `browser` (default) \| `speaches` \| `off`. Web reads it from `/api/voice/capabilities` |
-| `SPEACHES_BASE_URL`              | Speaches only — STT proxy base URL                                  |
-| `SPEACHES_STT_MODEL`             | Speaches only — e.g. distil-whisper-large-v3                        |
-| `VOICE_STT_LANGUAGE`             | Speaches `language` (default `en`)                                  |
-| `VOICE_STT_PROMPT`               | Speaches vocabulary hint                                            |
-| `VOICE_STT_VAD_FILTER`           | Speaches server-side Silero VAD (default `true`)                    |
-| `VOICE_TTS_PROVIDER`             | Read-aloud: `browser` (default) \| `speaches` \| `off`. Web reads it from `/api/voice/capabilities` |
-| `SPEACHES_TTS_MODEL`             | Speaches only — e.g. `speaches-ai/Kokoro-82M-v1.0-ONNX-fp16`        |
-| `VOICE_TTS_VOICE`                | Kokoro voice (default `af_heart`)                                   |
-| `VOICE_TTS_SPEED`                | Speech speed 0.5–2.0 (default `1`)                                  |
+`agent` loads the repo's `.env.local` and `.env` itself and never overrides variables already set.
 
-Web app (optional, inlined at build time; the UI always talks to its own origin):
-
-| Variable                | Purpose                                                         |
-| ----------------------- | --------------------------------------------------------------- |
-| `VITE_VAD_ASSET_BASE`   | Speaches dictation: Silero VAD worklet/model (default jsDelivr) |
-| `VITE_ORT_WASM_BASE`    | Speaches dictation: onnxruntime-web wasm (default jsDelivr)     |
-| `VITE_API_PROXY_TARGET` | Dev only: where the Vite dev server proxies `/api` (default `http://localhost:3333`) |
-
-**Access:** the browser is admitted only as the server's own page (`Sec-Fetch-Site: same-origin`, exact `Origin`); local processes send the token from `$AGENT_HOME/api-token`. There is no CORS (`CORS_ORIGIN` and `NEXT_PUBLIC_API_BASE` are retired).
-
-Docker-only overrides: [.env.docker.example](./.env.docker.example) — see [docker/README.md](./docker/README.md). **Compose does not run Ollama**; it provides Redis + Speaches.
+**Access.** The browser is admitted only as the server's own page (`Sec-Fetch-Site: same-origin` and the exact `Origin`). Local processes send the token from `$AGENT_HOME/api-token`. There is no CORS.
 
 ---
 
-## Quick start (development)
+## Running
 
 ```bash
-# Install (from repo root)
 npm install
 
-# Infrastructure (Redis + Speaches, CPU profile)
-docker compose --profile cpu up -d
-# Optional: docker compose --env-file .env.docker up -d
-
-# Daily use: build, then API + chat UI on one port, opens the browser
+# Build, then serve the API + chat UI on one port and open the browser
 npm start                     # → http://localhost:3333
 
-# Development: Vite (hot reload) on 4200 proxying /api to `agent serve` on 3333
-npm run dev                   # → http://localhost:4200
+# Development: Vite with hot reload on :4200, proxying /api to `agent serve` on :3333
+npm run dev
 
-# Headless API, a one-shot isolated run, the eval CLI (after a build)
-node apps/agent/dist/main.js serve --no-ui [--home <dir>] [--port 3333] [--host localhost]
-node apps/agent/dist/main.js run "What is 2+2?" [--workspace <dir>] [--ask]
-node apps/agent/dist/main.js eval up      # eval API on a free port, recorded in <evalHome>/server.json (run/gate read it)
+# After a build
+node apps/agent/dist/main.js serve [--home <dir>] [--port 3333] [--host localhost] [--no-ui]
+node apps/agent/dist/main.js run "What is 2+2?" [--workspace <dir>] [--ask] [--mode home|workspace]
+node apps/agent/dist/main.js eval --help
 ```
 
-`agent` loads the repo's `.env.local` / `.env` itself (never over variables already set) and runs from the repo root, so built-in skills and the harness version resolve. Requires Node 24+.
+- **One server per home.** A running server records itself in `AGENT_HOME/server.json`. A second start on the same home prints the running server's URL and exits.
+- **Graceful stop.** Ctrl+C refuses new runs, cancels running ones and saves them (up to 10 s). A second Ctrl+C exits at once.
+- **`agent run`** is an isolated one-shot run in the current process: no agent home, memory or user skills. Its traces go to `apps/agent/traces/`.
+- **Binding.** Keep `--host` on a loopback address. On any other host the browser is not admitted and every client needs the API token.
 
-**One server per home.** A running server records itself in `AGENT_HOME/server.json`. A second `npm start` / `agent web` / `agent serve` on the same home prints that server's URL (and opens it), warns when it runs older code, and exits instead of starting a second server. Ctrl+C stops gracefully: new runs are refused, running ones are cancelled and saved (up to 10 s), then the file is removed; a second Ctrl+C exits at once.
-
-**Queued messages live on the host.** A message sent while a run is going is kept in `sessions/<threadId>/queued.json` (one per thread; a new one replaces it). The host starts it when the run settles, so it survives a reload and shows in every tab. A refused start keeps it queued with the reason. After a restart it is never sent by itself.
-
-### Verify web search APIs (CLI)
-
-Keyless (no account) — Firecrawl then Tavily:
+## Nx commands
 
 ```bash
-# Firecrawl keyless search + scrape
-curl -s -X POST https://api.firecrawl.dev/v2/search \
-  -H "Content-Type: application/json" \
-  -d '{"query":"Firecrawl search API","limit":3,"scrapeOptions":{"formats":["markdown","links"]}}'
-
-# Tavily keyless search
-curl -s -X POST https://api.tavily.com/search \
-  -H "Content-Type: application/json" \
-  -H "X-Tavily-Access-Mode: keyless" \
-  -d '{"query":"Tavily search API","max_results":3}'
-```
-
-Optional Ollama (requires `OLLAMA_API_KEY`):
-
-```bash
-curl -s https://ollama.com/api/web_search \
-  -H "Authorization: Bearer $OLLAMA_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query":"Ollama web search API","max_results":3}'
-```
-
----
-
-## Nx commands (agent stack)
-
-Use `npx nx` (npm workspaces + package-lock.json):
-
-```bash
-# Typecheck / build affected libs after changing agent packages
-npx nx run @agent/agent-core:typecheck
-npx nx run @agent/agent-models:typecheck
-npx nx run @agent/agent-http:typecheck
-npx nx run @agent/web:lint
-
-npx nx run @agent/agent-core:build
-npx nx run @agent/agent:build        # bundles apps/agent and embeds the web dist as dist/ui
-npx nx run @agent/web:build
-
-# Lint / test (as configured)
+npx nx run @agent/agent:build              # bundles apps/agent and embeds the web build as dist/ui
+npx nx run-many -t typecheck
+npx nx run-many -t lint                    # also enforces the module boundaries
 npx nx affected -t typecheck build lint test
 ```
 
-### Typecheck troubleshooting
+The apps reference built `.d.ts` files from `packages/agent-*/dist`. After changing `@agent/agent-models` or `@agent/agent-core` types, rebuild them (`npx nx run @agent/agent-core:build`) before typechecking dependants.
 
-- Apps reference built **`.d.ts`** from `packages/agent-*/dist` via TypeScript project references. After changing `@agent/agent-models` types (e.g. `ModeConfig.globalTools`), rebuild declarations:
-
-  ```bash
-  node node_modules/typescript/bin/tsc -p packages/agent-models/tsconfig.lib.json
-  node node_modules/typescript/bin/tsc -p packages/agent-core/tsconfig.lib.json
-  ```
-
-- If `npx nx` fails with missing `nx`/`typescript` under `node_modules`, run `npm install` again.
+**Behaviour guards.** `packages/agent-http/src/lib/__contract__/` pins every HTTP route, the access rules, the static UI, SSE and one golden Workspace run. `apps/agent/src/local-run.contract.test.ts` pins the CLI run. `agent-core` `loop/__replay__/` pins event and trace order. A deliberate behaviour change re-records them (`vitest -u`) and the commit says why.
 
 ---
 
-## Key file map (agent harness)
+## Adding a tool
 
-| Area                      | Path                                                                             |
-| ------------------------- | -------------------------------------------------------------------------------- |
-| Core exports              | `packages/agent-core/src/index.ts`                                               |
-| Agent loop                | `packages/agent-core/src/lib/loop/loop.ts`                                       |
-| Loop limits               | `packages/agent-core/src/lib/loop/limits.ts`                                     |
-| Run manager + cancel      | `packages/agent-core/src/lib/run/run-manager.ts`                                 |
-| Tool registry             | `packages/agent-core/src/lib/tools/registry.ts`                                  |
-| Web search/fetch router   | `packages/agent-core/src/lib/tools/web/router.ts`                                |
-| Search providers          | `packages/agent-core/src/lib/tools/web/providers.ts`                             |
-| Tool definitions          | `packages/agent-core/src/lib/tools/web/tools.ts`, `skills.ts`                    |
-| System prompt             | `packages/agent-core/src/lib/prompts/system-prompt.ts`                           |
-| Home / Workspace profiles | `packages/agent-models/src/lib/mode.ts`                                          |
-| API routes                | `packages/agent-http/src/lib/<topic>/<topic>.routes.ts` (runs, threads, memory, models, skills) |
-| Voice STT proxy           | `packages/agent-http/src/lib/voice/voice.routes.ts`                              |
-| App commands              | `apps/agent/src/main.ts` (`serve`, `web`, `run`, `eval`)                         |
-| Web SSE client            | `apps/web/src/api/agent-client.ts`                                               |
-| Web thread session        | `apps/web/src/features/conversation/thread-session.ts` (hook: `use-agent-run.ts`) |
-| Event → UI state          | `apps/web/src/features/conversation/chat-store.ts`                               |
+1. Define it in `@agent/agent-core` (`Tool`: OpenAI-style `definition`, `guidance`, `execute`).
+2. Register it in `packages/agent-core/src/lib/tools/registry.ts`, or add a `ToolProvider` with `registerToolProvider`. Set `stage` (`read`, `network`, `exec`, `mutate`, …) so the loop schedules it correctly, and `outputCap` to bound its result.
+3. Expose it through a mode: `globalTools` for always-on, `allowedTools` for user-toggleable.
+4. Put per-tool rules in its `guidance`; they are injected into the system prompt. Edit `system-prompt.ts` only for cross-tool behaviour.
+5. Tool lifecycle events (`tool.started` / `tool.completed` / `tool.failed`) render generically in the UI.
 
----
+External HTTP for a tool belongs in core (for example `tools/web/router.ts`), not in routes.
 
-## API surface (agent)
+## Web search and fetch
 
-| Method | Path                                     | Description                                                             |
-| ------ | ---------------------------------------- | ----------------------------------------------------------------------- |
-| `POST` | `/api/agent/run`                         | Append optional user turn, start run; first turn also titles the thread |
-| `GET`  | `/api/agent/run/:runId/events?fromSeq=N` | SSE stream of `AgentEvent`s                                             |
-| `POST` | `/api/agent/run/:runId/cancel`           | Cancel in-flight run (`finishing: true` once only post-run work is left) |
-| `*`    | `/api/agent/threads…`                    | Disk-backed thread catalog / ledger                                     |
+- **Fixed pipeline.** Search: Ollama → Firecrawl → Tavily. Fetch: the same scrape layers, then plain local HTTP. Failover happens inside the tool.
+- **Store, then view.** The full page is stored (by `sha256`); the model sees a source card and pages through the stored text on demand.
+- **Untrusted content.** Fetched text is wrapped as untrusted. Only URLs and shas from this run are allowed. Local HTTP re-checks private hosts after redirects. `run_terminal` refuses `curl`, `wget` and `Invoke-WebRequest`.
 
-Client tool wiring (`apps/web/src/api/agent-client.ts`):
+## Debugging
 
-- Home: `web_fetch`, `load_skill`, `memory`; `web_search` when the client leaves web search on.
-- Workspace: `glob`, `grep`, `read_file`, `edit_file`, `run_terminal`, `load_skill`, `memory` (no default web search).
+| Symptom | Check |
+| ------- | ----- |
+| Wrong tools offered | Request `allowedTools`, the mode's `globalTools`, `createToolRegistry`. |
+| `web_search` fails | Keyless tiers rate-limited (429), or the `OLLAMA_API_KEY` layer. |
+| Run stuck "running" | SSE disconnect (a seq gap refetches the ledger); every run ends with `run.settled`; the cancel route. |
+| 409 on a new message | The thread already has a run; it is queued, or cancel it. |
+| Title stays "New Chat" | The first message must go through `POST /run`; look for `[title]` in the server log. |
+| `[skills] skipped …` at start-up | A pack that breaks the Agent Skills spec or is over the body limit; the reason is on the line and in the Skills panel. |
+| Voice errors | Speaches health at `http://127.0.0.1:8000/health`; see [docker/README.md](./docker/README.md). |
 
----
-
-## Adding or changing tools (implementation guide)
-
-1. **Define the tool** in `@agent/agent-core` (`Tool`: OpenAI `definition`, `guidance`, `execute`).
-2. **Register** in the `builtin` provider (`packages/agent-core/src/lib/tools/registry.ts`), or add a `ToolProvider` with `registerToolProvider` (the seam for MCP servers and plugins). Set `stage` (`read` / `network` / `exec` / `mutate` / …) so the loop schedules it correctly; a tool without one runs as `mutate`. Set `outputCap` to bound its result size.
-3. **Expose to the model** via profile policy:
-   - User-toggleable → `HOME_MODE.allowedTools` and/or client `allowedTools`.
-   - Always on → `HOME_MODE.globalTools` or `WORKSPACE_MODE.globalTools` (merged in `runs.routes.ts`).
-4. **System prompt** — per-tool guardrails are injected from `guidance` in `buildSystemPrompt()`. Add policy in `system-prompt.ts` only when it is cross-tool behavior.
-5. **UI** — tool lifecycle events (`tool.started` / `completed` / `failed`) are generic in `chat-store.ts`; no change needed unless you add new event types.
-6. **Validate** — `npx nx run @agent/agent-core:typecheck` and `@agent/agent-http:typecheck`.
-
-External HTTP for tools belongs in core modules (e.g. `tools/web/router.ts`), not in Express routes.
-
----
-
-## Debugging checklist
-
-| Symptom                                | Things to check                                                                                                |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| No tools / wrong tools                 | Request body `allowedTools`; server merge with profile `globalTools`; `createToolRegistry` filter              |
-| `web_search` fails                     | Keyless Firecrawl/Tavily 429 (shared caps); or `OLLAMA_API_KEY` path — curl tests above                        |
-| `web_fetch` fails                      | Valid public http(s) URL; all scrape layers + local HTTP failed; huge pages are prefixed at 16k chars          |
-| Run stuck “running”                    | SSE disconnect; seq gap should refetch ledger; every run ends with `run.settled`; cancel endpoint              |
-| 409 on new message                     | Thread already running (or a stopped run still finishing after 10 s); cancel or wait                           |
-| Title stays “New Chat”                 | First message must go through `POST /run`; check API logs for `[title] generate failed`                        |
-| Voice / STT errors                     | Speaches health `http://127.0.0.1:8000/health`, model pull per [docker/README.md](./docker/README.md)          |
-| Type errors in API after model changes | Rebuild `packages/agent-models` and `core` `.d.ts` (see above)                                                 |
-
-Enable API logging around agent routes and watch SSE in browser devtools (Network → EventStream).
-
----
-
-## Repository layout (high level)
+## Repository layout
 
 ```
-agent/
-├── apps/
-│   ├── api/              # Express — one folder per topic: runs, threads, memory, models, skills, voice
-│   ├── web/              # Next.js chat UI — features/{conversation,composer,threads,usage}
-│   └── cli/              # CLI / eval harness
-├── packages/
-│   ├── agent-core/       # @agent/agent-core — loop, tools, model
-│   └── agent-models/     # @agent/agent-models — types, HOME_MODE / WORKSPACE_MODE
-├── docker/               # Compose docs
-├── docker-compose.yml
-├── LICENSE
-├── .cursor/rules/        # Points Cursor at AGENTS.md
-├── AGENTS.md             # Guide for contributors and coding agents
-└── .env.example
+apps/
+  agent/        the `agent` binary (serve, web, run, eval)
+  web/          chat UI (Vite SPA, built into apps/agent)
+  eval/         eval viewer (Next.js)
+packages/
+  agent-models/   shared types
+  agent-core/     runtime: loop, tools, context, sub-agents
+  agent-service/  host state and run logic
+  agent-http/     HTTP adapter
+  agent-client/   HTTP client
+  agent-eval/     readers, metrics, trial runner, gate
+evals/          task corpus (tasks/, baselines/)
+skills/         optional skill packs to install
+docker/         Speaches compose docs
 ```
-
----
-
-## Design notes (web search behavior)
-
-Implementation in `tools/web/router.ts` + `tools/web/providers.ts`:
-
-1. **Fixed pipeline:** search = Ollama → Firecrawl → Tavily. Fetch = those scrape layers, then **local HTTP**. Failover is inside the tool. Thin bodies continue.
-2. **Store vs view:** full page text is stored (run cache + thread `putBlob`). The model sees a **source card** (~2k teaser + headings + `sha256`), then pages with `web_fetch { sha256, offset, limit }`.
-3. **Search** returns hit cards; top **2** URLs are prefetched into the store (not dumped into the prompt).
-4. Same-URL refetch (hash / reader proxy) is a repeated tool call; prefer sha paging.
-5. **Untrusted web:** teaser/slices wrapped as `UNTRUSTED_WEB_*`. URL allowlist + sha allowlist (sources from this run only). Local HTTP re-checks private hosts after redirects. `run_terminal` refuses curl/wget/IRW.
-
-System prompt (`system-prompt.ts`) instructs: answer from stable knowledge without tools; synthesize one comprehensive reply when tools are used; cite URLs; do not loop on poor searches.
-
----
-
-## Further reading
-
-- [Ollama web search & fetch](https://docs.ollama.com/capabilities/web-search)
-- [Firecrawl search](https://docs.firecrawl.dev/features/search) (keyless search/scrape)
-- [Tavily keyless](https://docs.tavily.com/documentation/keyless)
-- [Nx documentation](https://nx.dev/docs)
-- [Docker stack (Redis, Speaches)](./docker/README.md)

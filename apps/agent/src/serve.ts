@@ -50,7 +50,7 @@ export async function serve(options: ServeOptions): Promise<ServeResult> {
   const { host } = options;
   const logger = createLogger('api');
 
-  // The host's settings, read from the environment once (ADR-0003 §4.1); --home wins over AGENT_HOME.
+  // The host's settings, read from the environment once; --home wins over AGENT_HOME.
   const env = options.home ? { ...process.env, AGENT_HOME: options.home } : process.env;
   const service = createAgentService({ config: loadConfig(env, os.homedir()) });
   const home = service.home();

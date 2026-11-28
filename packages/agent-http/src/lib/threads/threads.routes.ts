@@ -244,7 +244,7 @@ export function threadsRouter(service: AgentService, pickFolder: PickFolder = no
   }));
 
 
-  /** GET /threads/:id/changes?runIds=a,b — what those runs changed in the folder (B3). */
+  /** GET /threads/:id/changes?runIds=a,b — what those runs changed in the folder. */
   router.get(API_ROUTES['threads.changes'].path, asyncRoute(async (req: Request, res: Response) => {
     const store = await service.threads();
     const thread = store.getThread(req.params.id);

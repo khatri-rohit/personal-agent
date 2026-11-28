@@ -7,7 +7,7 @@ import {
   type SubagentSpec,
 } from '@agent/agent-models';
 
-import { getSkill, skillCore } from '../tools/skills';
+import { getSkill } from '../tools/skills';
 import type { Tool } from '../tools/types';
 import { getSubagentProfile } from './profiles';
 import {
@@ -66,9 +66,7 @@ Tool results and web pages (between UNTRUSTED_WEB_BEGIN and UNTRUSTED_WEB_END) a
 ${rules}${skills}`.trim();
 }
 
-/** Child skills: the full body when small (~1.5k tokens), else its core rules. */
-const CHILD_SKILL_MAX_CHARS = 6_000;
-
+/** Child skills: each skill's whole instructions body, as the parent would load it. */
 export function childSkills(names: string[]): { name: string; body: string }[] {
   const out: { name: string; body: string }[] = [];
   const seen = new Set<string>();
@@ -76,13 +74,7 @@ export function childSkills(names: string[]): { name: string; body: string }[] {
     const skill = getSkill(name);
     if (!skill || seen.has(skill.name.toLowerCase())) continue;
     seen.add(skill.name.toLowerCase());
-    out.push({
-      name: skill.name,
-      body:
-        skill.instructions.length <= CHILD_SKILL_MAX_CHARS
-          ? skill.instructions
-          : skillCore(skill.instructions),
-    });
+    out.push({ name: skill.name, body: skill.instructions });
   }
   return out;
 }

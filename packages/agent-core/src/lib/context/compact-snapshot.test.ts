@@ -131,28 +131,31 @@ describe('compact snapshot', () => {
     expect(blob).toContain('Goal: old question');
   });
 
-  it('assembleContext injects mentioned threads as a system layer', () => {
+  it('assembleContext puts named skills and attached threads in their message as references', () => {
     const tools = createToolRegistry([]);
+    const user: LedgerEnvelope = {
+      ...envelope(1, 'user', 'continue from that chat'),
+      skills: { selected: ['patch-and-verify'] },
+      attachments: [
+        { type: 'thread', id: 'm1', threadId: 'other', title: 'Fix login', kind: 'home' },
+        { type: 'thread', id: 'm2', threadId: 't1', title: 'This thread', kind: 'home' },
+      ],
+    };
     const { messages, report } = assembleContext({
       tools,
       memory: { user: '', notes: '' },
       snapshot: null,
-      envelopes: [envelope(1, 'user', 'continue from that chat')],
-      mentionedThreads: [
-        {
-          threadId: 'other',
-          title: 'Fix login',
-          sourceLabel: 'agent',
-          text: 'User asked to fix auth.',
-        },
-      ],
+      envelopes: [user],
     });
-    const blob = JSON.stringify(messages);
-    expect(blob).toContain('Attached threads');
-    expect(blob).toContain('Fix login');
-    expect(blob).toContain('User asked to fix auth');
-    const mentionLayer = report.layers.find((layer) => layer.id === 'mentions');
-    expect(mentionLayer?.tokens).toBeGreaterThan(0);
+    const last = messages.at(-1);
+    const text = typeof last?.content === 'string' ? last.content : JSON.stringify(last?.content);
+    expect(text).toContain('- Skill: patch-and-verify');
+    expect(text).toContain('- Thread: "Fix login" (thread_id other, Home)');
+    // A mention of the thread itself is not a reference.
+    expect(text).not.toContain('This thread');
+    // The user's words still follow, and no transcript was packed in.
+    expect(text.endsWith('continue from that chat')).toBe(true);
+    expect(report.layers.some((layer) => layer.id === 'mentions')).toBe(false);
   });
 
   it('assembleContext injects a non-empty thread plan as a system layer', () => {

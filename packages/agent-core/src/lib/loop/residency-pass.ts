@@ -7,7 +7,6 @@ import {
   foldResidue,
   manageWorkingSet,
   MIN_EVICT_CHARS,
-  retireSkillBodies,
   windowCard,
   type EvictionReason,
   type InRunCompactionResult,
@@ -52,21 +51,21 @@ export type ResidencyView = Pick<
 };
 
 /**
- * The prompt projection after a tool turn (v2 phase 7). Between boundaries
+ * The prompt projection after a tool turn. Between boundaries
  * the prompt only grows (new steps are appended); at a boundary it is
  * reshaped once, by every mechanism together, so the cached prefix breaks
- * at one known step instead of at each mechanism's own moment (P3).
+ * at one known step instead of at each mechanism's own moment.
  *
  * A boundary is any of: a verified milestone (a check passed after edits),
  * the whole prompt past the in-run high mark (`inRunMarks`, derived from
- * the window), a skill body retiring, or the card's new findings past
+ * the window), or the card's new findings past
  * `CARD_MARKS.recordDeltaTokens`. Once one fires, the free removals ride
  * along (superseded copies, and card-only steps when folding them saves
  * more than it writes: the prefix is broken anyway), and the run's task
  * record is written into the history as one message, cached until the next
  * boundary.
  *
- * Order: cap oversized recent results and retire skill bodies; milestone
+ * Order: cap oversized recent results; milestone
  * fold (before anything trims what it would fold); the pass at the high
  * mark (card-only steps, then results by value, then the recap fold); then,
  * at a boundary, the ride-along round and the record message.
@@ -79,24 +78,6 @@ export async function manageResidency(s: ResidencyView): Promise<void> {
     s.readDedupe.forget([id]),
   );
   if (stubbed > 0) triggers.push('stub');
-
-  for (const retired of retireSkillBodies(
-    s.messages,
-    s.skillLoads,
-    s.iterations,
-    s.contextBudget.skillResidentIterations,
-  )) {
-    // A reload after retirement is legitimate, not a repeat.
-    s.admission.forgetSkillLoads();
-    s.trace({
-      type: 'skill_evicted',
-      runId: s.runId,
-      iteration: s.iterations,
-      name: retired.name,
-      residentIterations: s.contextBudget.skillResidentIterations,
-    });
-    if (!triggers.includes('skill')) triggers.push('skill');
-  }
 
   const putBlob = (text: string) => s.webSources.putBlob(text);
 
@@ -203,7 +184,7 @@ export async function manageResidency(s: ResidencyView): Promise<void> {
     }
   }
 
-  // The task record joins the history at the boundary (F-6); the card then
+  // The task record joins the history at the boundary; the card then
   // carries only findings recorded after it.
   if (s.flags.stateCard) {
     removeRecordMessages(s.messages, s.runStart);
@@ -453,6 +434,16 @@ async function workingSetPass(
  * state; this makes the ones the card cannot show reachable at 0 calls'
  * search cost (one recall).
  */
+/** Add the folded skills' names to the run's recap message (the fold just wrote it at `runStart`). */
+function noteFoldedSkills(messages: ResidencyView['messages'], runStart: number, names: string[]): void {
+  const recap = messages[runStart];
+  if (recap?.role !== 'assistant' || typeof recap.content !== 'string') return;
+  messages[runStart] = {
+    ...recap,
+    content: `${recap.content}\nSkills loaded in these steps (their instructions are no longer above; load again with load_skill before relying on them): ${names.join(', ')}`,
+  };
+}
+
 async function storeRecordOverflow(s: ResidencyView, putBlob: (text: string) => Promise<string>): Promise<void> {
   if (!s.flags.stateCard) return;
   const full = recordOverflowText(s.task.snapshot().evidence.findings, s.contextBudget.recordCardTokens);
@@ -463,10 +454,24 @@ async function storeRecordOverflow(s: ResidencyView, putBlob: (text: string) => 
   s.recordBlobKey = key;
 }
 
-/** Forget what a fold removed and trace it. `reason` undefined = the recap fold at the high mark. */
+/**
+ * Forget what a fold removed and trace it. `reason` undefined = the recap
+ * fold at the high mark. A folded skill load leaves its instructions out of
+ * the prompt: the recap names the skill, so the model loads it again before
+ * relying on it, and that reload is not counted as a repeat.
+ */
 function traceFold(s: ResidencyView, fold: InRunCompactionResult, reason: 'milestone' | 'residue' | undefined): void {
   s.readDedupe.forget(fold.toolCallIds);
-  for (const id of fold.toolCallIds) s.skillLoads.delete(id);
+  const foldedSkills: string[] = [];
+  for (const id of fold.toolCallIds) {
+    const load = s.skillLoads.get(id);
+    if (load && !foldedSkills.includes(load.name)) foldedSkills.push(load.name);
+    s.skillLoads.delete(id);
+  }
+  if (foldedSkills.length > 0) {
+    s.admission.forgetSkillLoads();
+    noteFoldedSkills(s.messages, s.runStart, foldedSkills);
+  }
   s.trace({
     type: 'context_compacted_inrun',
     runId: s.runId,

@@ -101,7 +101,7 @@ export function createSubagentHost(deps: {
     },
     async contextBudget(model) {
       // Always `default` mode, whatever the parent thread chose: a child is a
-      // bounded piece of work (P7), so its in-run marks stay at the 260k
+      // bounded piece of work, so its in-run marks stay at the 260k
       // class even when the parent opted in to a model's full window.
       return (await resolveContextBudget(model, endpoint, 'default')).budget;
     },

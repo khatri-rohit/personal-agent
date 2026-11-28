@@ -124,7 +124,7 @@ export const TASK_STATE_COMMANDS_MAX = 20;
  * What one finished run leaves for the next runs of its thread: its findings
  * (its own and those merged from sub-agents) and the gaps it left open. The
  * host stores one per run; the next run gets them in its stable prompt
- * prefix (phase 6), so research is not redone on the next turn and
+ * prefix, so research is not redone on the next turn and
  * compaction of the conversation never loses a recorded fact. A rewind that
  * cuts a run drops its record.
  */

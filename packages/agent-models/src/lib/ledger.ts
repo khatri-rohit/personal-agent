@@ -95,7 +95,10 @@ export type LedgerEnvelope = {
   durationMs?: number;
   /** Final answer only: wall clock of the whole run that produced it. */
   runDurationMs?: number;
-  /** User-requested skill names for the run that consumed this user turn. */
+  /**
+   * Skills the user named in this message (`/` picks). A reference: the
+   * model loads each one with `load_skill`.
+   */
   skills?: { selected: string[] };
   /** Tool rows only; absent on rows written before outcomes were stored. */
   toolOutcome?: ToolOutcome;
@@ -217,7 +220,7 @@ export type LedgerResponse = {
   lastRun?: ThreadLastRun;
   /** The run in progress, if any (reattach, pending choices). */
   activeRun?: ActiveRun;
-  /** The message waiting for the run to end (F2). */
+  /** The message waiting for the run to end. */
   queued?: QueuedMessage;
   /** The host is starting the queued message right now: read again shortly to see its run. */
   queueStarting?: true;

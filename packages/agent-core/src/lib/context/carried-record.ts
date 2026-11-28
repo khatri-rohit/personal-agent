@@ -9,8 +9,8 @@ import {
 import { recordOverflowText, recordSection } from '../state/record-view';
 
 /**
- * The task record across turns (v2 phase 6). A run's findings are the one
- * part of its context that cannot be got back by reading again (P4), so they
+ * The task record across turns. A run's findings are the one
+ * part of its context that cannot be got back by reading again, so they
  * outlive the run: the host stores each run's record, and every later run of
  * the thread sees the records of the runs still in its ledger in the stable
  * prompt prefix (after the conversation summary, before the tail). Research

@@ -184,6 +184,24 @@ export function summarizeToolRow(row: ToolCallRow): ToolSummary {
         title: asString(args.claim) || 'finding',
         action: 'Finding',
       };
+    case 'load_skill': {
+      const skill = asString(args.skill_name) || 'skill';
+      const file = asString(args.file);
+      return {
+        kind: 'other',
+        title: file ? `${skill}/${file}` : skill,
+        action: 'Skill',
+      };
+    }
+    case 'read_thread': {
+      // The result's header names the thread: `Thread "<title>" (<source>). …`
+      const titled = /^Thread "(.+?)" \(/.exec(row.result ?? '');
+      return {
+        kind: 'other',
+        title: titled?.[1] ?? (asString(args.thread_id) || 'thread'),
+        action: 'Read thread',
+      };
+    }
     default: {
       // The tool name is already the action; the title is the first string
       // argument (a skill name, a key), never the name again
@@ -246,6 +264,12 @@ function groupHeader(rows: ToolCallRow[]): GroupHeader {
         break;
       case 'web_fetch':
         fetches += 1;
+        break;
+      case 'load_skill':
+        otherActions.push(`Ran skill ${truncateMiddle(summary.title, 40)}`);
+        break;
+      case 'read_thread':
+        otherActions.push(`Read thread ${truncateMiddle(summary.title, 40)}`);
         break;
       default:
         otherActions.push(summary.action);
