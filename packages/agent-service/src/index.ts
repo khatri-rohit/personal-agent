@@ -19,7 +19,7 @@ export { harnessVersion } from './lib/platform/harness-version';
 export { createJsonlTraceSink } from './lib/platform/trace-sink';
 
 // Runs
-export { startThreadRun } from './lib/runs/start-run';
+export { isQueueStarting, queueMessage, sendQueuedNow, startThreadRun } from './lib/runs/start-run';
 export { estimateContext, type ContextEstimate } from './lib/runs/estimate-context';
 export { endpointFromLocal, prepareRun, readSettledLastRun, resolveRequestedSkills } from './lib/runs/run-context';
 export { initSystem1, system1AutoFor } from './lib/runs/system1-runtime';

@@ -151,10 +151,11 @@ function balanceOf(raw: unknown): Balance {
   };
 }
 
-async function harnessVersion(root: string): Promise<{ sha: string; dirty: string | null }> {
+/** The checkout's code: HEAD plus a hash of `git diff HEAD` (what the API reports for itself). */
+export async function harnessVersion(root: string): Promise<{ sha: string; dirty: string | null }> {
   const head = await git(root, ['rev-parse', 'HEAD']);
   // The task corpus is not harness code: editing a task must not mark the API stale.
-  // Same pathspec as apps/api/src/platform/harness-version.ts, so the two hashes compare.
+  // Same pathspec as agent-service platform/harness-version.ts, so the two hashes compare.
   const diff = await git(root, ['diff', 'HEAD', '--', '.', ':(exclude)evals']);
   return {
     sha: head.stdout.trim(),
@@ -224,7 +225,7 @@ async function assertApiOnEvalHome(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `The API is not reachable at ${apiBase} (${message}). Start it with AGENT_HOME=${evalHome}; the runner never starts it.`,
+      `The API is not reachable at ${apiBase} (${message}). Start it in another terminal with "node apps/agent/dist/main.js eval up" (eval home ${evalHome}); the runner never starts it.`,
     );
   }
   let seen = false;

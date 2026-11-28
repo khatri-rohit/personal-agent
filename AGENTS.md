@@ -60,7 +60,7 @@ apps/web composer (features/composer), same origin as the API (agent serve, :333
   → chat-store / use-agent-run   apps/web/src/features/conversation/
 ```
 
-One active run per thread, in process memory. After `RUN_HANDLE_TTL_MS` (5 minutes) a late SSE subscribe is 404; the client rebuilds from `GET /api/agent/threads/:id/ledger`. Retry/edit **rewinds** (truncates) the ledger. Title generation (`runs/thread-title.ts`) is maintenance, not on the request path.
+One active run per thread, in process memory. A live run's buffer replays every event to a reconnecting client, except the deltas of messages already completed (`assistant.completed` carries the text). After `RUN_HANDLE_TTL_MS` (5 minutes) the process keeps only the run's `run.settled`; a run it never ran (e.g. after a restart) is 404, and the client then rebuilds from `GET /api/agent/threads/:id/ledger`. A message sent while a run is going is queued on the host (`start-run.ts` `queueMessage` / `startQueued`, `sessions/<id>/queued.json`) and started once the run settles. One server per home: `apps/agent/src/server-file.ts` (`AGENT_HOME/server.json`). Retry/edit **rewinds** (truncates) the ledger. Title generation (`runs/thread-title.ts`) is maintenance, not on the request path.
 
 **Home vs Workspace** is `packages/agent-models/src/lib/mode.ts`: allowed tools, global tools, iteration/token/wall limits. Home is chat; Workspace adds folder-jailed coding tools (`edit_file`, `run_terminal`, `delegate`, `diff`).
 

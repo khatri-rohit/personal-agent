@@ -8,6 +8,9 @@ const USAGE = `agent <command> [options]
 
   serve [--home <dir>] [--port 3333] [--host localhost] [--no-ui]
       The harness: API and chat UI on one port. --no-ui = headless (API only).
+      One server per home: when the home's server is already running, this
+      prints its URL and exits. --port 0 = any free port. Ctrl+C stops it
+      gracefully (runs are cancelled and saved); a second Ctrl+C exits at once.
   web [same options as serve]
       serve, then print and open the URL.
   run "<query>" [--workspace <dir>] [--ask] [--mode home|workspace]
@@ -57,17 +60,32 @@ async function serveCommand(argv: string[], open: boolean): Promise<number> {
   const resolvedHome = home ? path.resolve(home) : undefined;
   process.chdir(REPO_ROOT);
   const { serve } = await import('./serve.js');
-  const url = await serve({
+  const result = await serve({
     ...(resolvedHome ? { home: resolvedHome } : {}),
     host: flags.values.get('host') ?? process.env.HOST ?? 'localhost',
     port,
     ui: !flags.switches.has('no-ui'),
   });
+  const { url } = result;
+  if (!result.started) {
+    // One server per home: use the one running (its own terminal keeps it alive).
+    console.log(`\n  The agent harness for ${result.server.agentHome} is already running (pid ${result.server.pid}): ${url}`);
+    if (result.server.port !== port && port !== 0) console.log(`  (on its port ${result.server.port}, not --port ${port})`);
+    const { harnessVersion } = await import('@agent/agent-service');
+    const here = await harnessVersion();
+    const there = result.server.harnessVersion;
+    if (here && there && (here.sha !== there.sha || here.dirty !== there.dirty)) {
+      console.log('  It runs other code than this checkout: stop it (Ctrl+C in its terminal) and start again to run the new code.');
+    }
+    console.log('');
+    if (open) openBrowser(url);
+    return 0;
+  }
   if (open) {
     console.log(`\n  Agent harness: ${url}\n`);
     openBrowser(url);
   }
-  // Keep running until the process is stopped.
+  // Keep running until the process is stopped (serve handles the signals).
   return new Promise<number>(() => undefined);
 }
 

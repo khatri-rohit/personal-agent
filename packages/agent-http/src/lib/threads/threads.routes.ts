@@ -7,7 +7,9 @@ import {
   CHECKPOINT_NOT_COVERED,
   HOME_MODE,
   isWorkspaceKind,
+  normalizeRunPosture,
   parseContextWindowMode,
+  parseQueueBody,
   parseThreadKind,
 } from '@agent/agent-models';
 import type { ApiClientKind } from '../platform/access';
@@ -22,7 +24,7 @@ import {
 import { forgetCheckpoints, revertRuns, runChanges, runFileDiff } from '@agent/agent-service';
 import { asyncRoute } from '../platform/http-errors';
 
-import { readSettledLastRun } from '@agent/agent-service';
+import { isQueueStarting, queueMessage, readSettledLastRun, sendQueuedNow } from '@agent/agent-service';
 
 export type PickFolderResult =
   | { ok: true; path: string }
@@ -204,6 +206,7 @@ export function threadsRouter(service: AgentService, pickFolder: PickFolder = no
     const plan = await store.readPlan(req.params.id);
     const lastRun = await readSettledLastRun(service, store, req.params.id);
     const activeRun = service.runs.activeRun(req.params.id);
+    const queued = await store.readQueued(req.params.id);
     const ledger: LedgerResponse = {
       messages,
       lastSeq,
@@ -212,8 +215,36 @@ export function threadsRouter(service: AgentService, pickFolder: PickFolder = no
       plan,
       ...(lastRun ? { lastRun } : {}),
       ...(activeRun ? { activeRun } : {}),
+      ...(queued ? { queued } : {}),
+      ...(isQueueStarting(req.params.id) ? { queueStarting: true as const } : {}),
     };
     return res.json(ledger);
+  }));
+
+  /** PUT /threads/:id/queue { request, composer? } — the message to send when the run ends (replaces one queued). */
+  router.put(API_ROUTES['threads.queue'].path, asyncRoute(async (req: Request, res: Response) => {
+    const body = parseQueueBody(req.body, req.params.id);
+    if (typeof body === 'string') return res.status(400).json({ error: body });
+    const result = await queueMessage(service, req.params.id, body);
+    if (!result.ok) return res.status(result.reason === 'not_found' ? 404 : 400).json({ error: result.error });
+    return res.json({ queued: result.queued });
+  }));
+
+  /** DELETE /threads/:id/queue — take the queued message back (into the composer). */
+  router.delete(API_ROUTES['threads.takeQueued'].path, asyncRoute(async (req: Request, res: Response) => {
+    const store = await service.threads();
+    if (!store.getThread(req.params.id)) return res.status(404).json({ error: 'Thread not found' });
+    const queued = await store.readQueued(req.params.id);
+    await store.writeQueued(req.params.id, null);
+    return res.json({ queued });
+  }));
+
+  /** POST /threads/:id/queue/send { posture? } — stop the run going and send the queued message. */
+  router.post(API_ROUTES['threads.sendQueued'].path, asyncRoute(async (req: Request, res: Response) => {
+    const raw = (req.body as { posture?: unknown } | undefined)?.posture;
+    const sent = await sendQueuedNow(service, req.params.id, raw === undefined ? undefined : normalizeRunPosture(raw));
+    if (!sent) return res.status(404).json({ error: 'Nothing is queued on this thread' });
+    return res.json({ ok: true });
   }));
 
 

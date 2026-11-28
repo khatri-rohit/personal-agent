@@ -8,7 +8,7 @@
  */
 
 /** Bumped on any breaking change to a route's path, method or payload. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** Where a router is mounted. */
 export const API_MOUNTS = {
@@ -37,6 +37,9 @@ export const API_ROUTES = {
   'threads.changes': agent('GET', '/threads/:id/changes'),
   'threads.changeDiff': agent('GET', '/threads/:id/changes/diff'),
   'threads.undoChanges': agent('POST', '/threads/:id/changes/undo'),
+  'threads.queue': agent('PUT', '/threads/:id/queue'),
+  'threads.takeQueued': agent('DELETE', '/threads/:id/queue'),
+  'threads.sendQueued': agent('POST', '/threads/:id/queue/send'),
 
   'runs.start': agent('POST', '/run'),
   'runs.estimate': agent('POST', '/context/estimate'),

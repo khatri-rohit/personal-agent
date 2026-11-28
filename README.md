@@ -153,10 +153,14 @@ npm run dev                   # → http://localhost:4200
 # Headless API, a one-shot isolated run, the eval CLI (after a build)
 node apps/agent/dist/main.js serve --no-ui [--home <dir>] [--port 3333] [--host localhost]
 node apps/agent/dist/main.js run "What is 2+2?" [--workspace <dir>] [--ask]
-node apps/agent/dist/main.js eval up      # eval API on 3334 (agent serve --home <evalHome> --port 3334 --no-ui)
+node apps/agent/dist/main.js eval up      # eval API on a free port, recorded in <evalHome>/server.json (run/gate read it)
 ```
 
 `agent` loads the repo's `.env.local` / `.env` itself (never over variables already set) and runs from the repo root, so built-in skills and the harness version resolve. Requires Node 24+.
+
+**One server per home.** A running server records itself in `AGENT_HOME/server.json`. A second `npm start` / `agent web` / `agent serve` on the same home prints that server's URL (and opens it), warns when it runs older code, and exits instead of starting a second server. Ctrl+C stops gracefully: new runs are refused, running ones are cancelled and saved (up to 10 s), then the file is removed; a second Ctrl+C exits at once.
+
+**Queued messages live on the host.** A message sent while a run is going is kept in `sessions/<threadId>/queued.json` (one per thread; a new one replaces it). The host starts it when the run settles, so it survives a reload and shows in every tab. A refused start keeps it queued with the reason. After a restart it is never sent by itself.
 
 ### Verify web search APIs (CLI)
 

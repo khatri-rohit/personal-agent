@@ -8,7 +8,7 @@ import { runSuite, type SuiteRun } from '../runner/runner.js';
 import { seedEvalHome } from '../runner/seed.js';
 import { loadTasks, TASK_SUITES, type TaskSuite } from '../runner/task.js';
 import { agentHome, evalHome, flag, intFlag, type Args } from './args.js';
-import { evalApiBase } from './up.js';
+import { evalApiBase, evalApiBaseFor } from './up.js';
 
 /** Trials at once: more would only queue on the model provider and blur minutes. */
 export const MAX_PARALLEL = 4;
@@ -65,7 +65,7 @@ export async function runCommandFor(
     repeat,
     harnessRoot: process.cwd(),
     evalHome: evalHome(args),
-    apiBase: flag(args, 'api') ?? evalApiBase(),
+    apiBase: flag(args, 'api') ?? evalApiBaseFor(evalHome(args)),
     parallel: Math.min(MAX_PARALLEL, intFlag(args, 'parallel', 1)),
     model,
     ...(thinking !== undefined ? { thinking } : {}),

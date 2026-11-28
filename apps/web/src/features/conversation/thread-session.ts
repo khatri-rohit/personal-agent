@@ -12,9 +12,12 @@ import {
 } from '@agent/agent-models';
 import {
   cancelRun,
+  queueRun,
   resolveChoice,
+  sendQueuedRun,
   startRun,
   subscribeRun,
+  takeQueuedRun,
   type ComposerOptions,
 } from '@/api/agent-client';
 import { fetchLedger, seqFromMessageId } from '@/api/thread-client';
@@ -39,6 +42,13 @@ export type QueuedMessage = {
   content: string;
   options: ComposerOptions;
   attachments?: MessageAttachment[];
+  /** Why the host could not start it; it stays queued. */
+  refused?: string;
+  /**
+   * Held by this tab only: a send that failed to start. Every other queued
+   * message is held by the host, which starts it when the run settles.
+   */
+  local?: true;
 };
 
 export type ThreadView = {
@@ -52,7 +62,24 @@ export type ThreadView = {
 export type ChoiceAnswer = { skipped: true } | { optionIds: string[]; text?: string };
 
 /** The HTTP calls the session makes; tests can pass their own. */
-const http = { startRun, subscribeRun, cancelRun, resolveChoice, fetchLedger };
+const http = { startRun, subscribeRun, cancelRun, resolveChoice, fetchLedger, queueRun, takeQueuedRun, sendQueuedRun };
+
+/** The host's queued message as the composer shows it. */
+function queuedFromLedger(ledger: LedgerResponse): QueuedMessage | null {
+  const queued = ledger.queued;
+  if (!queued) return null;
+  const saved = (queued.composer ?? {}) as { options?: ComposerOptions };
+  const { content, attachments } = queued.request.message;
+  return {
+    content,
+    // Only `skills` is read back (take-back into the composer).
+    options: saved.options ?? ({} as ComposerOptions),
+    ...(attachments ? { attachments } : {}),
+    ...(queued.refused ? { refused: queued.refused } : {}),
+  };
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** After files were put back: a plain success, or a warning naming what stayed. */
 export function showRestoreResult(result: RevertResult): void {
@@ -194,27 +221,53 @@ export function createThreadSession(
           }
         : {}),
     };
-    update({ messages: ledger.messages, chat });
+    update({ messages: ledger.messages, chat, queued: queuedOf(ledger) });
     if (active) follow(active.runId);
   }
 
-  /** The run ended (run.settled): one ledger read updates messages and notices together. */
+  /** The host's queued message, or this tab's own (a send that failed to start). */
+  function queuedOf(ledger: LedgerResponse): QueuedMessage | null {
+    return queuedFromLedger(ledger) ?? (view.queued?.local ? view.queued : null);
+  }
+
+  /** The ledger once the host has started the queued message (it starts right after a settle). */
+  async function ledgerAfterQueue(): Promise<LedgerResponse> {
+    let ledger = await transport.fetchLedger(threadId);
+    for (let i = 0; i < 20 && ledger.queueStarting && !ledger.activeRun && !disposed; i++) {
+      await sleep(500);
+      ledger = await transport.fetchLedger(threadId);
+    }
+    return ledger;
+  }
+
+  /**
+   * The run ended (run.settled): one ledger read updates messages and notices
+   * together, and follows the queued message's run when the host started one.
+   */
   async function settle(): Promise<void> {
     try {
-      const ledger = await transport.fetchLedger(threadId);
+      const ledger = await ledgerAfterQueue();
       if (disposed) return;
+      const next = ledger.activeRun;
+      const queued = queuedOf(ledger);
+      if (queued?.refused && queued.refused !== view.queued?.refused) {
+        toastError(queued.refused, 'Queued message not sent');
+      }
       update({
         messages: ledger.messages,
+        queued,
         chat: {
           ...view.chat,
           ...viewFromLedger(ledger, view.chat),
           // Ledger holds the committed messages now; clear the live run and
           // bridge in one update so there's no flash between them.
-          activeRun: null,
+          activeRun: next ? runFromSummary(next) : null,
+          pendingChoices: next ? next.pendingChoices.map((choice) => ({ ...choice, runId: next.runId })) : [],
           settledSnippets: [],
           settledToolActivity: [],
         },
       });
+      if (next) follow(next.runId);
     } catch {
       // Ledger refetch failed — still clear the live run so the UI doesn't
       // hang in "running" forever. The next load rebuilds from disk.
@@ -226,7 +279,7 @@ export function createThreadSession(
       });
     }
     void refreshThreads();
-    if (!busy() && view.queued) void flushQueue();
+    if (!busy() && view.queued?.local) void flushQueue();
   }
 
   async function refreshMessages(): Promise<void> {
@@ -251,8 +304,10 @@ export function createThreadSession(
           const prev = view.chat;
           // A run attached from the ledger starts at seq 0 and its first
           // replayed event is usually far ahead; that read already happened.
+          // A gap before assistant.completed is the server folding that
+          // message's deltas into its content: nothing is missing.
           const lastSeq = prev.activeRun?.lastSeq ?? 0;
-          if (lastSeq > 0 && hasSseSeqGap(lastSeq, event.seq)) {
+          if (lastSeq > 0 && event.type !== 'assistant.completed' && hasSseSeqGap(lastSeq, event.seq)) {
             void refreshMessages();
           }
           await persistChatEffects(prev, event, threadId);
@@ -274,9 +329,23 @@ export function createThreadSession(
           }
         });
       },
-      (error) => console.error('SSE error:', error),
+      (error) => {
+        console.error('SSE error:', error);
+        if (disposed || disconnect !== unsubscribe) return;
+        // The stream gave up (server restarted, run unknown): the ledger
+        // says whether a run is still going; follow it, or show the end.
+        disconnect = null;
+        void reconcile();
+      },
     );
     disconnect = unsubscribe;
+  }
+
+  /** After a lost stream: rebuild from the ledger, then send this tab's unsent message if nothing runs. */
+  async function reconcile(): Promise<void> {
+    await load();
+    void refreshThreads();
+    if (!busy() && view.queued?.local) void flushQueue();
   }
 
   /**
@@ -294,7 +363,7 @@ export function createThreadSession(
       const started = await transport.startRun(threadId, request);
       if (started.restore) showRestoreResult(started.restore);
     } catch (error) {
-      update({ starting: false, ...(unsent ? { queued: unsent } : {}) });
+      update({ starting: false, ...(unsent ? { queued: { ...unsent, local: true } } : {}) });
       toastError(errorMessage(error, 'Could not start the run'), 'Send failed');
       // The thread may have changed (a user row is kept; Retry re-runs it).
       await refreshMessages();
@@ -306,9 +375,10 @@ export function createThreadSession(
     update({ starting: false });
   }
 
+  /** Start this tab's unsent message (a send that failed to start); the host starts its own queue. */
   async function flushQueue(): Promise<void> {
     const queued = view.queued;
-    if (!queued) return;
+    if (!queued?.local) return;
     update({ queued: null });
     await start(
       {
@@ -319,14 +389,31 @@ export function createThreadSession(
     );
   }
 
-  /** Starts now, or queues while a run is live (it then starts when that run settles). */
+  /**
+   * Starts now, or, while a run is live, queues on the host (replacing a
+   * message already queued); the host starts it when that run settles.
+   */
   async function send(
     content: string,
     options: ComposerOptions,
     attachments?: MessageAttachment[],
   ): Promise<void> {
-    update({ queued: { content, options, ...(attachments ? { attachments } : {}) } });
-    if (!busy()) await flushQueue();
+    const message: QueuedMessage = { content, options, ...(attachments ? { attachments } : {}) };
+    const request = { message: { content, attachments }, ...runRequest(options) };
+    if (!busy()) {
+      await start(request, message);
+      return;
+    }
+    update({ queued: message });
+    try {
+      await transport.queueRun(threadId, request, { options });
+    } catch (error) {
+      update({ queued: { ...message, local: true } });
+      toastError(errorMessage(error, 'Could not queue the message'), 'Queue failed');
+      return;
+    }
+    // The run may have ended while this was sent: the host then started the message.
+    if (!busy()) await settle();
   }
 
   /**
@@ -356,9 +443,20 @@ export function createThreadSession(
     const queued = view.queued;
     if (!queued) return;
     // The posture chip as it is now wins over the one frozen at enqueue.
-    update({ queued: { ...queued, options: { ...queued.options, posture } } });
-    await stop();
-    await flushQueue();
+    if (queued.local) {
+      update({ queued: { ...queued, options: { ...queued.options, posture } } });
+      await stop();
+      await flushQueue();
+      return;
+    }
+    try {
+      await transport.sendQueuedRun(threadId, normalizeRunPosture(posture));
+    } catch (error) {
+      toastError(errorMessage(error, 'Could not send the queued message'), 'Send failed');
+      return;
+    }
+    // Nothing was running, so the host started it now; otherwise the stop's settle follows it.
+    if (!view.chat.activeRun) await settle();
   }
 
   /**
@@ -433,6 +531,11 @@ export function createThreadSession(
     takeQueued(): QueuedMessage | null {
       const queued = view.queued;
       update({ queued: null });
+      if (queued && !queued.local) {
+        void transport.takeQueuedRun(threadId).catch((error: unknown) => {
+          toastError(errorMessage(error, 'The host still holds the queued message'), 'Take back failed');
+        });
+      }
       return queued;
     },
     stop,

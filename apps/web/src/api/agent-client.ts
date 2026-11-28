@@ -11,6 +11,7 @@ import type {
   OllamaEndpoint,
   OllamaListedModel,
   OllamaModelConfig,
+  QueuedMessage,
   ResolvedModelSettings,
   RevertResult,
   RunPosture,
@@ -126,6 +127,49 @@ export async function startRun(
   return { runId, ...(restore ? { restore } : {}) };
 }
 
+async function failure(res: Response, fallback: string): Promise<Error> {
+  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  return new Error(body.error ?? `${fallback}: ${res.status}`);
+}
+
+/**
+ * Queue a message on the host until the thread's run ends (it replaces one
+ * already queued). `composer` comes back on take-back.
+ */
+export async function queueRun(
+  threadId: string,
+  request: Omit<NonNullable<Parameters<typeof startRun>[1]>, 'rewindThroughSeq' | 'restoreFiles'>,
+  composer: unknown,
+): Promise<QueuedMessage> {
+  const res = await api.request('threads.queue', {
+    params: { id: threadId },
+    init: {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request: { ...request, posture: normalizeRunPosture(request.posture) }, composer }),
+    },
+  });
+  if (!res.ok) throw await failure(res, 'Failed to queue the message');
+  return ((await res.json()) as { queued: QueuedMessage }).queued;
+}
+
+/** Take the queued message back off the host. */
+export async function takeQueuedRun(threadId: string): Promise<void> {
+  const res = await api.request('threads.takeQueued', { params: { id: threadId } });
+  if (!res.ok) throw await failure(res, 'Failed to take the queued message back');
+}
+
+/** Stop the run going and send the queued message (the host waits for the stop). */
+export async function sendQueuedRun(threadId: string, posture: RunPosture | undefined): Promise<void> {
+  const res = await api.request('threads.sendQueued', {
+    params: { id: threadId },
+    init: {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(posture ? { posture } : {}),
+    },
+  });
+  if (!res.ok) throw await failure(res, 'Failed to send the queued message');
+}
+
 /**
  * Subscribe to a run's SSE event stream.
  * Replays events from fromSeq, then streams live events.
@@ -176,7 +220,10 @@ export function subscribeRun(
       es.close();
       if (closed) return;
       retries += 1;
-      if (retries > 8) {
+      // A settled run answers with its end, so repeated failures mean the
+      // server no longer knows the run (restarted): give up in ~7 s and let
+      // the caller reconcile from the ledger.
+      if (retries > 3) {
         onError?.(new Error('SSE connection lost'));
         return;
       }

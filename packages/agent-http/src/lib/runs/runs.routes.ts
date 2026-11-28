@@ -26,7 +26,7 @@ export function runsRouter(service: AgentService): Router {
     });
   }));
 
-  const REJECTION_STATUS = { invalid: 400, not_found: 404, busy: 409, paused: 429 } as const;
+  const REJECTION_STATUS = { invalid: 400, not_found: 404, busy: 409, paused: 429, closing: 503 } as const;
 
   /**
    * POST /api/agent/context/estimate

@@ -23,6 +23,8 @@ import {
   selectPlanForRewind,
   parseRunTaskRecords,
   parseThreadLastRun,
+  parseQueuedMessage,
+  type QueuedMessage,
   type ChatMessage,
   type ContextWindowMode,
   type LedgerAppendMeta,
@@ -646,6 +648,23 @@ export class ThreadStore {
     );
   }
 
+  /** The message waiting for this thread's run to end (F2), or null. */
+  async readQueued(threadId: string): Promise<QueuedMessage | null> {
+    return this.readJsonFile(this.queuedPath(threadId), parseQueuedMessage, null);
+  }
+
+  /** Replace the queued message (atomic), or remove it with null. */
+  async writeQueued(threadId: string, queued: QueuedMessage | null): Promise<void> {
+    const target = this.queuedPath(threadId);
+    if (!queued) {
+      await rm(target, { force: true });
+      return;
+    }
+    const tmp = `${target}.${process.pid}.tmp`;
+    await writeFile(tmp, `${JSON.stringify(queued)}\n`, 'utf8');
+    await rename(tmp, target);
+  }
+
   /** Task records of this thread's runs, oldest first (see RunTaskRecord). */
   async readTaskRecords(threadId: string): Promise<RunTaskRecord[]> {
     return this.readJsonFile(this.taskRecordsPath(threadId), parseRunTaskRecords, []);
@@ -813,6 +832,10 @@ export class ThreadStore {
 
   private lastRunPath(threadId: string): string {
     return path.join(this.threadDir(threadId), 'last-run.json');
+  }
+
+  private queuedPath(threadId: string): string {
+    return path.join(this.threadDir(threadId), 'queued.json');
   }
 
   private taskRecordsPath(threadId: string): string {

@@ -83,6 +83,13 @@ export interface AgentService {
   home(): string;
   threads(): Promise<ThreadStore>;
   memory(): MemoryStore;
+  /** True once `close` began: new runs are refused. */
+  closing(): boolean;
+  /**
+   * Graceful stop: refuse new runs, cancel the ones going, wait up to
+   * `timeoutMs` for them to write their last rows. True if all settled.
+   */
+  close(timeoutMs: number): Promise<boolean>;
 }
 
 let created = false;
@@ -159,7 +166,14 @@ export function createAgentService(options: { config: AgentConfig }): AgentServi
     return memoryStore;
   };
 
-  const base: ServiceCore = { config, runs, system1: system1SettingsFrom(config.env), home, threads, memory };
+  let stopping = false;
+  const closing = (): boolean => stopping;
+  const close = (timeoutMs: number): Promise<boolean> => {
+    stopping = true;
+    return runs.drain(timeoutMs);
+  };
+
+  const base: ServiceCore = { config, runs, system1: system1SettingsFrom(config.env), home, threads, memory, closing, close };
   return { ...base, learning: createLearningLoop(base) };
 }
 

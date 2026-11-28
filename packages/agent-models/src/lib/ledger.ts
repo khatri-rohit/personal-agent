@@ -1,5 +1,6 @@
 import type { Snapshot } from './context.js';
 import type { ThreadPlan } from './plan.js';
+import type { QueuedMessage } from './queue.js';
 import type { ActiveRun, ChatMessage, ChatContentPart } from './run.js';
 import type { ThreadLastRun } from './thread-last-run.js';
 import type {
@@ -216,4 +217,8 @@ export type LedgerResponse = {
   lastRun?: ThreadLastRun;
   /** The run in progress, if any (reattach, pending choices). */
   activeRun?: ActiveRun;
+  /** The message waiting for the run to end (F2). */
+  queued?: QueuedMessage;
+  /** The host is starting the queued message right now: read again shortly to see its run. */
+  queueStarting?: true;
 };
