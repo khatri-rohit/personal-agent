@@ -44,7 +44,6 @@ import { threadTraceSink } from '../platform/trace-sink.js';
 import {
   checkpointAfter,
   checkpointBefore,
-  folderWriter,
   revertRuns,
 } from '../threads/checkpoints';
 import { harnessVersion } from '../platform/harness-version';
@@ -165,25 +164,13 @@ async function startClaimedRun(
     return reject('invalid', 'workspace thread has no workspaceRoot');
   }
 
-  // One Agent run writes in a folder at a time: an undo of one run must not
-  // take back edits another thread made in the same folder meanwhile.
-  // Disabled on purpose: a productive engineer runs several threads on one
-  // folder, and the harness must not block the send. Undo keeps its drift
-  // check (revertRuns), so a restore never overwrites files changed since.
+  // Threads share a folder freely; only one run per thread (the claim above).
   const checkpointRoot =
     isWorkspaceKind(thread.kind) &&
     thread.workspaceRoot &&
     !isReadOnlyPosture(posture)
       ? thread.workspaceRoot
       : null;
-  // const writer = checkpointRoot ? folderWriter(checkpointRoot) : null;
-  // if (writer && writer.threadId !== threadId) {
-  //   return reject(
-  //     'busy',
-  //     'Another thread is running in this folder right now. Wait for it to finish or stop it, then send again (or use Ask, which does not edit).',
-  //     writer.runId,
-  //   );
-  // }
 
   // The account's usage limit is reached: a run would pause before its
   // first call. Refuse before anything is written (no rewind, no user row),
@@ -210,18 +197,6 @@ async function startClaimedRun(
             .map((envelope) => envelope.runId as string),
         ),
       ];
-      const otherWriter = folderWriter(thread.workspaceRoot);
-      if (
-        cutRunIds.length > 0 &&
-        otherWriter &&
-        otherWriter.threadId !== threadId
-      ) {
-        return reject(
-          'busy',
-          'Another thread is running in this folder, so files cannot be restored now. Wait for it to finish, or keep the files.',
-          otherWriter.runId,
-        );
-      }
       if (cutRunIds.length > 0) {
         try {
           restore = await revertRuns({
@@ -430,7 +405,6 @@ async function startClaimedRun(
       agentHome,
       root: checkpointRoot,
       runId,
-      threadId,
     });
   const codeVersion = await harnessVersion();
 

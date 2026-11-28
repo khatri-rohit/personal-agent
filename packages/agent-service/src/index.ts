@@ -27,7 +27,7 @@ export { initSystem1, system1AutoFor } from './lib/runs/system1-runtime';
 // Threads: workspace access and file checkpoints
 export { isAllowedWorkspace, rememberWorkspace, WORKSPACE_NOT_PICKED } from './lib/threads/workspace-allowlist';
 export { resolveWorkspaceDir, threadRunIds, workspaceAllowed } from './lib/threads/workspace';
-export { folderWriter, forgetCheckpoints, revertRuns, runChanges, runFileDiff } from './lib/threads/checkpoints';
+export { forgetCheckpoints, revertRuns, runChanges, runFileDiff } from './lib/threads/checkpoints';
 
 // Models and capacity
 export { BalanceError, capacityEnabled, getOllamaBalance } from './lib/models/capacity';

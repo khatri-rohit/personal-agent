@@ -20,7 +20,7 @@ import {
 import { pickFolderDialog } from './pick-folder';
 
 export type ServeOptions = {
-  /** AGENT_HOME for this process (already resolved against the caller's cwd). */
+  /** The agent home, over AGENT_HOME (already resolved against the caller's cwd). */
   home?: string;
   host: string;
   port: number;
@@ -30,12 +30,12 @@ export type ServeOptions = {
 
 /** One service, one HTTP server, one port: the API and (unless headless) the chat UI. Resolves with the URL once listening. */
 export function serve(options: ServeOptions): Promise<string> {
-  if (options.home) process.env.AGENT_HOME = options.home;
   const { host, port } = options;
   const logger = createLogger('api');
 
-  // The host's settings, read from the environment once (ADR-0003 §4.1).
-  const service = createAgentService({ config: loadConfig(process.env, os.homedir()) });
+  // The host's settings, read from the environment once (ADR-0003 §4.1); --home wins over AGENT_HOME.
+  const env = options.home ? { ...process.env, AGENT_HOME: options.home } : process.env;
+  const service = createAgentService({ config: loadConfig(env, os.homedir()) });
 
   // The chat UI the build embedded next to this bundle; none = headless.
   const uiDir = options.ui ? resolveUiDir(path.join(__dirname, 'ui')) : null;

@@ -17,6 +17,10 @@ import {
  * but only the files that still hold what the run left: anything changed
  * since (by the user or a later run) is reported, never overwritten.
  *
+ * Several threads may run in one folder at once. A run's range then also
+ * holds what the other threads wrote during it, and undo takes that back
+ * too, except for files changed again after the run ended.
+ *
  * The snapshots live in a shadow git repository per folder under
  * `AGENT_HOME/checkpoints/<hash>` (`--git-dir` + `--work-tree`), so the
  * user's own repository, index and history are never touched. Each run keeps
@@ -141,25 +145,16 @@ async function snapshot(dir: string, root: string): Promise<string> {
   return (await git(dir, root, ['commit-tree', tree, '-m', 'checkpoint'])).trim();
 }
 
-/** The Agent run writing in each folder (one at a time: an undo must not take back another thread's edits). */
-const writers = new Map<string, { runId: string; threadId: string }>();
-
-export function folderWriter(root: string): { runId: string; threadId: string } | null {
-  return writers.get(folderKey(root)) ?? null;
-}
-
 /**
- * Snapshot before an Agent run and mark the folder as written by it. False
- * when the snapshot failed (git missing, unreadable folder): the run still
- * goes ahead, without undo, and the Changes view says so.
+ * Snapshot before an Agent run. False when the snapshot failed (git missing,
+ * unreadable folder): the run still goes ahead, without undo, and the
+ * Changes view says so.
  */
 export async function checkpointBefore(input: {
   agentHome: string;
   root: string;
   runId: string;
-  threadId: string;
 }): Promise<boolean> {
-  writers.set(folderKey(input.root), { runId: input.runId, threadId: input.threadId });
   const dir = shadowDir(input.agentHome, input.root);
   try {
     await withLock(dir, async () => {
@@ -173,7 +168,7 @@ export async function checkpointBefore(input: {
   }
 }
 
-/** Snapshot at the end of the run (any outcome) and free the folder. */
+/** Snapshot at the end of the run (any outcome). */
 export async function checkpointAfter(input: { agentHome: string; root: string; runId: string }): Promise<void> {
   const dir = shadowDir(input.agentHome, input.root);
   try {
@@ -184,9 +179,6 @@ export async function checkpointAfter(input: { agentHome: string; root: string; 
     });
   } catch (error) {
     console.error('checkpoint after run failed:', error instanceof Error ? error.message : error);
-  } finally {
-    const key = folderKey(input.root);
-    if (writers.get(key)?.runId === input.runId) writers.delete(key);
   }
 }
 
@@ -346,10 +338,10 @@ export async function revertRuns(input: { agentHome: string; root: string; runId
 
 /**
  * Drop a folder's snapshots once no thread uses the folder any more (its
- * last thread was deleted; eval trials each use a throwaway folder).
+ * last thread was deleted; eval trials each use a throwaway folder). A run
+ * still going in it skips its end snapshot (its "before" ref is gone).
  */
 export async function forgetCheckpoints(agentHome: string, root: string): Promise<void> {
-  if (folderWriter(root)) return;
   const dir = shadowDir(agentHome, root);
   await withLock(dir, async () => {
     initialized.delete(dir);

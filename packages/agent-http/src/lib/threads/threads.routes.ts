@@ -19,7 +19,7 @@ import {
   workspaceAllowed,
   WORKSPACE_NOT_PICKED,
 } from '@agent/agent-service';
-import { folderWriter, forgetCheckpoints, revertRuns, runChanges, runFileDiff } from '@agent/agent-service';
+import { forgetCheckpoints, revertRuns, runChanges, runFileDiff } from '@agent/agent-service';
 import { asyncRoute } from '../platform/http-errors';
 
 import { readSettledLastRun } from '@agent/agent-service';
@@ -249,9 +249,6 @@ export function threadsRouter(service: AgentService, pickFolder: PickFolder = no
     if (!thread?.workspaceRoot) return res.status(404).json({ error: 'Thread not found' });
     if (service.runs.activeRun(req.params.id)) {
       return res.status(409).json({ error: 'Stop the running reply before undoing file changes.' });
-    }
-    if (folderWriter(thread.workspaceRoot)) {
-      return res.status(409).json({ error: 'Another thread is running in this folder. Undo once it finishes.' });
     }
     const runIds = await threadRunIds(service, req.params.id, (req.body as { runIds?: unknown } | undefined)?.runIds);
     if (runIds.length === 0) return res.status(400).json({ error: 'runIds is required' });
