@@ -1,6 +1,7 @@
+// The writing-rules checker lives in agent-models, which has no test runner; it is tested here.
 import { describe, expect, it } from 'vitest';
 
-import { answerStyleMetrics, checkStyle, sentencesOf } from './style';
+import { answerStyleMetrics, checkStyle, sentencesOf } from '@agent/agent-models';
 
 describe('sentencesOf', () => {
   it('splits lines and sentences, and skips code and quotes', () => {

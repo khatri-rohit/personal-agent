@@ -5,8 +5,8 @@
   "prompts": [
     {
       "roles": "system,user",
-      "chars": 11579,
-      "sha256": "6acba000c7d5c1cc7af1e1e4a75c52e4c1f0c518aba8a7db4582a8afdd26812d",
+      "chars": 12263,
+      "sha256": "c481715fd7e14248d59a467c24d770ea0122fa1196ccea462b1f7240c9d4329f",
       "tools": [
         "delegate",
         "diff",
@@ -30,8 +30,8 @@
     },
     {
       "roles": "system,user,assistant,tool",
-      "chars": 11847,
-      "sha256": "fd3fb82329d53c91da776cb20f67e1ed08dc336bec6d2d63e1a1126bb3711b40",
+      "chars": 12531,
+      "sha256": "697f82ffa9711617b5fea0793e226a4256d53dfed55228e48cfc533d09b6f477",
       "tools": [
         "delegate",
         "diff",
@@ -55,8 +55,8 @@
     },
     {
       "roles": "system,user,assistant,tool,assistant,tool,user",
-      "chars": 12603,
-      "sha256": "34ffc2911bf376f09f2344848701b7c0e3fea169027667f992300c90599f7551",
+      "chars": 13287,
+      "sha256": "628dae5ca7d2b018a1ba87f66b7a59f5e8093b2df683fa7d65ac24991a915ee9",
       "tools": [
         "delegate",
         "diff",
@@ -80,8 +80,8 @@
     },
     {
       "roles": "system,user,assistant,tool,assistant,tool,assistant,tool,user",
-      "chars": 12760,
-      "sha256": "9e924148382d194a4b8f3575232edc525b8950fe35d38a2c857c82f8ef29647b",
+      "chars": 13444,
+      "sha256": "3d5dbea3c98b8e1ab6b118fec4f45ef6d67dfdfe6d312957be2a8df146189cd5",
       "tools": [
         "delegate",
         "diff",
@@ -105,8 +105,8 @@
     },
     {
       "roles": "system,user,assistant,tool,assistant,tool,assistant,tool,assistant,tool,user",
-      "chars": 13116,
-      "sha256": "e970aa1a6d61c26d7b8a7cba7077a008bfc69590021eeea21a0caa59db18f0d1",
+      "chars": 13800,
+      "sha256": "803aa87b7992c116abdebf9177be509ece0afbac548a16840f4e70409597e39b",
       "tools": [
         "delegate",
         "diff",
