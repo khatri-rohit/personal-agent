@@ -6,7 +6,7 @@ import type { AgentService } from '../service';
 import { startThreadRun } from './start-run';
 
 /**
- * The queued message (F2): one per thread, on disk with the thread
+ * The queued message: one per thread, on disk with the thread
  * (`queued.json`), started by the host when the thread's run settles.
  * This module and `start-run.ts` import each other on purpose: a run start
  * starts the queue once that run settles, and the queue starts a run. Both

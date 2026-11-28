@@ -8,7 +8,6 @@ import {
   listTools,
   resolveSkillsRoot,
   RunManager,
-  skillLintWarnings,
   standardUserSkillRoots,
   subagentProfileWarnings,
 } from '@agent/agent-core';
@@ -21,7 +20,7 @@ import { openThreadStore, type ThreadStore } from './threads/thread-store';
 /**
  * The host: the one owner of the state that derives from an agent home and
  * its config. Transports (HTTP routes, the CLI later) hold this object and
- * nothing else. One per process (ADR-0003 §4.2): the engine keeps
+ * nothing else. One per process: the engine keeps
  * process-wide caches (skill roots, sub-agent profiles, model clients).
  */
 export interface AgentService {
@@ -59,7 +58,7 @@ function resolveHome(config: AgentConfig): string {
 
 export function createAgentService(options: { config: AgentConfig }): AgentService {
   if (created) {
-    throw new Error('An AgentService already exists in this process; the engine allows one (ADR-0003 §4.2).');
+    throw new Error('An AgentService already exists in this process; the engine allows one.');
   }
   created = true;
   const { config } = options;
@@ -87,16 +86,12 @@ export function createAgentService(options: { config: AgentConfig }): AgentServi
       for (const warning of subagentProfileWarnings()) {
         console.warn(`[agents] skipped ${warning}`);
       }
-      // Once at boot: packs that will not load, and large packs that lose
-      // most of their rules when evicted (no `## Core rules`).
+      // Once at boot: packs that will not load, with the reason.
       const catalogs = listSkillCatalogs();
       for (const entry of [...catalogs.builtin, ...catalogs.user]) {
         if (entry.issue === 'invalid') {
           console.warn(`[skills] skipped ${entry.root}/${entry.folder}: ${entry.reason ?? 'invalid'}`);
         }
-      }
-      for (const warning of skillLintWarnings()) {
-        console.warn(`[skills] ${warning}`);
       }
     }
     return dir;

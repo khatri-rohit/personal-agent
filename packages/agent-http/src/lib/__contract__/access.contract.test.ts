@@ -1,6 +1,6 @@
 /**
  * Contract: who may drive the API (platform/access.ts) and /version.
- * Updated deliberately in stage 4 for ADR-0003 §4.6: a browser is admitted
+ * A browser is admitted
  * only as this server's own page (Fetch Metadata + exact origin), never from
  * another localhost port; local processes keep the token; no CORS at all.
  */
@@ -94,7 +94,7 @@ describe('access guard', () => {
 
 describe('access guard, bound beyond loopback', () => {
   it('needs the token for every request, the same-origin page included', async () => {
-    // One service per process (ADR-0003 §4.2): a second app over the same one.
+    // One service per process: a second app over the same one.
     const { createApp } = await import('../app.js');
     const { createLogger } = await import('../platform/logger.js');
     const open = createApp(api.service, createLogger('contract'), { browser: false });

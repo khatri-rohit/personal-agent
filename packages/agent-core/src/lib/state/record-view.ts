@@ -44,8 +44,8 @@ function recordHeader(count: number): string {
 /**
  * The whole task record as one text, when it does not fit the card's record
  * budget; null when the card shows all of it. The residency pass stores this
- * as a blob, so findings the card cannot show stay recallable (P4: a
- * finding is the one item that cannot be got back any other way).
+ * as a blob, so findings the card cannot show stay recallable (a finding
+ * is derived, so it cannot be got back by reading again).
  */
 export function recordOverflowText(findings: TaskFinding[], recordCardTokens: number): string | null {
   if (findings.length === 0) return null;

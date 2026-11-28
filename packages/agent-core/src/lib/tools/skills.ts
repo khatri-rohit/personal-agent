@@ -52,14 +52,20 @@ export type SkillCatalogEntry = SkillMetadata & {
   reason?: string;
 };
 
-/** A loadable skill plus where it came from. */
-export type CatalogSkill = Skill & { scope: SkillScope; root: string };
+/** A loadable skill plus where it came from. `dir` is the pack's folder. */
+export type CatalogSkill = Skill & { scope: SkillScope; root: string; dir: string };
 
 /** Agent Skills spec: name is 1–64 chars, lowercase / digits / hyphens. */
 export const SKILL_NAME_MAX = 64;
 export const SKILL_DESCRIPTION_MAX = 1024;
 /** A SKILL.md above this is not prompt text; it is listed invalid and never read. */
 export const SKILL_FILE_MAX_BYTES = 1024 * 1024;
+/**
+ * The largest instructions body a pack may have. A loaded body enters the
+ * transcript whole and stays, so a pack over this is listed invalid instead
+ * of being cut. Packs keep long detail in their own files (`references/`).
+ */
+export const SKILL_BODY_MAX_CHARS = 100_000;
 const SKILL_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 export function isSpecSkillName(name: string): boolean {
@@ -290,8 +296,7 @@ export function parseSkillMarkdown(
     }
   } catch {
     // Strict YAML rejects common hand-written slips, most often an unquoted
-    // ": " inside a description ("Each comment is one line: location, …").
-    // Other harnesses still load those packs, so read the two fields we need
+    // ": " inside a description. Other harnesses still load those packs, so read the two fields we need
     // line by line before calling the pack invalid.
     const loose = looseFrontmatter(fm);
     if (loose.name && loose.description) {
@@ -344,6 +349,9 @@ function specReason(folder: string, parsed: ParsedSkill): string | null {
   if (parsed.description.length < 1) return 'description is missing';
   if (parsed.description.length > SKILL_DESCRIPTION_MAX) {
     return `description is over ${SKILL_DESCRIPTION_MAX} characters`;
+  }
+  if (parsed.instructions.length > SKILL_BODY_MAX_CHARS) {
+    return `instructions are over ${SKILL_BODY_MAX_CHARS.toLocaleString('en-US')} characters; move detail into files the skill links to`;
   }
   return null;
 }
@@ -474,6 +482,7 @@ function assembleFrom(
         ...row.skill,
         scope: row.root.scope,
         root: row.root.id,
+        dir: path.join(row.root.path, row.folder),
       }),
     )
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -587,162 +596,175 @@ export function getSkill(name: string): CatalogSkill | undefined {
   return current().byName.get(key);
 }
 
-/** User-requested bodies (`/` picks). Not host guesses. */
-/** Bodies above this are "large": they load as core + contents, then by section. */
-export const SKILL_LARGE_CHARS = 8_000;
-/** One section per load_skill call; longer sections are cut with a pointer. */
-export const SKILL_SECTION_MAX_CHARS = 12_000;
-/** Fallback core when a skill has no `## Core rules` section. */
-const SKILL_CORE_FALLBACK_CHARS = 1_200;
-/** `/` picks are pinned in full up to this total; larger picks pin core + contents. */
-export const PINNED_SKILLS_MAX_CHARS = 24_000;
-
-const CORE_HEADING = /^##\s+core rules\s*$/im;
-
-/** `## ` sections of a skill body, in order. Text before the first heading is the preamble. */
-export function skillSections(
-  instructions: string,
-): { title: string; body: string }[] {
-  const parts = instructions.split(/\n(?=##\s)/);
-  const sections: { title: string; body: string }[] = [];
-  for (const part of parts) {
-    const match = part.match(/^##\s+(.+)\n?/);
-    if (!match) continue;
-    sections.push({
-      title: match[1]!.trim(),
-      body: part.slice(match[0].length).trim(),
-    });
-  }
-  return sections;
-}
+/** Files listed after a loaded body, so the model knows what it can open. */
+const SKILL_FILES_MAX = 50;
+/** One read of a pack file returns at most this; longer files page with `offset`. */
+export const SKILL_FILE_PAGE_CHARS = 20_000;
+const SKILL_FILES_MAX_DEPTH = 4;
 
 /**
- * The must-follow rules that stay in context after a skill body is evicted:
- * the `## Core rules` section, else the first paragraph or list block.
+ * The pack's other files (relative paths with `/`, sizes), SKILL.md
+ * excluded. Hidden entries and `node_modules` are skipped; symlinks are not
+ * followed, so the listing never reaches outside the folder.
  */
-export function skillCore(instructions: string): string {
-  const core = skillSections(instructions).find((section) =>
-    CORE_HEADING.test(`## ${section.title}`),
-  );
-  if (core) return core.body.trim();
-  const firstBlock = instructions.trim().split(/\n\s*\n/)[0] ?? '';
-  return firstBlock.length > SKILL_CORE_FALLBACK_CHARS
-    ? `${firstBlock.slice(0, SKILL_CORE_FALLBACK_CHARS)}…`
-    : firstBlock;
-}
-
-/** Large skills without `## Core rules` (their evicted card falls back to the first block). */
-export function skillLintWarnings(): string[] {
-  return catalog()
-    .filter(
-      (skill) =>
-        skill.instructions.length > SKILL_LARGE_CHARS &&
-        !CORE_HEADING.test(skill.instructions),
-    )
-    .map(
-      (skill) =>
-        `${skill.name}: ${Math.round(skill.instructions.length / 4)} tokens and no "## Core rules" section`,
-    );
-}
-
-function contentsLine(skill: Skill): string {
-  const sections = skillSections(skill.instructions);
-  if (sections.length === 0) return '';
-  return `Sections (load_skill with section): ${sections
-    .map(
-      (section) =>
-        `${section.title} (~${Math.round(section.body.length / 4)} tokens)`,
-    )
-    .join('; ')}`;
-}
-
-/** What load_skill returns: the whole body when small, else core + contents, or one section. */
-export function skillForLoad(skill: Skill, section?: string): string {
-  if (section) {
-    const wanted = section.trim().toLowerCase();
-    const found = skillSections(skill.instructions).find(
-      (item) => item.title.toLowerCase() === wanted,
-    );
-    if (!found)
-      return `Section "${section}" not found in ${skill.name}. ${contentsLine(skill)}`;
-    return found.body.length > SKILL_SECTION_MAX_CHARS
-      ? `${found.body.slice(0, SKILL_SECTION_MAX_CHARS)}\n…(section cut at ${SKILL_SECTION_MAX_CHARS} chars)`
-      : found.body;
-  }
-  if (skill.instructions.length <= SKILL_LARGE_CHARS) return skill.instructions;
-  return [
-    `# ${skill.name} — core rules`,
-    skillCore(skill.instructions),
-    '',
-    contentsLine(skill),
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
-
-/**
- * Replaces a loaded skill body once it has been applied: core rules plus a
- * reload note. The model keeps the rules; the long body stops riding along.
- */
-export function skillCard(name: string, loadedAtIteration?: number): string {
-  const skill = getSkill(name);
-  const when =
-    loadedAtIteration !== undefined ? ` at iteration ${loadedAtIteration}` : '';
-  if (!skill)
-    return `(skill card) ${name} was loaded${when}; call load_skill again for the full text.`;
-  return `(skill card) ${skill.name} loaded${when}. Core rules:\n${skillCore(skill.instructions)}\nCall load_skill again for the full text or a section.`;
-}
-
-/**
- * Bodies for `/` picks (mandatory for this send). Pinned in full while the
- * total stays under `capChars`; larger picks pin core + contents instead.
- */
-export function formatPinnedSkills(
-  names: string[],
-  alreadyLoaded: string[] = [],
-  capChars = PINNED_SKILLS_MAX_CHARS,
-): { text: string; trimmed: string[] } {
-  const skip = new Set(alreadyLoaded.map((name) => name.toLowerCase()));
-  const blocks: string[] = [];
-  const trimmed: string[] = [];
-  const seen = new Set<string>();
-  let used = 0;
-  for (const name of names) {
-    const skill = getSkill(name);
-    if (!skill) continue;
-    const key = skill.name.toLowerCase();
-    if (seen.has(key) || skip.has(key)) continue;
-    seen.add(key);
-    let body = skill.instructions;
-    if (used + body.length > capChars) {
-      // Over the cap: large skills pin core + contents, small ones their core.
-      body =
-        skill.instructions.length > SKILL_LARGE_CHARS
-          ? skillForLoad(skill)
-          : skillCore(skill.instructions);
-      trimmed.push(skill.name);
+export function skillFiles(skill: CatalogSkill): { path: string; bytes: number }[] {
+  const out: { path: string; bytes: number }[] = [];
+  const walk = (dir: string, rel: string, depth: number): void => {
+    if (out.length >= SKILL_FILES_MAX || depth > SKILL_FILES_MAX_DEPTH) return;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
     }
-    used += body.length;
-    blocks.push(`## ${skill.name}\n${body}`);
-  }
-  if (blocks.length === 0) return { text: '', trimmed };
-  return {
-    text: [
-      '# Loaded skills',
-      'The user attached these packs to this send. Follow them.',
-      'Do not call load_skill again for these names (except to load a listed section).',
-      '',
-      blocks.join('\n\n'),
-    ].join('\n'),
-    trimmed,
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (out.length >= SKILL_FILES_MAX) return;
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      const childPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(childPath, childRel, depth + 1);
+      } else if (entry.isFile() && childRel !== 'SKILL.md') {
+        try {
+          out.push({ path: childRel, bytes: statSync(childPath).size });
+        } catch {
+          /* vanished while listing */
+        }
+      }
+    }
   };
+  walk(skill.dir, '', 0);
+  return out;
 }
 
-export function formatSkillBodies(
-  names: string[],
-  alreadyLoaded: string[] = [],
-): string {
-  return formatPinnedSkills(names, alreadyLoaded).text;
+function formatBytes(bytes: number): string {
+  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+/**
+ * What `load_skill` returns for a pack: its whole instructions body, then
+ * the files it can open. Nothing is cut; the body enters the transcript
+ * once and stays.
+ */
+export function formatSkillLoad(skill: CatalogSkill): string {
+  const files = skillFiles(skill);
+  if (files.length === 0) return skill.instructions;
+  return [
+    skill.instructions,
+    '',
+    '---',
+    `Files in this skill (open one with load_skill { skill_name: "${skill.name}", file }):`,
+    ...files.map((file) => `- ${file.path} (${formatBytes(file.bytes)})`),
+  ].join('\n');
+}
+
+/**
+ * One file of a pack, jailed to its folder: no absolute paths, no `..`, no
+ * symlink out, text only. Pages at `SKILL_FILE_PAGE_CHARS` with `offset`.
+ */
+export function readSkillResource(skill: CatalogSkill, file: string, offset = 0): string {
+  const wanted = file.trim().replace(/\\/g, '/');
+  if (!wanted || wanted.includes('\0') || path.isAbsolute(wanted) || /^[a-zA-Z]:/.test(wanted)) {
+    return `Error: "${file}" is not a path inside the ${skill.name} skill.`;
+  }
+  let real: string;
+  let realDir: string;
+  try {
+    realDir = realpathSync.native(skill.dir);
+    real = realpathSync.native(path.resolve(skill.dir, wanted));
+  } catch {
+    return `Error: ${skill.name} has no file "${wanted}".`;
+  }
+  const rel = path.relative(realDir, real);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    return `Error: "${file}" is not a path inside the ${skill.name} skill.`;
+  }
+  let stat: Stats;
+  try {
+    stat = statSync(real);
+  } catch {
+    return `Error: ${skill.name} has no file "${wanted}".`;
+  }
+  if (!stat.isFile()) return `Error: "${wanted}" is a folder, not a file.`;
+  if (stat.size > SKILL_FILE_MAX_BYTES) {
+    return `Error: "${wanted}" is larger than ${Math.round(SKILL_FILE_MAX_BYTES / 1024)} KB.`;
+  }
+  let text: string;
+  try {
+    text = readFileSync(real, 'utf8');
+  } catch {
+    return `Error: "${wanted}" could not be read.`;
+  }
+  if (text.includes('\0')) return `Error: "${wanted}" is a binary file.`;
+  const start = Math.max(0, Math.floor(offset));
+  if (start >= text.length && text.length > 0) {
+    return `Error: offset ${start} is past the end of "${wanted}" (${text.length} chars).`;
+  }
+  const end = start + SKILL_FILE_PAGE_CHARS;
+  if (start === 0 && text.length <= SKILL_FILE_PAGE_CHARS) return text;
+  return `${text.slice(start, end)}${
+    end < text.length ? `\n\n(more: load_skill with file "${wanted}" and offset=${end}; ${text.length} chars in all)` : ''
+  }`;
+}
+
+/**
+ * What a load_skill call asks for: a skill's instructions (`file` unset) or
+ * one of its files. Undefined for arguments that name no skill.
+ */
+export type SkillLoad = { name: string; file?: string };
+
+export function skillLoadFromArgs(raw: string | undefined): SkillLoad | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as { skill_name?: unknown; file?: unknown };
+    if (!parsed || typeof parsed !== 'object') return undefined;
+    const name = typeof parsed.skill_name === 'string' ? parsed.skill_name.trim() : '';
+    if (!name) return undefined;
+    const file = typeof parsed.file === 'string' && parsed.file.trim() ? parsed.file.trim() : undefined;
+    return file ? { name, file } : { name };
+  } catch {
+    return undefined;
+  }
+}
+
+/** A load_skill result that holds the skill's instructions (not a miss, an error, a pointer or a card). */
+export function isSkillBody(content: string): boolean {
+  return !/^(Skill not found|Error:|\((unchanged|skill card|stub|evicted)\b)/.test(content);
+}
+
+/**
+ * Whether the prompt already holds `name`'s instructions: a load_skill
+ * result for it that is still whole. A folded or evicted load does not
+ * count, so the model can load the skill again.
+ */
+export function skillBodyInPrompt(
+  messages: ReadonlyArray<{ role: string; content?: unknown; tool_calls?: unknown; tool_call_id?: string }>,
+  name: string,
+): boolean {
+  const key = name.trim().toLowerCase();
+  const ids = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== 'assistant' || !Array.isArray(message.tool_calls)) continue;
+    for (const call of message.tool_calls as Array<{ id: string; function?: { name: string; arguments: string } }>) {
+      if (call.function?.name !== 'load_skill') continue;
+      const load = skillLoadFromArgs(call.function.arguments);
+      if (load && !load.file && load.name.toLowerCase() === key) ids.add(call.id);
+    }
+  }
+  if (ids.size === 0) return false;
+  return messages.some(
+    (message) =>
+      message.role === 'tool' &&
+      ids.has(message.tool_call_id ?? '') &&
+      typeof message.content === 'string' &&
+      isSkillBody(message.content),
+  );
+}
+
+/** The answer to a load of a skill whose body is already in the conversation. */
+export function skillAlreadyLoadedNote(name: string): string {
+  return `(unchanged) The ${name} skill is already loaded above in this conversation; its instructions are unchanged. Follow them from there.`;
 }
 
 /** Catalog lines are for matching, not reading; the body loads on demand. */
@@ -765,7 +787,7 @@ export function formatSkillsCatalog(skills: SkillMetadata[]): string {
     '# Skills',
     'Catalog of procedure packs (name + description).',
     'Load one with load_skill (exact name) when its description matches what you are about to do. Most tasks need none.',
-    'Large skills return core rules + a section list; load a section when you need it. Loading does not approve steps or add tools.',
+    'A loaded skill stays in the conversation; do not load it again. It lists its files; open one with load_skill and file when its instructions point to it. Loading does not approve steps or add tools.',
     '',
     lines,
   ].join('\n');
@@ -790,7 +812,7 @@ export const load_skill: Tool = {
     function: {
       name: 'load_skill',
       description:
-        'Load the procedure body for a skill from the catalog. Built-in tools work without a skill.',
+        "Load a skill's full instructions from the catalog, or one file of that skill (pass file). Built-in tools work without a skill.",
       parameters: {
         type: 'object',
         properties: {
@@ -798,10 +820,14 @@ export const load_skill: Tool = {
             type: 'string',
             description: 'Exact skill name from the skills catalog',
           },
-          section: {
+          file: {
             type: 'string',
             description:
-              'Optional section title, for large skills that list their sections.',
+              "Optional: a file of the skill, as listed after its instructions (for example references/guide.md).",
+          },
+          offset: {
+            type: 'integer',
+            description: 'Optional: char offset to continue a long file from.',
           },
         },
         required: ['skill_name'],
@@ -811,11 +837,11 @@ export const load_skill: Tool = {
   },
   guidance: {
     whenToUse: [
-      'A catalog skill matches the user intent and its body is not already in Loaded skills.',
+      'A catalog skill matches the user intent and it is not already loaded or attached in this conversation.',
+      "A loaded skill's instructions point to one of its files and you need it now.",
     ],
     whenNotToUse: [
-      'Do not load a skill whose body is already in Loaded skills.',
-      'Do not load a skill on every turn.',
+      'Do not load a skill that is already loaded or attached above.',
       'Do not load a skill instead of calling a built-in tool.',
       'Do not load a skill for small talk or a one-line factual answer.',
       'Do not use offer_choice to decide which skill to load.',
@@ -829,11 +855,16 @@ export const load_skill: Tool = {
   execute: async (args) => {
     const name = String(args.skill_name ?? '').trim();
     const skill = getSkill(name);
-    const section = typeof args.section === 'string' ? args.section : undefined;
-    if (skill) return skillForLoad(skill, section);
-    const available = listSkills()
-      .map((item) => item.name)
-      .join(', ');
-    return `Skill not found. Available skills: ${available || '(none)'}`;
+    if (!skill) {
+      const available = listSkills()
+        .map((item) => item.name)
+        .join(', ');
+      return `Skill not found. Available skills: ${available || '(none)'}`;
+    }
+    if (typeof args.file === 'string' && args.file.trim()) {
+      const offset = typeof args.offset === 'number' ? args.offset : 0;
+      return readSkillResource(skill, args.file, offset);
+    }
+    return formatSkillLoad(skill);
   },
 };

@@ -261,7 +261,7 @@ export const record_finding: Tool = {
     function: {
       name: 'record_finding',
       description:
-        'Record one confirmed fact for this task: a short claim and its evidence. Recorded findings are kept for the rest of the run, so the file reads behind them can leave the prompt and you will not need to read them again. Record facts as you confirm them; write your answer from them. The harness checks quoted text against the cited lines and corrects the line numbers when they are off.',
+        'Record one confirmed fact for this task: a short claim and its evidence. Recorded findings stay for the rest of the run. The file reads behind them can then leave the prompt, and you do not read them again. Record facts as you confirm them; write your answer from them. The harness checks quoted text against the cited lines and corrects the line numbers when they are off.',
       parameters: {
         type: 'object',
         properties: {

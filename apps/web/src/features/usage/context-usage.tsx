@@ -77,7 +77,6 @@ export function ContextUsage({
   runPromptTokens,
   runPromptCap,
   runUsageEstimated,
-  trimmedSkills,
 }: {
   used: number;
   limit: number | null;
@@ -90,8 +89,6 @@ export function ContextUsage({
   runPromptTokens?: number;
   runPromptCap?: number;
   runUsageEstimated?: boolean;
-  /** `/` picks pinned as core + contents because they passed the pinned cap. */
-  trimmedSkills?: string[];
 }) {
   if (limit == null || limit <= 0) return null;
 
@@ -226,11 +223,6 @@ export function ContextUsage({
             </>
           ) : null}
         </dl>
-        {trimmedSkills?.length ? (
-          <p className="type-caption mt-2 text-muted-foreground">
-            Pinned as core rules only (over the skill size cap): {trimmedSkills.join(', ')}
-          </p>
-        ) : null}
         {defaultWindow ? (
           <p className="type-caption mt-2 text-muted-foreground">
             Using the 260K fallback window: the model's size is unavailable

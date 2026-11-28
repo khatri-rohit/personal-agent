@@ -82,6 +82,8 @@ function describe(m: RunMetrics): string {
     `tool outcomes: ${Object.entries(m.toolOutcomes).filter(([, o]) => o.errors > 0 || o.nonZeroExit > 0).map(([name, o]) => `${name} ${o.errors}/${o.calls} failed${o.nonZeroExit ? `, ${o.nonZeroExit} non-zero exits` : ''}`).join('; ') || 'no failures recorded'}`,
     `signals: ${signalsOf(m).map((s) => `${s.severity} ${s.area}: ${s.signal}`).join('; ') || 'none'}`,
     `skills: loaded ${m.skills.loaded} (~${tokens(m.skills.loadedTokens)}), retired ${m.skills.evicted}`,
+    `answer style: ${m.answerStyle ? `${m.answerStyle.sentences} sentences, ${m.answerStyle.meanWords} words/sentence, ${m.answerStyle.longSentences} long, ${m.answerStyle.hedges} hedges, ${m.answerStyle.filler} filler${m.answerStyle.preamble ? ', opens with preamble' : ''}` : 'no answer'}`,
+    `drift: ${m.drift.repeatsAnswered} repeats answered, ${m.drift.restores} restores, ${m.drift.stallNudges} stall nudges`,
     `memory gate: ${counts(m.memoryGate)}`,
     `reasoning effort: ${counts(m.reasoningEffort)}`,
     `system 1: ${describeSystem1(m.system1)}`,

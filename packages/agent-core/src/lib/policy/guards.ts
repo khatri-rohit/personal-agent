@@ -24,8 +24,8 @@ export function repeatAction(input: {
 }
 
 /**
- * What to do with a read of one file past its per-path limit (P5, like
- * `repeatAction` for reads): up to the limit it runs; past it the read is
+ * What to do with a read of one file past its per-path limit (like
+ * `repeatAction`, for reads): up to the limit it runs; past it the read is
  * answered with a pointer to what is already above or recallable, and the
  * run goes on; only past twice the limit (a model in a loop) does the run
  * stop with a handoff.

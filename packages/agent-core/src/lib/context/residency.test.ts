@@ -374,7 +374,7 @@ describe('ReadDedupe', () => {
   });
 });
 
-describe('recap stays lossless (phase 7)', () => {
+describe('recap stays lossless', () => {
   const card = (n: number) => `${CARD_PREFIX} read_file {"path":"f${n}.ts"} [1–50] · budget · 9000 chars · sha256:${String(n).padStart(64, '0')}`;
   const many = (count: number): ChatCompletionMessageParam[] =>
     transcript(

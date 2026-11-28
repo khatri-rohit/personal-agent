@@ -32,7 +32,7 @@ export const webSearchTool: Tool = {
     whenToUse: [
       'You do not have confident, current knowledge to answer (docs, APIs, releases, news, prices, people, products).',
       'The user asks you to search, look up, find, verify, or check something online.',
-      'Facts may have changed after your knowledge cutoff, or you would otherwise guess.',
+      'Facts can have changed after your knowledge cutoff, or you would otherwise guess.',
     ],
     whenNotToUse: [
       'Greetings, small talk, or casual conversation.',

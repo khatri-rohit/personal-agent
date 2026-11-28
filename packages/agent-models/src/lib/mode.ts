@@ -45,10 +45,11 @@ export const HOME_MODE: ModeConfig = {
     'load_skill',
     'memory',
     'session_search',
+    'read_thread',
     'plan',
     'todo',
     // Web facts with their URL: evidence for stall and the effort floor, and
-    // a record later turns of the thread keep (v2 phase 6).
+    // a record later turns of the thread keep.
     'record_finding',
     'offer_choice',
   ],
@@ -80,6 +81,7 @@ export const WORKSPACE_MODE: ModeConfig = {
     'load_skill',
     'memory',
     'session_search',
+    'read_thread',
     'plan',
     'todo',
     'record_finding',
@@ -92,7 +94,7 @@ export const WORKSPACE_MODE: ModeConfig = {
     maxRepeatedToolCalls: 8,
     toolTimeoutMs: 120_000,
     maxPromptTokens: 10_000_000,
-    // Real runs take about 5 minutes of model time per 1M prompt tokens, plus tools.
+    // Wall-clock cap for a long coding run (model time plus tool time).
     maxWallMs: 2 * 60 * 60_000,
   },
 };

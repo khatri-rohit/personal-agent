@@ -14,7 +14,7 @@ import {
 } from '@agent/agent-models';
 
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
-import { getSkill } from '../tools/skills';
+import { getSkill, skillAlreadyLoadedNote, skillBodyInPrompt } from '../tools/skills';
 import type { Tool } from '../tools/types';
 import { REPEAT_BLOCKED, type AdmissionRun, type Verdict } from './admission';
 import { guardResultWindow, manageResidency } from './residency-pass';
@@ -166,7 +166,7 @@ function shapeBareResult(
         path: readPath,
       });
     }
-    // The harness answered an identical read with a pointer (F-5): traced, so
+    // The harness answered an identical read with a pointer: traced, so
     // the guard's action on identical calls is measured, not silent.
     if (shaped.deduped) {
       tracePolicyDecision(s, 'guard', [`dedupe_answered:${toolName}`], 'identical result still in context', {
@@ -186,16 +186,22 @@ function shapeBareResult(
   if (toolName === 'web_fetch') {
     return withWebSliceNote(s, args, result);
   }
-  if (toolName === 'load_skill' && !result.startsWith('Skill not found')) {
+  if (toolName === 'load_skill' && !result.startsWith('Skill not found') && !result.startsWith('Error:')) {
     const name = String(args.skill_name ?? '').trim();
-    s.skillLoads.set(toolCallId, { name, iteration: s.iterations });
+    const file = typeof args.file === 'string' && args.file.trim() ? args.file.trim() : undefined;
+    // The instructions are already above, whole: one copy is enough.
+    if (!file && skillBodyInPrompt(s.messages, name)) {
+      tracePolicyDecision(s, 'guard', ['dedupe_answered:load_skill'], 'skill instructions already in context');
+      return skillAlreadyLoadedNote(getSkill(name)?.name ?? name);
+    }
+    if (!file) s.skillLoads.set(toolCallId, { name, iteration: s.iterations });
     const scope = getSkill(name)?.scope;
     s.trace({
       type: 'skill_loaded',
       runId: s.runId,
       iteration: s.iterations,
       name,
-      ...(typeof args.section === 'string' ? { section: args.section } : {}),
+      ...(file ? { file } : {}),
       tokens: Math.ceil(result.length / CHARS_PER_TOKEN),
       source: 'model',
       ...(scope ? { scope } : {}),

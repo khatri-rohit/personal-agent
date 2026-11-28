@@ -1,8 +1,8 @@
 import type { SubagentThoroughness, UsageTotals } from '@agent/agent-models';
 
 /**
- * Delegation decisions as pure functions of what the harness knows (built in
- * phase 4, moved here in phase 5). The runner applies them and traces each
+ * Delegation decisions as pure functions of what the harness knows. The
+ * sub-agent runner applies them and traces each
  * as a `policy_decision` of kind `delegation`.
  */
 

@@ -43,7 +43,7 @@ export default defineConfig({
     host: 'localhost',
     proxy: {
       // Dev only: the page is on :4200, the host on :3333. The host admits a
-      // browser only from its own exact origin (ADR-0003 §4.6), so the proxy
+      // browser only from its own exact origin, so the proxy
       // presents the request as coming from the target's origin.
       '/api': {
         target: API_TARGET,

@@ -1032,9 +1032,6 @@ export function ChatInput({
           ? { runPromptCap: activeRun.runPromptCap }
           : {})}
         {...(activeRun?.runUsageEstimated ? { runUsageEstimated: true } : {})}
-        {...(activeRun?.contextReport?.trimmedSkills?.length
-          ? { trimmedSkills: activeRun.contextReport.trimmedSkills }
-          : {})}
       />
       <UsageMeter
         balance={ollamaBalance.balance}

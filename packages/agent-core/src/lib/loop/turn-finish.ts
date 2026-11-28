@@ -43,7 +43,7 @@ const REPORT_LIMIT_HANDOFF_INSTRUCTION = `This run stopped at a limit; tools are
 const DEFERRED_CHOICE_INSTRUCTION =
   'The user skipped your question to decide later; tools are off. Do not pick an option or continue the work. Write the reply they will decide from: 1) one or two lines on what was done so far and where it stopped; 2) the open question; 3) each option by its label: what it would do, its trade-offs (effort, risk, what it changes) and when it is the right pick; 4) your recommendation and why; 5) how to answer next time (for example "Go with <label>", several options, or other direction). Keep it scannable.';
 
-const STOP_CHECK_NOTE =
+export const STOP_CHECK_NOTE =
   'Your answer reports success, but no check (build, typecheck, test or lint) has run since your last edit. Run the project check now, or say plainly what is not verified.';
 
 /**
@@ -104,7 +104,7 @@ function endRun(
 }
 
 /** The failed-check note: names the command that is red, so the model knows what to fix or report. */
-function failedCheckNote(command: string, exitCode: number | undefined): string {
+export function failedCheckNote(command: string, exitCode: number | undefined): string {
   return `Your answer reports success, but the last check after your edits failed (\`${command}\` exited ${exitCode ?? 'non-zero'}). Fix it and run the check again, or say plainly what still fails.`;
 }
 

@@ -7,8 +7,7 @@ import type { ThinkingValue } from '@agent/agent-models';
 /**
  * `matrix`: one task per task shape (small edit, multi-file edit, read-only
  * extraction, plain question, delegation-heavy research, a file over the
- * read window, shell commands). Every harness change runs it; see
- * docs/plans/harness-v2-build-plan.md.
+ * read window, shell commands). Every harness change runs it.
  */
 export type TaskSuite = 'regression' | 'capability' | 'matrix';
 

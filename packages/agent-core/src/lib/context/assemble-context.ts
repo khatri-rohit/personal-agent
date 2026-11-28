@@ -23,33 +23,34 @@ import {
   formatThreadPlanForPrompt,
   imageAttachments,
   isResumableStop,
+  threadMentions,
   isThreadPlanEmpty,
 } from '@agent/agent-models';
 
 import { buildSystemPrompt } from '../prompts/system-prompt';
 import {
-  formatPinnedSkills,
   formatSkillsCatalog,
+  isSkillBody,
   listSkills,
-  skillCard,
+  skillAlreadyLoadedNote,
+  skillLoadFromArgs,
+  type SkillLoad,
 } from '../tools/skills';
 import type { ToolRegistry } from '../tools/types';
 import { stubWebSourceCard } from '../tools/web/source';
 import { hostListedWebUrls } from '../tools/web/trust';
 import { liveResultCapChars } from '../tools/workspace/tools';
 import { estimatePromptTokens } from '../model/estimate-prompt-tokens';
-import { HARNESS_CONTEXT_CLOSE, HARNESS_CONTEXT_OPEN } from './message-origin';
+import {
+  ATTACHMENTS_CLOSE,
+  ATTACHMENTS_OPEN,
+  HARNESS_CONTEXT_CLOSE,
+  HARNESS_CONTEXT_OPEN,
+} from './message-origin';
 import { outcomeCard, toolCallIndex, type ToolCallInfo } from './outcome-card';
 import { MIN_EVICT_CHARS } from './residency';
 import { traitsResolver } from '../tools/traits';
 import { buildEvidenceLog, buildSituationCard } from './situation';
-
-export type MentionedThreadContext = {
-  threadId: string;
-  title: string;
-  sourceLabel: string;
-  text: string;
-};
 
 export type AssembleContextInput = {
   tools: ToolRegistry;
@@ -61,18 +62,8 @@ export type AssembleContextInput = {
   mode?: ModeName;
   /** Workspace Ask vs Agent; ignored for Home. Default agent. */
   posture?: RunPosture;
-  /**
-   * Other threads the user attached to the current turn.
-   * Packed by the host; not ledger rows of this thread.
-   */
-  mentionedThreads?: MentionedThreadContext[];
   /** Thread-scoped plan journal + todos. Injected when non-empty. */
   plan?: ThreadPlan | null;
-  /**
-   * User-requested skill names for this send (`/` picks).
-   * Bodies go into Loaded skills. Catalog is always the full list.
-   */
-  skillNames?: string[];
   /** Prior run summary for resume; incomplete/cancelled inject a system note. */
   lastRun?: ThreadLastRun | null;
   /** Harness switches for this run. Defaults to DEFAULT_HARNESS_FLAGS. */
@@ -192,32 +183,23 @@ function buildRulesPrompt(memory: MemoryFiles): string {
   return parts.join('\n\n');
 }
 
-function loadSkillNameFromArgs(raw: string | undefined): string | undefined {
-  if (!raw) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return undefined;
-    const name = (parsed as { skill_name?: unknown }).skill_name;
-    return typeof name === 'string' && name.trim() ? name.trim() : undefined;
-  } catch {
-    return undefined;
+/**
+ * The references a user message carries: the skills the user named (`/`
+ * picks) and the threads they attached. Only names and ids: the model loads
+ * a skill with load_skill and reads a thread with read_thread. Built from
+ * the ledger row, so it never changes once sent. A mention of the thread
+ * itself is skipped.
+ */
+function referencesBlock(envelope: LedgerEnvelope): string {
+  const lines: string[] = [];
+  for (const name of envelope.skills?.selected ?? []) lines.push(`- Skill: ${name}`);
+  for (const mention of threadMentions(envelope.attachments)) {
+    if (mention.threadId === envelope.threadId) continue;
+    const source = mention.workspaceRoot ?? (mention.kind === 'workspace' ? 'Workspace' : 'Home');
+    lines.push(`- Thread: "${mention.title}" (thread_id ${mention.threadId}, ${source})`);
   }
-}
-
-function loadedSkillNamesFromEnvelopes(envelopes: LedgerEnvelope[]): string[] {
-  const names: string[] = [];
-  for (const envelope of envelopes) {
-    if (envelope.record.role !== 'assistant' || !envelope.record.tool_calls) {
-      continue;
-    }
-    for (const call of envelope.record.tool_calls) {
-      if (!('function' in call) || call.function.name !== 'load_skill')
-        continue;
-      const name = loadSkillNameFromArgs(call.function.arguments);
-      if (name) names.push(name);
-    }
-  }
-  return names;
+  if (lines.length === 0) return '';
+  return [ATTACHMENTS_OPEN, ...lines, ATTACHMENTS_CLOSE].join('\n');
 }
 
 function toolCallsFromMessage(
@@ -244,6 +226,7 @@ function loadSkillCallIds(
   return ids;
 }
 
+/** Tokens of load_skill results in the conversation. */
 function loadSkillTokensFromMessages(
   messages: ChatCompletionMessageParam[],
 ): number {
@@ -261,11 +244,9 @@ const PREFIX_LAYER_IDS = new Set([
   'system',
   'tools',
   'skills_catalog',
-  'skills_bodies',
   'memory',
   'rules',
   'plan',
-  'mentions',
   'brief',
   'record',
   'last_run',
@@ -461,12 +442,14 @@ export function stubLiveToolResults(
     const content = typeof message.content === 'string' ? message.content : '';
     // Already a stub or a residency card (which carries the sha to recall).
     if (/^\((stub|evicted|skill card|unchanged)/.test(content)) continue;
+    // A loaded skill is part of the conversation for the whole thread: never cut.
+    callInfo ??= toolCallIndex(messages);
+    if (callInfo.get(message.tool_call_id)?.name === 'load_skill') continue;
     const old = i < keepToolsFrom;
     // A tool that sizes its own window (read_file, grep) keeps that window in
     // the live prompt; only results past it are cut here.
     let cap = maxToolChars;
     if (!old && content.length > maxToolChars) {
-      callInfo ??= toolCallIndex(messages);
       cap = liveResultCapChars(callInfo.get(message.tool_call_id)?.name, maxToolChars);
     }
     const overCap = content.length > cap;
@@ -502,10 +485,21 @@ export function stubLiveToolResults(
   return stubbed;
 }
 
+function withLeadingText(
+  content: ChatCompletionMessageParam['content'],
+  lead: string,
+): ChatCompletionMessageParam['content'] {
+  if (!lead) return content;
+  if (typeof content === 'string') return content ? `${lead}\n\n${content}` : lead;
+  return [{ type: 'text', text: lead }, ...(content ?? [])] as ChatCompletionMessageParam['content'];
+}
+
 function toParam(
   envelope: LedgerEnvelope,
   stubContent: string | null,
   stubImages: boolean,
+  /** The user message's references block (named skills, attached threads), or ''. */
+  attachments = '',
 ): ChatCompletionMessageParam | null {
   if (stubContent !== null && envelope.record.role === 'tool') {
     return {
@@ -519,14 +513,14 @@ function toParam(
     if (n > 0) {
       return {
         role: 'user',
-        content: stubbedUserText(envelope.record.content, n),
-      };
+        content: withLeadingText(stubbedUserText(envelope.record.content, n), attachments),
+      } as ChatCompletionMessageParam;
     }
   }
   const chat = envelopeToChatMessage(envelope);
   if (!chat) return null;
   if (chat.role === 'user') {
-    return { role: 'user', content: chat.content };
+    return { role: 'user', content: withLeadingText(chat.content, attachments) } as ChatCompletionMessageParam;
   }
   if (chat.role === 'assistant') {
     return {
@@ -613,6 +607,62 @@ function layerTokens(
 }
 
 /**
+ * What the compacted turns used that the model may need again: the skills
+ * they loaded or named and the threads they attached, by name and id only.
+ * The model loads or reads them again with its tools; skills the live part
+ * still shows are left out. Computed from the ledger, so the same envelopes
+ * give the same text.
+ */
+function compactedReferences(envelopes: LedgerEnvelope[], throughSeq: number): string | null {
+  const liveSkills = new Set<string>();
+  const foldedSkills: string[] = [];
+  const threads: string[] = [];
+  const seenThreads = new Set<string>();
+  const loads = new Map<string, SkillLoad>();
+  for (const envelope of envelopes) {
+    const { record } = envelope;
+    const folded = envelope.seq <= throughSeq;
+    if (record.role === 'assistant') {
+      for (const call of record.tool_calls ?? []) {
+        if (call.type !== 'function' || call.function.name !== 'load_skill') continue;
+        const load = skillLoadFromArgs(call.function.arguments);
+        if (load && !load.file) loads.set(call.id, load);
+      }
+    } else if (record.role === 'tool') {
+      const load = loads.get(record.tool_call_id);
+      if (!load || !isSkillBody(record.content)) continue;
+      if (folded) foldedSkills.push(load.name);
+      else liveSkills.add(load.name.toLowerCase());
+    } else if (record.role === 'user' && folded) {
+      foldedSkills.push(...(envelope.skills?.selected ?? []));
+      for (const mention of threadMentions(envelope.attachments)) {
+        if (mention.threadId === envelope.threadId || seenThreads.has(mention.threadId)) continue;
+        seenThreads.add(mention.threadId);
+        threads.push(`"${mention.title}" (thread_id ${mention.threadId})`);
+      }
+    }
+  }
+  const skills: string[] = [];
+  const seen = new Set<string>(liveSkills);
+  for (let i = foldedSkills.length - 1; i >= 0; i--) {
+    const name = foldedSkills[i]!;
+    if (seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    skills.push(name);
+  }
+  const lines: string[] = [];
+  if (skills.length > 0) {
+    lines.push(
+      `Skills used in the compacted turns (their instructions are no longer above; load again with load_skill before relying on them): ${skills.join(', ')}`,
+    );
+  }
+  if (threads.length > 0) {
+    lines.push(`Threads attached in the compacted turns (read with read_thread): ${threads.join('; ')}`);
+  }
+  return lines.length > 0 ? lines.join('\n') : null;
+}
+
+/**
  * Pure assembler. Same envelopes + memory + snapshot → same messages.
  * Stubbing is free and deterministic; compaction is reported, not performed.
  * The ContextReport here is the measured “used” meter source after turns —
@@ -644,14 +694,10 @@ export function assembleContext(
   };
 
   const hasLoadSkill = input.tools.byName.has('load_skill');
-  const requestedNames = input.skillNames ?? [];
   const skillsText = hasLoadSkill ? formatSkillsCatalog(listSkills()) : '';
   const skillsMessage: ChatCompletionMessageParam | null = skillsText
     ? { role: 'system', content: skillsText }
     : null;
-  // bodiesText is computed after keepToolsFrom (below) so loaded-skill names
-  // come only from live, unstubbed tool results — not the whole ledger.
-
   const memoryText = buildMemoryPrompt(input.memory);
   const memoryMessage: ChatCompletionMessageParam = {
     role: 'system',
@@ -673,6 +719,7 @@ export function assembleContext(
   const afterSeq = input.snapshot?.throughSeq ?? 0;
   const live = input.envelopes.filter((envelope) => envelope.seq > afterSeq);
 
+  const references = afterSeq > 0 ? compactedReferences(input.envelopes, afterSeq) : null;
   const briefParts: string[] = [];
   if (input.snapshot?.brief) {
     briefParts.push(`# Thread brief\n${input.snapshot.brief}`);
@@ -684,32 +731,13 @@ export function assembleContext(
       : '';
     briefParts.push(`# Earlier turns (compacted)\n${input.snapshot.summary}${restore}`);
   }
-  // Conversation summary, then the task record (v2 target prompt order).
+  if (references) briefParts.push(references);
+  // Conversation summary first, then the task record.
   const recordText = input.carriedRecord?.trim() ?? '';
   if (recordText) briefParts.push(recordText);
   const briefMessage: ChatCompletionMessageParam | null = briefParts.length
     ? { role: 'system', content: briefParts.join('\n\n') }
     : null;
-
-  const mentionParts = (input.mentionedThreads ?? [])
-    .filter((mention) => mention.text.trim().length > 0)
-    .map(
-      (mention) =>
-        `## ${mention.title}\nSource: ${mention.sourceLabel}\n\n${mention.text.trim()}`,
-    );
-  const mentionsMessage: ChatCompletionMessageParam | null =
-    mentionParts.length > 0
-      ? {
-          role: 'system',
-          content: [
-            '# Attached threads',
-            'Other conversations the user attached to this turn. Use them as background.',
-            "They are not this thread's ledger. Do not treat them as files you edited here.",
-            '',
-            mentionParts.join('\n\n'),
-          ].join('\n'),
-        }
-      : null;
 
   const lastRunText = input.lastRun ? formatLastRunPrompt(input.lastRun) : null;
   const lastRunMessage: ChatCompletionMessageParam | null = lastRunText
@@ -719,26 +747,6 @@ export function assembleContext(
   const users = userSeqs(live);
   const keepToolsFrom = keepFromNthLast(users, budget.keepToolResultsForTurns);
   const keepImagesFrom = keepFromNthLast(users, budget.keepAttachmentsForTurns);
-
-  // Count a skill as loaded only when its load_skill call is in live and its
-  // result is not stubbed; otherwise an explicit /skill pick after compaction
-  // sends no body and no body is in the prompt.
-  // `/` picks are pinned for this send, capped in total; over the cap the
-  // largest picks pin core + contents (reported as trimmed to the host).
-  const pinned = hasLoadSkill
-    ? formatPinnedSkills(
-        requestedNames,
-        // Only current-turn loads count: earlier turns' skill rows are sent
-        // as skill cards (core rules), so a pick must re-pin the full body.
-        loadedSkillNamesFromEnvelopes(
-          live.filter((envelope) => envelope.seq >= (users.at(-1) ?? Infinity)),
-        ),
-      )
-    : { text: '', trimmed: [] };
-  const bodiesText = pinned.text;
-  const bodiesMessage: ChatCompletionMessageParam | null = bodiesText
-    ? { role: 'system', content: bodiesText }
-    : null;
 
   const lastUserSeq = users.at(-1);
   const maxToolChars = budget.toolResultMaxTokens * CHARS_PER_TOKEN;
@@ -756,8 +764,8 @@ export function assembleContext(
   const tailMessages: ChatCompletionMessageParam[] = [];
   const turnMessages: ChatCompletionMessageParam[] = [];
 
-  // Old load_skill rows become skill cards (core rules), not bare stubs.
-  const skillCallNames = new Map<string, string>();
+  // load_skill calls by id: their results are part of the conversation and never stubbed.
+  const skillCalls = new Map<string, SkillLoad>();
   // Name + args per call, for the outcome cards of old tool rows.
   const callInfo = new Map<string, ToolCallInfo>();
   for (const envelope of live) {
@@ -769,12 +777,8 @@ export function assembleContext(
         args: call.function.arguments,
       });
       if (call.function.name !== 'load_skill') continue;
-      try {
-        const args = JSON.parse(call.function.arguments) as { skill_name?: unknown };
-        if (typeof args.skill_name === 'string') skillCallNames.set(call.id, args.skill_name);
-      } catch {
-        // Malformed args never produced a body worth carding.
-      }
+      const load = skillLoadFromArgs(call.function.arguments);
+      if (load) skillCalls.set(call.id, load);
     }
   }
 
@@ -787,7 +791,7 @@ export function assembleContext(
   // The cap a recent tool row keeps. With flags.carryWholeReads it is the
   // same per-tool cap the row had inside its run (a whole read_file window),
   // so a follow-up turn sees what the last turn saw; otherwise the generic
-  // tool-result cap (a whole-file read was cut mid-file at 16,000 chars).
+  // tool-result cap.
   const recentCap = (toolCallId: string): number =>
     flags.carryWholeReads ? liveResultCapChars(callInfo.get(toolCallId)?.name, maxToolChars) : maxToolChars;
   const overCarryOver = new Set<number>();
@@ -796,8 +800,8 @@ export function assembleContext(
     const envelope = live[i]!;
     if (envelope.record.role !== 'tool') continue;
     if (envelope.seq < keepToolsFrom) break;
-    // Skill rows of earlier turns already go out as skill cards.
-    if (skillCallNames.has(envelope.record.tool_call_id)) continue;
+    // Loaded skills stay whole and do not use the carry-over allowance.
+    if (skillCalls.has(envelope.record.tool_call_id)) continue;
     const size = Math.min(envelope.record.content.length, recentCap(envelope.record.tool_call_id));
     // A card would not be smaller than a result this short.
     if (size < MIN_EVICT_CHARS) continue;
@@ -823,42 +827,46 @@ export function assembleContext(
   const trimCall = (call: { id: string; name: string }) =>
     cardedCalls.has(call.id) || traitsOf(call.name)?.effect === 'change';
 
+  // Skills whose instructions the conversation already shows: a later load
+  // of the same skill (from before loads were deduped) becomes a pointer.
+  const shownSkills = new Set<string>();
   for (const envelope of live) {
     const inTurn = lastUserSeq !== undefined && envelope.seq >= lastUserSeq;
+    const skillLoad =
+      envelope.record.role === 'tool' ? skillCalls.get(envelope.record.tool_call_id) : undefined;
     const oldTool =
       envelope.record.role === 'tool' &&
+      !skillLoad &&
       (envelope.seq < keepToolsFrom || overCarryOver.has(envelope.seq));
     const overCap =
       envelope.record.role === 'tool' &&
+      !skillLoad &&
       envelope.record.content.length > recentCap(envelope.record.tool_call_id);
     const stubTool = oldTool;
     if (oldTool) stubbedToolResults++;
     const stubImages =
       envelope.record.role === 'user' && envelope.seq < keepImagesFrom;
 
-    const skillName =
-      envelope.record.role === 'tool'
-        ? skillCallNames.get(envelope.record.tool_call_id)
-        : undefined;
-    let message: ChatCompletionMessageParam | null =
-      // A skill body is for the turn that loaded it; later turns get its card.
-      (stubTool || !inTurn) && skillName && envelope.record.role === 'tool'
-        ? {
-            role: 'tool',
-            tool_call_id: envelope.record.tool_call_id,
-            content: skillCard(skillName),
-          }
-        : toParam(
-            envelope,
-            stubTool && envelope.record.role === 'tool'
-              ? stubToolContent(
-                  envelope,
-                  callInfo.get(envelope.record.tool_call_id),
-                  outcomeCards,
-                )
-              : null,
-            stubImages,
-          );
+    // A second load of a skill already shown above gets a pointer, not a second copy.
+    let skillContent: string | null = null;
+    if (skillLoad && !skillLoad.file && envelope.record.role === 'tool' && isSkillBody(envelope.record.content)) {
+      const key = skillLoad.name.toLowerCase();
+      if (shownSkills.has(key)) skillContent = skillAlreadyLoadedNote(skillLoad.name);
+      else shownSkills.add(key);
+    }
+    let message: ChatCompletionMessageParam | null = toParam(
+      envelope,
+      skillContent ??
+        (stubTool && envelope.record.role === 'tool'
+          ? stubToolContent(
+              envelope,
+              callInfo.get(envelope.record.tool_call_id),
+              outcomeCards,
+            )
+          : null),
+      stubImages,
+      envelope.record.role === 'user' ? referencesBlock(envelope) : '',
+    );
     if (
       message?.role === 'tool' &&
       overCap &&
@@ -885,12 +893,11 @@ export function assembleContext(
   }
 
   // Stable layers first, then history, then layers that change between sends
-  // (skill picks, plan edits, mentions, last-run note). A plan edit then
-  // invalidates only the tail of the prompt, not the whole history prefix.
+  // (plan edits, last-run note, situation). A plan edit then invalidates only
+  // the tail of the prompt, not the whole history prefix. Named skills and
+  // attached threads are references inside their user message, so they never move.
   const perSendTexts = [
-    bodiesText,
     planText,
-    mentionsMessage ? String(mentionsMessage.content) : '',
     lastRunText ?? '',
     situationText,
   ].filter((text) => text.length > 0);
@@ -924,18 +931,16 @@ export function assembleContext(
           ...(rulesMessage ? [rulesMessage] : []),
           ...(briefMessage ? [briefMessage] : []),
           ...tailMessages,
-          ...(bodiesMessage ? [bodiesMessage] : []),
           ...(planMessage ? [planMessage] : []),
-          ...(mentionsMessage ? [mentionsMessage] : []),
           ...(lastRunMessage ? [lastRunMessage] : []),
           ...(situationText ? [{ role: 'system' as const, content: situationText }] : []),
           ...turnMessages,
         ],
   );
 
-  // Use the assembled messages, not raw ledger content: the prompt may hold
-  // stubbed or capped versions of load_skill results, and conversationTokens
-  // subtracts this from a total built from those same messages.
+  // Use the assembled messages, not raw ledger content: a repeated load is a
+  // pointer there, and conversationTokens subtracts this from a total built
+  // from those same messages.
   const skillsLoadedTokens = loadSkillTokensFromMessages([
     ...tailMessages,
     ...turnMessages,
@@ -962,11 +967,6 @@ export function assembleContext(
       tokens: skillsText ? charsToTokens(skillsText.length) + 4 : 0,
     },
     {
-      id: 'skills_bodies',
-      label: 'Attached skill bodies',
-      tokens: bodiesText ? charsToTokens(bodiesText.length) + 4 : 0,
-    },
-    {
       id: 'memory',
       label: 'Memory',
       tokens: charsToTokens(memoryText.length) + 4,
@@ -980,13 +980,6 @@ export function assembleContext(
       id: 'plan',
       label: 'Plan',
       tokens: planText ? charsToTokens(planText.length) + 4 : 0,
-    },
-    {
-      id: 'mentions',
-      label: 'Attached threads',
-      tokens: mentionsMessage
-        ? charsToTokens(String(mentionsMessage.content).length) + 4
-        : 0,
     },
     {
       id: 'brief',
@@ -1031,7 +1024,6 @@ export function assembleContext(
     occupiedTokens,
     stubbedToolResults,
     needsCompaction,
-    ...(pinned.trimmed.length > 0 ? { trimmedSkills: pinned.trimmed } : {}),
   };
 
   return { messages, report };

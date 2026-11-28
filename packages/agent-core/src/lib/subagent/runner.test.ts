@@ -357,7 +357,7 @@ describe('sub-agent runner budgets', () => {
   });
 });
 
-describe('sub-agent findings reach the parent (phase 4)', () => {
+describe('sub-agent findings reach the parent', () => {
   type Turn = Awaited<ReturnType<ModelCallFn>>;
   const usage = { promptTokens: 1_000, completionTokens: 10 };
   const calls = (n: number, list: Array<[string, Record<string, unknown>]>): Turn => ({

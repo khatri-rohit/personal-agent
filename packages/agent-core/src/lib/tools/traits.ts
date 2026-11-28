@@ -151,6 +151,15 @@ const BUILTIN_TOOL_TRAITS: Record<string, ToolTraits> = {
   web_search: READ,
   web_fetch: READ,
   session_search: READ,
+  // The same page of the same thread read again replaces the earlier copy.
+  read_thread: {
+    effect: 'read',
+    repeatKey: (args) => {
+      const id = text(args, 'thread_id');
+      return id ? `${id}|${String(args.from ?? 1)}|${String(args.part ?? 1)}` : null;
+    },
+    ran: (result) => !result.startsWith('Error:'),
+  },
   recall: {
     effect: 'read',
     restores: (args) => text(args, 'sha256').toLowerCase() || null,

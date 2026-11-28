@@ -2,7 +2,7 @@ import { CARD_MARKS, type RunPosture, type TaskClass, type TaskCommand, type Tas
 
 /**
  * What the harness card's open items and advice may read: task state plus
- * the few run facts the harness cannot act on itself (P5: advice only where
+ * the few run facts the harness cannot act on itself (advice only where
  * the model has to decide). Built by loop/state-card from the run state.
  */
 export type CardFacts = {

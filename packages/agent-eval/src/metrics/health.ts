@@ -4,8 +4,7 @@ import { linesOf, type TraceLine, type TraceLineOf } from '../read/trace.js';
 
 /**
  * Harness health for one run: does each mechanism do what it exists for?
- * Phase 0 of the v2 build plan (docs/plans/harness-v2-build-plan.md). Pure,
- * from the trace alone; fields are null when the trace predates the event
+ * Pure, from the trace alone; fields are null when the trace predates the event
  * they need.
  */
 export type HealthMetrics = {

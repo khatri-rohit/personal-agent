@@ -27,7 +27,7 @@ export const recall: Tool = {
   },
   guidance: {
     whenToUse: ['You need the full text behind an evicted card or a sub-agent report sha.'],
-    whenNotToUse: ['The file may have changed since — re-read it with read_file instead.'],
+    whenNotToUse: ['The file can have changed since. Read it again with read_file.'],
     usage: ['Page long bodies with offset; prefer the slice you need.'],
   },
   risk: 'read',

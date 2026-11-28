@@ -199,7 +199,7 @@ export function composeStateCard(
   const budget = s.limits.maxPromptTokens;
   let spend = '';
   if (budget !== undefined) {
-    // Own calls and sub-agents apart: they are different levers (P7).
+    // Own calls and sub-agents apart: they are different levers.
     const usage = s.budget.snapshot();
     const children = usage.children.promptTokens;
     // The pace is what a task of this class is expected to cost; the cap is

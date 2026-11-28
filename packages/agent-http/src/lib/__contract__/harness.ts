@@ -1,8 +1,7 @@
 /**
  * Boots the real HTTP app (`createApp`) on a throwaway AGENT_HOME, with no
- * network: these tests pin today's API behaviour so the migration onto
- * agent-service (docs/plans/one-binary-host-plan.md, stage 0) can prove it
- * changed nothing.
+ * network: these tests pin the API's behaviour so a refactor behind it
+ * can prove it changed nothing.
  *
  * - AGENT_HOME, HOME and USERPROFILE point at temp dirs: no test reads or
  *   writes the owner's real home or user skills.
@@ -35,7 +34,7 @@ export type ContractApp = {
 };
 
 /**
- * Headers the chat UI's own page sends (ADR-0003 §4.6): the browser marks it
+ * Headers the chat UI's own page sends: the browser marks it
  * same-origin, and Origin (when sent) is this server's exact origin.
  */
 export const sameOriginBrowser = {

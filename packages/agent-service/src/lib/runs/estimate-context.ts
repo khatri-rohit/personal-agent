@@ -63,31 +63,31 @@ export async function estimateContext(service: AgentService, body: unknown): Pro
     envelopes = await store.hydrateEnvelopes(id);
   }
 
-  const trimmed = typeof draft === 'string' ? draft.trim() : '';
-  if (trimmed || parsedAttachments.length > 0) {
-    const seq = (envelopes.at(-1)?.seq ?? 0) + 1;
-    envelopes = [
-      ...envelopes,
-      {
-        v: 1,
-        seq,
-        ts: new Date().toISOString(),
-        threadId: id,
-        runId: null,
-        record: { role: 'user', content: trimmed },
-        ...(parsedAttachments.length > 0
-          ? { attachments: parsedAttachments }
-          : {}),
-      },
-    ];
-  }
-
   const estimateThread = id === 'draft' ? undefined : store.getThread(id);
   const useModel = model ?? estimateThread?.model ?? HOME_MODE.model;
   // Same skill roots a run in this thread sees (its workspace's packs).
   const skillRoots = extraSkillRoots(estimateThread?.workspaceRoot);
-  const { report } = await runWithSkillRoots(skillRoots, () =>
-    prepareRun(service, {
+  const { report } = await runWithSkillRoots(skillRoots, () => {
+    // The draft as the user row a send would write: its words, attachments
+    // and named skills (references, as in a real send).
+    const trimmed = typeof draft === 'string' ? draft.trim() : '';
+    const selected = resolveRequestedSkills(rawSkills);
+    if (trimmed || parsedAttachments.length > 0 || selected.length > 0) {
+      envelopes = [
+        ...envelopes,
+        {
+          v: 1,
+          seq: (envelopes.at(-1)?.seq ?? 0) + 1,
+          ts: new Date().toISOString(),
+          threadId: id,
+          runId: null,
+          record: { role: 'user', content: trimmed },
+          ...(parsedAttachments.length > 0 ? { attachments: parsedAttachments } : {}),
+          ...(selected.length > 0 ? { skills: { selected } } : {}),
+        },
+      ];
+    }
+    return prepareRun(service, {
       threadId: id,
       thread: estimateThread,
       webSearch,
@@ -96,10 +96,9 @@ export async function estimateContext(service: AgentService, body: unknown): Pro
       envelopes,
       model: useModel,
       endpoint: endpointFromLocal(local),
-      skillNames: resolveRequestedSkills(rawSkills),
       ...(previewWindowMode ? { contextWindowMode: previewWindowMode } : {}),
-    }),
-  );
+    });
+  });
 
   return {
     estimatedPromptTokens: report.occupiedTokens,

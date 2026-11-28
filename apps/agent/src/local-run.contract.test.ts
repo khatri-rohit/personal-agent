@@ -4,9 +4,8 @@
  * volatile parts normalised), the event and trace sequences, the auto-picked
  * choice and the outcome are pinned in `__golden__/local-run.json`.
  *
- * It guards stage 2 of docs/plans/one-binary-host-plan.md: the CLI keeps its
- * isolation (no agent home, no memory, built-in skills only) while its
- * budget resolution moves to agent-service.
+ * The CLI run stays isolated: no agent home, no memory, built-in skills
+ * only. Its context budget is resolved by agent-service.
  */
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';

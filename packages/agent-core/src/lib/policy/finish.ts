@@ -1,5 +1,5 @@
 /**
- * Done gates (P6): what an answer needs before the run may end, per evidence
+ * Done gates: what an answer needs before the run may end, per evidence
  * type. A change needs a check after its last edit; open plan todos need to
  * be finished or updated. Each gate sends the run back once, with a reason,
  * and never blocks a second time (progress beats perfection): after that the
@@ -45,7 +45,7 @@ const ADMITS_FAILURE =
   /\b(still fail(s|ing)?|(is|are) (still )?failing|fails? (on|in|because)|pre-?existing (failure|fail)|unrelated (failure|fail))\b/i;
 
 /**
- * Failed-check gate (B4): an Agent run whose last check after its edits
+ * Failed-check gate: an Agent run whose last check after its edits
  * failed, and whose answer claims success without admitting it is
  * unverified or still failing, goes back once. Without it a red check
  * satisfied the change gate (a check had run) and "fixed" ended the run.

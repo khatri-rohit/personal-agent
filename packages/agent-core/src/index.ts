@@ -11,7 +11,6 @@ export {
   isSpecSkillName,
   resolveSkillsRoot,
   runWithSkillRoots,
-  skillLintWarnings,
   getSkill,
   invalidateSkillCatalog,
   listSkillCatalogs,
@@ -94,6 +93,11 @@ export {
   createSessionSearchTool,
   type SessionSearchHit,
 } from './lib/tools/session-search';
+export {
+  createReadThreadTool,
+  type ReadThreadSource,
+  type ThreadReadSource,
+} from './lib/tools/read-thread';
 
 // Context
 export { assembleContext } from './lib/context/assemble-context';
@@ -104,7 +108,6 @@ export {
 export type {
   AssembleContextInput,
   AssembleContextResult,
-  MentionedThreadContext,
 } from './lib/context/assemble-context';
 export { loadWorkspaceRules } from './lib/context/load-workspace-rules';
 export type { WorkspaceRuleFiles } from './lib/context/load-workspace-rules';
@@ -112,7 +115,6 @@ export {
   planCompaction,
   buildExtractiveSnapshot,
   foldedTranscript,
-  packMentionedThread,
 } from './lib/context/compact-snapshot';
 export {
   acceptSectionedSummary,

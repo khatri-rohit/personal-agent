@@ -15,7 +15,7 @@ import {
 export type LiveServer = ServerInfo & { harnessVersion: HarnessVersion | null };
 
 /**
- * One server per agent home (F3): `AGENT_HOME/server.json`. A second start
+ * One server per agent home: `AGENT_HOME/server.json`. A second start
  * attaches to the live server instead of writing the same files. The file is
  * trusted only after the server answers for the same home, because a crash
  * leaves it behind and Windows reuses process ids.

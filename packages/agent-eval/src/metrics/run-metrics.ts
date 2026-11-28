@@ -1,4 +1,4 @@
-import type { LedgerEnvelope } from '@agent/agent-models';
+import { answerStyleMetrics, type AnswerStyleMetrics, type LedgerEnvelope } from '@agent/agent-models';
 
 import { iterationShape, iterationsOf, PLAN_TOOLS } from '../read/iterations.js';
 import type { RunSummary } from '../read/runs.js';
@@ -73,6 +73,18 @@ export type RunMetrics = {
     limits: string[];
   };
   skills: { loaded: number; loadedTokens: number; evicted: number };
+  /**
+   * The final answer against the writing rules (agent-models style.ts):
+   * sentence length, hedges, filler, a preamble before the result. Null
+   * when the run left no answer text.
+   */
+  answerStyle: AnswerStyleMetrics | null;
+  /**
+   * Signs the run went off its path: calls the harness answered instead of
+   * running (identical repeats), results read back after they left the
+   * context, and stall nudges (steps with no new evidence).
+   */
+  drift: { repeatsAnswered: number; restores: number; stallNudges: number };
   /** `memory_gate` verdicts (`apply` / `reject` / `stage`), counted. */
   memoryGate: Record<string, number>;
   reasoningEffort: Record<string, number>;
@@ -99,7 +111,7 @@ export type RunMetrics = {
   untracedPromptTokens: number;
   /** Balance change across the run, from usage.jsonl (legacy session/weekly plans). */
   capacity: { weeklyPercent: number | null; sessionPercent: number | null } | null;
-  /** Whether the harness mechanisms do what they exist for (v2 phase 0). */
+  /** Whether the harness mechanisms do what they exist for. */
   health: HealthMetrics;
 };
 
@@ -345,6 +357,17 @@ export function computeRunMetrics(input: {
       loaded: skillsLoaded.length,
       loadedTokens: skillsLoaded.reduce((sum, line) => sum + line.tokens, 0),
       evicted: linesOf(lines, 'skill_evicted').length,
+    },
+    answerStyle:
+      answer?.record.role === 'assistant' && answer.record.content?.trim()
+        ? answerStyleMetrics(answer.record.content)
+        : null,
+    drift: {
+      repeatsAnswered: linesOf(lines, 'policy_decision').filter(
+        (line) => line.kind === 'guard' && line.ids.some((id) => id.startsWith('dedupe_answered') || id.startsWith('repeat')),
+      ).length,
+      restores: linesOf(lines, 'context_restored').length,
+      stallNudges: linesOf(lines, 'stall_nudge').length,
     },
     memoryGate,
     reasoningEffort: effort,

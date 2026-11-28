@@ -914,7 +914,7 @@ export const runTerminalTool: Tool = {
     ],
     whenNotToUse: [
       'Reading, searching, or dumping files — use glob, grep, and read_file instead.',
-      'Commands that target a different repo or parent directory.',
+      'Commands that target a different folder or a parent directory.',
     ],
     usage: [
       'cwd is the open folder. Do not cd to a parent of the workspace.',

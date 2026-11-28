@@ -6,7 +6,7 @@ import { harnessMessage, originOf, RECORD_MESSAGE_PREFIX } from '../context/mess
 import { recordSection } from '../state/record-view';
 
 /**
- * The run's task record in the prompt history (v2 phase 7, F-6). The card
+ * The run's task record in the prompt history. The card
  * is appended after everything else on every call, so whatever it carries
  * is re-sent uncached every call. The record changes only when a finding is
  * recorded, so at each prompt boundary the harness writes it once into the

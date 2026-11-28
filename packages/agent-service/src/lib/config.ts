@@ -9,7 +9,7 @@ import {
 import { system1SettingsFrom, type System1Settings } from './runs/system1-runtime';
 
 /**
- * The host's settings, parsed once from the environment (ADR-0003 §4.1).
+ * The host's settings, parsed once from the environment.
  * Nothing in the service reads `process.env` or raw strings for config after
  * this; each field is the typed value its consumer uses. The engine
  * (agent-core) still reads its own keys, so the caller loads `.env` first.

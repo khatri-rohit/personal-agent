@@ -74,11 +74,28 @@ export const HARNESS_CONTEXT_OPEN =
 export const HARNESS_CONTEXT_CLOSE =
   "[End of harness context. The user's message follows.]";
 
-/** The user's own words of a text the harness put its context header on. */
+/**
+ * The skills a user named and the threads they attached lead the message's
+ * text between these lines, as references (names and ids). They are not
+ * the user's words.
+ */
+export const ATTACHMENTS_OPEN =
+  "[The user attached these to this message (load a skill with load_skill, read a thread with read_thread). Not the user's own words.]";
+export const ATTACHMENTS_CLOSE = "[End of attachments. The user's message follows.]";
+
+function withoutBlock(text: string, open: string, close: string): string {
+  if (!text.startsWith(open)) return text;
+  const end = text.indexOf(close);
+  return end < 0 ? text : text.slice(end + close.length).trimStart();
+}
+
+/** The user's own words of a text with the harness context header and/or attachments in front. */
 export function withoutHarnessContext(text: string): string {
-  if (!text.startsWith(HARNESS_CONTEXT_OPEN)) return text;
-  const close = text.indexOf(HARNESS_CONTEXT_CLOSE);
-  return close < 0 ? text : text.slice(close + HARNESS_CONTEXT_CLOSE.length).trimStart();
+  return withoutBlock(
+    withoutBlock(text, HARNESS_CONTEXT_OPEN, HARNESS_CONTEXT_CLOSE),
+    ATTACHMENTS_OPEN,
+    ATTACHMENTS_CLOSE,
+  );
 }
 
 /**

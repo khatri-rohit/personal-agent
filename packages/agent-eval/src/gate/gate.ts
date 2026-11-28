@@ -128,7 +128,7 @@ export function compareToBaseline(
   if (compare === 'system1' && baseSetup === candidate.system1Setup) {
     refuse.push(`--compare system1 needs different setups; both are ${baseSetup}`);
   }
-  // One flag per comparison (docs/plans/context-and-subagent-fixes-plan.md):
+  // One flag per comparison:
   // with two changed, a verdict cannot say which one moved the result.
   const notes: string[] = [];
   const changes = flagChanges(baseline.harnessFlags, candidate.harnessFlags);

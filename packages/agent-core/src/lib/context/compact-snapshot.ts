@@ -181,8 +181,6 @@ function keepFirstAndNewest(lines: string[], max: number): string {
   return clip([first, ...marker, ...newest].join('\n\n'), max);
 }
 
-const MENTION_MAX_CHARS = 4_000;
-
 function collectToolFacts(envelopes: LedgerEnvelope[]): {
   files: string[];
   commands: string[];
@@ -218,60 +216,13 @@ function collectToolFacts(envelopes: LedgerEnvelope[]): {
   return { files: files.slice(-8), commands: commands.slice(-4) };
 }
 
-/** Budgeted extract of another thread for the mentions layer. Re-extracted at run time. */
-export function packMentionedThread(input: {
-  title: string;
-  sourceLabel: string;
-  envelopes: LedgerEnvelope[];
-  snapshot: Snapshot | null;
-}): string {
-  const throughSeq =
-    chooseCompactThroughSeq(input.envelopes, 2) ??
-    (input.envelopes.at(-1)?.seq ?? 0);
-  const snapshot =
-    input.snapshot && input.snapshot.throughSeq > 0
-      ? input.snapshot
-      : throughSeq > 0
-        ? buildExtractiveSnapshot({
-            threadId: 'mention',
-            model: '',
-            envelopes: input.envelopes,
-            throughSeq,
-          })
-        : null;
-  const live = input.envelopes.filter(
-    (envelope) => envelope.seq > (snapshot?.throughSeq ?? 0),
-  );
-  const liveLines: string[] = [];
-  for (const envelope of live) {
-    if (
-      envelope.record.role !== 'user' &&
-      envelope.record.role !== 'assistant'
-    ) {
-      continue;
-    }
-    const text = recordText(envelope);
-    if (!text) continue;
-    const label = envelope.record.role === 'user' ? 'User' : 'Assistant';
-    liveLines.push(`${label}: ${clip(text, 280)}`);
-  }
-  const parts = [
-    `Thread: ${input.title}`,
-    `Source: ${input.sourceLabel}`,
-    snapshot?.brief ? `Brief:\n${snapshot.brief}` : '',
-    snapshot?.summary ? `Earlier:\n${clip(snapshot.summary, 2_000)}` : '',
-    liveLines.length > 0 ? `Recent:\n${liveLines.join('\n')}` : '',
-  ].filter(Boolean);
-  return clip(parts.join('\n\n'), MENTION_MAX_CHARS);
-}
-
 /**
  * The full text of the turns a snapshot folds (seq <= throughSeq), for the
  * host to store as a blob: every user and assistant message, each tool call
  * with its arguments, and each tool result in full, or its own blob's sha
  * when it was offloaded. The summary is lossy by design; this keeps the
  * folded turns restorable (`recall`), so compaction removes text from the
- * prompt without removing it from reach (P4).
+ * prompt without removing it from reach.
  */
 export function foldedTranscript(envelopes: LedgerEnvelope[], throughSeq: number): string {
   const lines: string[] = [`Earlier turns of this thread, through ledger seq ${throughSeq}, oldest first.`];

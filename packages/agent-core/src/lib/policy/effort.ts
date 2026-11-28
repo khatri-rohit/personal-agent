@@ -26,7 +26,7 @@ export type EffortFloorReason =
 /**
  * Lowest rung effort may take this call, and why. Events (first turn, a
  * failed tool, a write, a new instruction) hold the baseline for that call.
- * So does a stretch without evidence (F-4): a run that has stopped
+ * So does a stretch without evidence: a run that has stopped
  * progressing is the run that most needs to think, so effort drops below
  * the baseline only while evidence keeps arriving (repetitive progress).
  */

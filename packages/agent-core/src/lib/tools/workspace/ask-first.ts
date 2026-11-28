@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 /**
- * Ask before what a checkpoint cannot undo (B2, part 2). Inside the folder,
+ * Ask before what a checkpoint cannot undo. Inside the folder,
  * a checkpoint puts files back; these reach past it: commands that send
  * something off the machine, and paths outside the folder. A short list,
  * not a classifier: an indirect command (a script that does the same) can

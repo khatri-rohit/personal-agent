@@ -8,12 +8,10 @@ import type {
   ThreadPlan,
 } from '@agent/agent-models';
 import {
-  MAX_THREAD_MENTIONS,
   isWorkspaceKind,
   modeForKind,
   normalizeRunPosture,
   normalizeThreadKind,
-  threadMentions,
   type ContextWindowMode,
   type HarnessFlags,
   type RunPosture,
@@ -22,13 +20,13 @@ import {
   assembleContext,
   createMemoryTool,
   createPlanTools,
+  createReadThreadTool,
   createRunToolset,
   createSessionSearchTool,
   loadWorkspaceRules,
-  packMentionedThread,
   prepareCarriedRecord,
   getSkill,
-  type MentionedThreadContext,
+  type ThreadReadSource,
   type ToolRegistry,
 } from '@agent/agent-core';
 
@@ -40,45 +38,24 @@ export function endpointFromLocal(local: boolean | undefined): OllamaEndpoint {
   return local === true ? 'local' : 'cloud';
 }
 
-async function loadMentionedThreads(
+/**
+ * What `read_thread` reads: a thread of this home by id, with its ledger.
+ * Any thread the user can open is readable (the user attached it, or
+ * session_search found it); null when the id names none.
+ */
+async function readThreadSource(
+  service: Pick<ServiceCore, 'runs'>,
   store: ThreadStore,
-  envelopes: LedgerEnvelope[],
-  currentThreadId: string,
-): Promise<MentionedThreadContext[]> {
-  const lastUser = [...envelopes]
-    .reverse()
-    .find((envelope) => envelope.record.role === 'user');
-  const mentions = threadMentions(lastUser?.attachments).slice(
-    0,
-    MAX_THREAD_MENTIONS,
-  );
-  const segments: MentionedThreadContext[] = [];
-  const seen = new Set<string>();
-  for (const mention of mentions) {
-    if (mention.threadId === currentThreadId || seen.has(mention.threadId)) {
-      continue;
-    }
-    seen.add(mention.threadId);
-    const thread = store.getThread(mention.threadId);
-    if (!thread) continue;
-    const other = await store.hydrateEnvelopes(mention.threadId);
-    const snapshot = await store.readSnapshot(mention.threadId);
-    const sourceLabel = isWorkspaceKind(thread.kind)
-      ? (thread.workspaceRoot ?? 'Workspace')
-      : 'Home';
-    segments.push({
-      threadId: thread.id,
-      title: thread.title || mention.title,
-      sourceLabel,
-      text: packMentionedThread({
-        title: thread.title || mention.title,
-        sourceLabel,
-        envelopes: other,
-        snapshot,
-      }),
-    });
-  }
-  return segments;
+  threadId: string,
+): Promise<ThreadReadSource | null> {
+  const thread = store.getThread(threadId);
+  if (!thread) return null;
+  return {
+    title: thread.title || 'Untitled thread',
+    sourceLabel: isWorkspaceKind(thread.kind) ? (thread.workspaceRoot ?? 'Workspace') : 'Home',
+    running: service.runs.activeRun(threadId) !== undefined,
+    envelopes: await store.readLedger(threadId, 0),
+  };
 }
 
 export type MemoryUpdatedPayload = {
@@ -142,7 +119,6 @@ export async function prepareRun(service: Pick<ServiceCore, 'config' | 'memory' 
   envelopes: LedgerEnvelope[];
   model: string;
   endpoint?: OllamaEndpoint;
-  skillNames?: string[];
   /** Overrides the thread's stored mode (estimate previews a change). */
   contextWindowMode?: ContextWindowMode;
   onMemoryUpdated?: (payload: MemoryUpdatedPayload) => void;
@@ -196,6 +172,10 @@ export async function prepareRun(service: Pick<ServiceCore, 'config' | 'memory' 
       createSessionSearchTool(async (query, limit) =>
         store.searchMessages(query, { excludeThreadId: input.threadId, limit }),
       ),
+      createReadThreadTool({
+        read: (threadId) => readThreadSource(service, store, threadId),
+        currentThreadId: input.threadId,
+      }),
       createMemoryTool({
         read: () => memory.read(workspaceRoot),
         apply: async (op) => {
@@ -227,13 +207,7 @@ export async function prepareRun(service: Pick<ServiceCore, 'config' | 'memory' 
       ? null
       : await store.readSnapshot(input.threadId);
 
-  const mentionedThreads = await loadMentionedThreads(
-    store,
-    input.envelopes,
-    input.threadId,
-  );
-
-  // Findings earlier runs recorded (v2 phase 6): carried in the stable
+  // Findings earlier runs recorded: carried in the stable
   // prefix, bounded like the card's record, the rest behind a blob sha.
   const carriedRecord =
     input.threadId === 'draft'
@@ -245,7 +219,6 @@ export async function prepareRun(service: Pick<ServiceCore, 'config' | 'memory' 
           putBlob: (text) => store.putBlob(input.threadId, text),
         });
 
-  const skillNames = input.skillNames ?? [];
   const lastRun =
     input.threadId === 'draft' ? null : await readSettledLastRun(service, store, input.threadId);
   const { messages, report } = assembleContext(
@@ -256,8 +229,6 @@ export async function prepareRun(service: Pick<ServiceCore, 'config' | 'memory' 
       envelopes: input.envelopes,
       mode: mode.name,
       posture,
-      mentionedThreads,
-      skillNames,
       ...(plan ? { plan } : {}),
       ...(lastRun ? { lastRun } : {}),
       ...(carriedRecord ? { carriedRecord } : {}),

@@ -111,9 +111,9 @@ const FALLBACK_SUMMARY_MAX_CHARS = 1_500;
  * reported blocked → blocked; else done.
  *
  * `openQuestionsArePartial` (the default, flags.childStatusAtLimit off):
- * any open question also makes it partial. In real runs that marked 42 of
- * 43 reports partial, because the handoff asks every child to list its
- * gaps, so the status said nothing. With the flag on, open questions stay
+ * any open question also makes it partial. Since the handoff asks every
+ * child to list its gaps, that marks nearly every report partial. With the
+ * flag on, open questions stay
  * listed (the card's sub-agent gaps read them, not this status) and
  * partial means what Claude Code's maxTurns limit means: the child stopped
  * before it finished.
@@ -773,10 +773,10 @@ export function createSubagentRunner(deps: {
     const running = activePaths.get(parent.runId) ?? new Map<string, string[]>();
     // flags.siblingBriefs: task boundaries instead of a refusal (Anthropic's
     // multi-agent guidance: an objective and clear boundaries per sub-agent).
-    // In real runs all 3 refusals blocked different questions that named one
-    // shared hub file, while 26 of 38 concurrent pairs overlapped without
-    // naming paths. The brief starts, and names every sub-agent already
-    // running for this parent; overlapping paths are traced, not refused.
+    // Path overlap is a poor conflict signal for read-only children (two
+    // questions often cite one shared file), so the brief starts and names
+    // every sub-agent already running for this parent; overlapping paths are
+    // traced, not refused.
     const siblingBriefs = parent.flags.siblingBriefs;
     const siblings = siblingBriefs ? [...(activeBriefs.get(parent.runId)?.values() ?? [])] : [];
     if (siblingBriefs) {

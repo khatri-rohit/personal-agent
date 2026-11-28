@@ -350,7 +350,7 @@ export class TaskStateTracker {
   private onToolStart(name: string, args: unknown): PhaseChange | null {
     // A finding is recorded when its result comes back (onToolComplete): the
     // tool checks the evidence and the record keeps what it checked. The
-    // phase says the run is recording, not still locating (F-7).
+    // phase says the run is recording, not still locating.
     const traits = this.traitsOf(name);
     switch (traits?.effect) {
       case 'record':
@@ -518,7 +518,7 @@ export class TaskStateTracker {
   }
 
   /**
-   * One piece of evidence, the run's single definition of progress (P2):
+   * One piece of evidence, the run's single definition of progress:
    * a successful edit, a check that passes after edits or after a failure,
    * a new or upgraded finding, a sub-agent report. Stall (loop steering)
    * and the effort floor both count from here.
